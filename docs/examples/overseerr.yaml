@@ -1,0 +1,41 @@
+# Overseerr — media request management
+apiVersion: servarr.dev/v1alpha1
+kind: ServarrApp
+metadata:
+  name: overseerr
+spec:
+  app: Overseerr
+---
+# Overseerr with auto-sync to discovered Sonarr/Radarr instances
+apiVersion: servarr.dev/v1alpha1
+kind: ServarrApp
+metadata:
+  name: overseerr
+spec:
+  app: Overseerr
+  apiKeySecret: overseerr-api-key
+  overseerrSync:
+    enabled: true
+    autoRemove: true
+  appConfig:
+    Overseerr:
+      sonarr:
+        profileId: 1
+        profileName: "HD-1080p"
+        rootFolder: "/tv"
+        enableSeasonFolders: true
+        fourK:
+          profileId: 5
+          profileName: "Ultra-HD"
+          rootFolder: "/tv4k"
+          enableSeasonFolders: true
+      radarr:
+        profileId: 1
+        profileName: "HD-1080p"
+        rootFolder: "/movies"
+        minimumAvailability: "released"
+        fourK:
+          profileId: 5
+          profileName: "Ultra-HD"
+          rootFolder: "/movies4k"
+          minimumAvailability: "released"

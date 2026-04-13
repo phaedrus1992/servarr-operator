@@ -1,0 +1,73 @@
+repos:
+  - repo: local
+    hooks:
+      # ── Stage 1: fast lint ────────────────────────────────────────────────
+
+      - id: cargo-fmt
+        name: cargo fmt
+        entry: cargo fmt --all --check
+        language: system
+        pass_filenames: false
+        stages: [pre-push]
+        always_run: true
+
+      - id: actionlint
+        name: actionlint
+        entry: actionlint
+        language: system
+        types: [yaml]
+        files: ^\.github/workflows/
+        stages: [pre-push]
+
+      - id: zizmor
+        name: zizmor
+        entry: zizmor
+        language: system
+        pass_filenames: false
+        files: ^\.github/workflows/
+        stages: [pre-push]
+        args: [.github/workflows/]
+
+      - id: helm-lint
+        name: helm lint
+        entry: scripts/helm-lint.sh
+        language: script
+        pass_filenames: false
+        files: ^charts/
+        stages: [pre-push]
+
+      # ── Stage 2: analysis ─────────────────────────────────────────────────
+
+      - id: cargo-clippy
+        name: cargo clippy
+        entry: cargo clippy --workspace --all-targets -- -D warnings
+        language: system
+        pass_filenames: false
+        stages: [pre-push]
+        always_run: true
+
+      - id: cargo-test-coverage
+        name: cargo test (with coverage)
+        entry: bash -c 'threshold=$(cat .coverage-threshold); cargo llvm-cov --workspace --fail-under-lines "$threshold" --summary-only'
+        language: system
+        pass_filenames: false
+        stages: [pre-push]
+        always_run: true
+
+      # ── Stage 3: integration ──────────────────────────────────────────────
+
+      - id: crd-drift
+        name: CRD drift check
+        entry: bash -c 'scripts/generate-crds.sh && git diff --exit-code charts/servarr-crds/templates/ || { echo "CRD files are out of date. Run scripts/generate-crds.sh and commit the result."; exit 1; }'
+        language: system
+        pass_filenames: false
+        files: ^(crates/servarr-crds/|crates/servarr-resources/|charts/servarr-crds/)
+        stages: [pre-push]
+
+      - id: smoke-test
+        name: smoke test (local cluster)
+        entry: scripts/smoke-test-local.sh
+        language: script
+        pass_filenames: false
+        stages: [pre-push]
+        always_run: false

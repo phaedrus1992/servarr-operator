@@ -1,0 +1,172 @@
+# Reusable workflow: publish multi-arch container image and Helm charts to GHCR.
+# Called by release.yaml and nightly.yaml.
+name: _Publish
+
+on:
+  workflow_call:
+    inputs:
+      image-tags:
+        description: "Newline-separated container image tags (e.g. 'v1.0.0\\nlatest')"
+        type: string
+        required: true
+      image-version-label:
+        description: "Value for org.opencontainers.image.version OCI label"
+        type: string
+        required: true
+      chart-version:
+        description: "Helm chart version (semver)"
+        type: string
+        required: true
+      chart-app-version:
+        description: "Helm chart appVersion"
+        type: string
+        required: true
+      create-github-release:
+        description: "Create a GitHub Release with attached binaries"
+        type: boolean
+        default: false
+      release-tag:
+        description: "Git tag for the GitHub Release (required if create-github-release is true)"
+        type: string
+        default: ""
+
+permissions:
+  contents: write
+  packages: write
+
+env:
+  IMAGE_NAME: ghcr.io/phaedrus1992/servarr-operator
+  HELM_REGISTRY: oci://ghcr.io/phaedrus1992/servarr
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Download amd64 binary
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: operator-binary-linux-amd64
+          path: /tmp/bin-amd64
+
+      - name: Download arm64 binary
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: operator-binary-linux-arm64
+          path: /tmp/bin-arm64
+
+      - name: Download darwin-amd64 binary
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: operator-binary-darwin-amd64
+          path: /tmp/bin-darwin-amd64
+
+      - name: Download darwin-arm64 binary
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: operator-binary-darwin-arm64
+          path: /tmp/bin-darwin-arm64
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@29109295f81e9208d7d86ff1c6c12d2833863392 # v3.6.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@b5ca514318bd6ebac0fb2aedd5d36ec1b5c232a2 # v3.10.0
+
+      - name: Log in to GHCR
+        uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772 # v3.4.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Prepare build context
+        run: |
+          mkdir -p /tmp/docker-context
+          chmod +x /tmp/bin-amd64/servarr-operator /tmp/bin-arm64/servarr-operator
+          cp -f /tmp/bin-amd64/servarr-operator /tmp/docker-context/servarr-operator-amd64
+          cp -f /tmp/bin-arm64/servarr-operator /tmp/docker-context/servarr-operator-arm64
+
+          cat > /tmp/docker-context/Dockerfile <<'DOCKERFILE'
+          FROM gcr.io/distroless/static-debian12:nonroot
+          ARG TARGETARCH
+          COPY servarr-operator-${TARGETARCH} /servarr-operator
+          ENTRYPOINT ["/servarr-operator"]
+          DOCKERFILE
+
+      - name: Build tag flags
+        id: tags
+        env:
+          IMAGE_TAGS: ${{ inputs.image-tags }}
+        run: |
+          # Convert newline-separated tags into --tag flags
+          flags=""
+          while IFS= read -r tag; do
+            [ -z "$tag" ] && continue
+            flags="${flags} --tag ${IMAGE_NAME}:${tag}"
+          done <<< "$IMAGE_TAGS"
+          echo "flags=${flags}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push multi-arch container image
+        env:
+          TAG_FLAGS: ${{ steps.tags.outputs.flags }}
+          IMAGE_VERSION_LABEL: ${{ inputs.image-version-label }}
+        run: |
+          # shellcheck disable=SC2086  # TAG_FLAGS is intentionally word-split into multiple --tag flags
+          docker buildx build \
+            --platform linux/amd64,linux/arm64 \
+            $TAG_FLAGS \
+            --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
+            --label "org.opencontainers.image.version=${IMAGE_VERSION_LABEL}" \
+            --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
+            --label "org.opencontainers.image.created=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --push \
+            /tmp/docker-context
+
+      - name: Set up Helm
+        uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
+
+      - name: Package and push Helm charts
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CHART_VERSION: ${{ inputs.chart-version }}
+          CHART_APP_VERSION: ${{ inputs.chart-app-version }}
+        run: |
+          echo "$GITHUB_TOKEN" | helm registry login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+
+          for chart in servarr-crds servarr-operator; do
+            helm dependency build "charts/${chart}/"
+            helm package "charts/${chart}/" \
+              --version "${CHART_VERSION}" \
+              --app-version "${CHART_APP_VERSION}" \
+              -d /tmp/charts
+            helm push "/tmp/charts/${chart}-${CHART_VERSION}.tgz" "${HELM_REGISTRY}"
+          done
+
+      - name: Create GitHub Release
+        if: inputs.create-github-release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ inputs.release-tag }}
+        run: |
+          cp -f /tmp/bin-amd64/servarr-operator /tmp/servarr-operator-linux-amd64
+          cp -f /tmp/bin-arm64/servarr-operator /tmp/servarr-operator-linux-arm64
+          cp -f /tmp/bin-darwin-amd64/servarr-operator /tmp/servarr-operator-darwin-amd64
+          cp -f /tmp/bin-darwin-arm64/servarr-operator /tmp/servarr-operator-darwin-arm64
+          chmod +x \
+            /tmp/servarr-operator-linux-amd64 \
+            /tmp/servarr-operator-linux-arm64 \
+            /tmp/servarr-operator-darwin-amd64 \
+            /tmp/servarr-operator-darwin-arm64
+
+          gh release create "${RELEASE_TAG}" \
+            --title "${RELEASE_TAG}" \
+            --generate-notes \
+            /tmp/servarr-operator-linux-amd64 \
+            /tmp/servarr-operator-linux-arm64 \
+            /tmp/servarr-operator-darwin-amd64 \
+            /tmp/servarr-operator-darwin-arm64

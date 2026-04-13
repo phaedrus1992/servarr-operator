@@ -1,0 +1,33 @@
+# Minimal Radarr — movie management
+apiVersion: servarr.dev/v1alpha1
+kind: ServarrApp
+metadata:
+  name: radarr
+spec:
+  app: Radarr
+  persistence:
+    volumes:
+      - name: downloads
+        mountPath: /downloads
+        size: 50Gi
+---
+# MediaStack split 4K — automatically creates radarr and radarr-4k instances
+apiVersion: servarr.dev/v1alpha1
+kind: MediaStack
+metadata:
+  name: media
+spec:
+  apps:
+    - app: Radarr
+      split4k: true
+      apiKeySecret: radarr-api-key
+      split4kOverrides:
+        resources:
+          limits:
+            cpu: "4"
+            memory: 2Gi
+      persistence:
+        volumes:
+          - name: downloads
+            mountPath: /downloads
+            size: 50Gi

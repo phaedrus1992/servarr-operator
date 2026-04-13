@@ -1,0 +1,7 @@
+# Jackett — torrent indexer proxy
+apiVersion: servarr.dev/v1alpha1
+kind: ServarrApp
+metadata:
+  name: jackett
+spec:
+  app: Jackett

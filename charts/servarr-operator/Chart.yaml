@@ -1,0 +1,11 @@
+apiVersion: v2
+name: servarr-operator
+description: Kubernetes operator for managing Servarr media automation apps
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+dependencies:
+  - name: node-feature-discovery
+    version: "0.18.3"
+    repository: "oci://registry.k8s.io/nfd/charts"
+    condition: nfd.enabled

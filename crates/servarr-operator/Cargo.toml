@@ -1,0 +1,46 @@
+[package]
+name = "servarr-operator"
+version = "0.1.0"
+edition.workspace = true
+
+[[bin]]
+name = "servarr-operator"
+path = "src/main.rs"
+
+[dependencies]
+kube.workspace = true
+k8s-openapi.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+tokio.workspace = true
+futures.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+anyhow.workspace = true
+servarr-crds.workspace = true
+servarr-resources.workspace = true
+prometheus = { version = "0.14", features = ["process"] }
+lazy_static = "1.5.0"
+axum = "0.8.8"
+axum-server = { version = "0.8.0", features = ["tls-rustls"] }
+clap = { version = "4.5.58", features = ["derive"] }
+flate2 = "1.1.9"
+base64 = "0.22.1"
+servarr-api = { path = "../servarr-api" }
+overseerr = "0.1"
+chrono = { version = "0.4.43", default-features = false, features = ["clock"] }
+cron = "0.15"
+url = "2.5.8"
+rand = "0.9"
+sha2 = "0.10.9"
+
+[dev-dependencies]
+wiremock.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+http = "1"
+temp-env = "0.3"
+tower = "0.5"
+tower-test = "0.4"
+

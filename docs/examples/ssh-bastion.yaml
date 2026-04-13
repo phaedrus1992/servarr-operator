@@ -1,0 +1,38 @@
+# SSH bastion with per-user access modes.
+# Each user can have a different mode: shell, scp, rsync, or restricted-rsync.
+# Rsync modes are always read-only.
+apiVersion: servarr.dev/v1alpha1
+kind: ServarrApp
+metadata:
+  name: ssh-bastion
+spec:
+  app: SshBastion
+  appConfig:
+    sshBastion:
+      users:
+        # Interactive shell access.
+        - name: admin
+          uid: 1000
+          gid: 1000
+          mode: shell
+          publicKeys: |
+            ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIexample admin@example.com
+
+        # Read-only rsync, restricted to specific paths.
+        - name: backup
+          uid: 1001
+          gid: 1001
+          mode: restricted-rsync
+          restrictedRsync:
+            allowedPaths:
+              - /mnt/media
+          publicKeys: |
+            ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIexample backup@example.com
+
+        # Read-only file transfers via SCP.
+        - name: transfer
+          uid: 1002
+          gid: 1002
+          mode: scp
+          publicKeys: |
+            ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIexample transfer@example.com

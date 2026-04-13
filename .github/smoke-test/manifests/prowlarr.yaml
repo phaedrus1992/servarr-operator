@@ -1,0 +1,6 @@
+apiVersion: servarr.dev/v1alpha1
+kind: ServarrApp
+metadata:
+  name: prowlarr
+spec:
+  app: Prowlarr

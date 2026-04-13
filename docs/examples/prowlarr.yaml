@@ -1,0 +1,60 @@
+# Minimal Prowlarr — indexer manager
+apiVersion: servarr.dev/v1alpha1
+kind: ServarrApp
+metadata:
+  name: prowlarr
+spec:
+  app: Prowlarr
+---
+# Prowlarr with cross-app sync
+# When prowlarrSync is enabled, the operator discovers Sonarr, Radarr, and
+# Lidarr instances in the namespace and automatically registers them as
+# applications in Prowlarr so indexers are pushed to each app.
+apiVersion: servarr.dev/v1alpha1
+kind: ServarrApp
+metadata:
+  name: prowlarr
+spec:
+  app: Prowlarr
+  apiKeySecret: prowlarr-api-key
+  prowlarrSync:
+    enabled: true
+    autoRemove: true
+---
+# Prowlarr with custom Cardigann-format indexer definitions
+# Each entry becomes a YAML file in /config/Definitions/Custom/
+# apiVersion: servarr.dev/v1alpha1
+# kind: ServarrApp
+# metadata:
+#   name: prowlarr
+# spec:
+#   app: Prowlarr
+#   appConfig:
+#     Prowlarr:
+#       customDefinitions:
+#         - name: my-private-tracker
+#           content: |
+#             ---
+#             id: my-private-tracker
+#             name: My Private Tracker
+#             description: Private torrent tracker
+#             language: en-US
+#             type: private
+#             encoding: UTF-8
+#             links:
+#               - https://tracker.example.com
+#             caps:
+#               categories:
+#                 2000: Movies
+#                 5000: TV
+#             login:
+#               path: /login
+#               method: form
+#               inputs:
+#                 username: "{{ .Config.username }}"
+#                 password: "{{ .Config.password }}"
+#             search:
+#               paths:
+#                 - path: /api/torrents
+#               rows:
+#                 selector: results

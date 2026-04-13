@@ -1,0 +1,19 @@
+{{- if .Values.webhook.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: servarr-operator-webhook
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: servarr-operator
+    app.kubernetes.io/instance: {{ .Release.Name }}
+spec:
+  ports:
+    - name: https
+      port: 443
+      targetPort: 9443
+      protocol: TCP
+  selector:
+    app.kubernetes.io/name: servarr-operator
+    app.kubernetes.io/instance: {{ .Release.Name }}
+{{- end }}

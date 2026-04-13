@@ -1,0 +1,18 @@
+apiVersion: servarr.dev/v1alpha1
+kind: ServarrApp
+metadata:
+  name: tautulli
+spec:
+  app: Tautulli
+  # Tautulli calls api.github.com and plex.tv on startup.
+  # Without egress, these connections time out (~60s+ total)
+  # delaying startup past the smoke test timeout.
+  # Disable the GitHub check; the plex.tv call still happens
+  # but is less impactful once the version check is skipped.
+  env:
+    - name: TAUTULLI__CHECK_GITHUB_ON_STARTUP
+      value: "0"
+    - name: TAUTULLI__CHECK_GITHUB
+      value: "0"
+  networkPolicyConfig:
+    allowInternetEgress: true

@@ -1,0 +1,33 @@
+# Minimal SABnzbd — Usenet download client
+apiVersion: servarr.dev/v1alpha1
+kind: ServarrApp
+metadata:
+  name: sabnzbd
+spec:
+  app: Sabnzbd
+  persistence:
+    volumes:
+      - name: downloads
+        mountPath: /downloads
+        size: 100Gi
+---
+# SABnzbd with reverse proxy host whitelist and tar unpacking
+# hostWhitelist: required when SABnzbd sits behind a reverse proxy
+# tarUnpack: installs compression tools and adds a post-processing script
+apiVersion: servarr.dev/v1alpha1
+kind: ServarrApp
+metadata:
+  name: sabnzbd
+spec:
+  app: Sabnzbd
+  persistence:
+    volumes:
+      - name: downloads
+        mountPath: /downloads
+        size: 100Gi
+  appConfig:
+    Sabnzbd:
+      hostWhitelist:
+        - sabnzbd.example.com
+        - nzb.example.com
+      tarUnpack: true

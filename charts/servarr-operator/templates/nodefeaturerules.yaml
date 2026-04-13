@@ -1,0 +1,86 @@
+{{- if and .Values.nfd.enabled .Values.nfd.gpuRules.enabled }}
+---
+# Intel GPU — requires both PCI display controller presence and i915 kernel module.
+# Produces: feature.node.kubernetes.io/gpu.intel.com/i915=true
+apiVersion: nfd.k8s.io/v1alpha1
+kind: NodeFeatureRule
+metadata:
+  name: gpu-intel-i915
+  labels:
+    app.kubernetes.io/name: servarr-operator
+    app.kubernetes.io/instance: {{ .Release.Name }}
+spec:
+  rules:
+    - name: intel-i915
+      labels:
+        "gpu.intel.com/i915": "true"
+      matchFeatures:
+        - feature: kernel.loadedmodule
+          matchExpressions:
+            i915:
+              op: Exists
+        - feature: pci.device
+          matchExpressions:
+            class:
+              op: InRegexp
+              value: ["^03"]
+            vendor:
+              op: In
+              value: ["8086"]
+---
+# NVIDIA GPU — requires PCI NVIDIA device (vendor 10de) and nvidia kernel module.
+# Produces: feature.node.kubernetes.io/gpu.nvidia.com/present=true
+apiVersion: nfd.k8s.io/v1alpha1
+kind: NodeFeatureRule
+metadata:
+  name: gpu-nvidia
+  labels:
+    app.kubernetes.io/name: servarr-operator
+    app.kubernetes.io/instance: {{ .Release.Name }}
+spec:
+  rules:
+    - name: nvidia
+      labels:
+        "gpu.nvidia.com/present": "true"
+      matchFeatures:
+        - feature: kernel.loadedmodule
+          matchExpressions:
+            nvidia:
+              op: Exists
+        - feature: pci.device
+          matchExpressions:
+            class:
+              op: InRegexp
+              value: ["^03"]
+            vendor:
+              op: In
+              value: ["10de"]
+---
+# AMD GPU — requires PCI AMD device (vendor 1002) and amdgpu kernel module.
+# Produces: feature.node.kubernetes.io/gpu.amd.com/present=true
+apiVersion: nfd.k8s.io/v1alpha1
+kind: NodeFeatureRule
+metadata:
+  name: gpu-amd
+  labels:
+    app.kubernetes.io/name: servarr-operator
+    app.kubernetes.io/instance: {{ .Release.Name }}
+spec:
+  rules:
+    - name: amd
+      labels:
+        "gpu.amd.com/present": "true"
+      matchFeatures:
+        - feature: kernel.loadedmodule
+          matchExpressions:
+            amdgpu:
+              op: Exists
+        - feature: pci.device
+          matchExpressions:
+            class:
+              op: InRegexp
+              value: ["^03"]
+            vendor:
+              op: In
+              value: ["1002"]
+{{- end }}

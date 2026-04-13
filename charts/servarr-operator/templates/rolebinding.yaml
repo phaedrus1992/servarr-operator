@@ -1,0 +1,18 @@
+{{- if not .Values.watchAllNamespaces }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: servarr-operator
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: servarr-operator
+    app.kubernetes.io/instance: {{ .Release.Name }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: servarr-operator
+subjects:
+  - kind: ServiceAccount
+    name: servarr-operator
+    namespace: {{ .Release.Namespace }}
+{{- end }}

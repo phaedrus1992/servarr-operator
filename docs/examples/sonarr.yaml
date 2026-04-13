@@ -1,0 +1,63 @@
+# Minimal Sonarr — TV series management
+apiVersion: servarr.dev/v1alpha1
+kind: ServarrApp
+metadata:
+  name: sonarr
+spec:
+  app: Sonarr
+  persistence:
+    volumes:
+      - name: downloads
+        mountPath: /downloads
+        size: 50Gi
+---
+# Sonarr 4K — multiple instances using the "instance" field
+apiVersion: servarr.dev/v1alpha1
+kind: ServarrApp
+metadata:
+  name: sonarr-4k
+spec:
+  app: Sonarr
+  instance: "4k"
+  persistence:
+    volumes:
+      - name: downloads
+        mountPath: /downloads
+        size: 50Gi
+---
+# Sonarr with API-driven backups
+# Create the API key secret:
+#   kubectl create secret generic sonarr-api-key \
+#     --from-literal=api-key=your-api-key-here
+apiVersion: servarr.dev/v1alpha1
+kind: ServarrApp
+metadata:
+  name: sonarr
+spec:
+  app: Sonarr
+  apiKeySecret: sonarr-api-key
+  backup:
+    enabled: true
+    schedule: "0 3 * * *"
+    retentionCount: 7
+  persistence:
+    volumes:
+      - name: downloads
+        mountPath: /downloads
+        size: 50Gi
+---
+# MediaStack split 4K — automatically creates sonarr and sonarr-4k instances
+apiVersion: servarr.dev/v1alpha1
+kind: MediaStack
+metadata:
+  name: media
+spec:
+  apps:
+    - app: Sonarr
+      split4k: true
+      apiKeySecret: sonarr-api-key
+      persistence:
+        volumes:
+          - name: downloads
+            mountPath: /downloads
+            size: 50Gi

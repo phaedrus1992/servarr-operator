@@ -1,0 +1,65 @@
+{{- if not .Values.watchAllNamespaces }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: servarr-operator
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: servarr-operator
+    app.kubernetes.io/instance: {{ .Release.Name }}
+rules:
+  # ServarrApp CRD: controller watch + finalizer/status patches + stack child lifecycle
+  - apiGroups: ["servarr.dev"]
+    resources: ["servarrapps", "servarrapps/status"]
+    verbs: ["get", "list", "watch", "patch", "create", "delete"]
+  # MediaStack CRD: controller watch + status patches
+  - apiGroups: ["servarr.dev"]
+    resources: ["mediastacks", "mediastacks/status"]
+    verbs: ["get", "list", "watch", "patch"]
+  # Deployments: owns() watch + get for drift/status + SSA create/patch
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch", "create", "patch"]
+  # StatefulSets: NFS server SSA create/patch + delete on cleanup
+  - apiGroups: ["apps"]
+    resources: ["statefulsets"]
+    verbs: ["get", "list", "watch", "create", "patch", "delete"]
+  # Pods: get NFS server pod IP for direct-IP volume mounts (kubelet DNS workaround)
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get"]
+  # Services: owns() watch + SSA create/patch
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "list", "watch", "create", "patch"]
+  # ConfigMaps: owns() watch + SSA create/patch
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["list", "watch", "create", "patch"]
+  # PVCs: get for existence check + SSA create/patch
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["get", "list", "create", "patch"]
+  # Secrets: get/list/watch for API keys and admin-credentials; create/patch for SSH bastion.
+  # NOTE: Kubernetes RBAC cannot scope to specific Secret names, so this grants
+  # read access to ALL Secrets in the watched namespace.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "watch", "create", "patch"]
+  # NetworkPolicies: SSA create/patch
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies"]
+    verbs: ["create", "patch"]
+  # Gateway API routes: SSA create/patch
+  - apiGroups: ["gateway.networking.k8s.io"]
+    resources: ["httproutes", "tcproutes"]
+    verbs: ["create", "patch"]
+  # cert-manager Certificates: SSA create/patch
+  - apiGroups: ["cert-manager.io"]
+    resources: ["certificates"]
+    verbs: ["create", "patch"]
+  # Events: Recorder publishes via create/patch
+  - apiGroups: ["", "events.k8s.io"]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+{{- end }}

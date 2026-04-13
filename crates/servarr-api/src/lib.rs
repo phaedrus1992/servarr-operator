@@ -1,0 +1,23 @@
+mod client;
+pub mod health;
+pub mod jellyfin;
+pub mod k8s;
+pub mod overseerr;
+pub mod plex;
+pub mod prowlarr;
+pub mod sabnzbd;
+pub mod servarr_v3;
+pub mod tautulli;
+pub mod transmission;
+
+pub use client::{ApiError, HttpClient};
+pub use health::HealthCheck;
+pub use jellyfin::JellyfinClient;
+pub use k8s::{SecretError, read_secret_key};
+pub use overseerr::OverseerrClient;
+pub use plex::PlexClient;
+pub use prowlarr::ProwlarrClient;
+pub use sabnzbd::SabnzbdClient;
+pub use servarr_v3::{AppKind, ServarrClient};
+pub use tautulli::TautulliClient;
+pub use transmission::TransmissionClient;

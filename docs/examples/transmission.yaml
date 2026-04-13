@@ -1,0 +1,50 @@
+# Minimal Transmission — BitTorrent client
+apiVersion: servarr.dev/v1alpha1
+kind: ServarrApp
+metadata:
+  name: transmission
+spec:
+  app: Transmission
+  persistence:
+    volumes:
+      - name: downloads
+        mountPath: /downloads
+        size: 100Gi
+---
+# Transmission with authentication, peer port, and settings override
+#
+# auth.secretName: references a Secret with "username" and "password" keys
+# peerPort: configures the incoming torrent peer port; hostPort binds directly
+#           on the node (useful when behind NAT)
+# settings: any valid Transmission settings.json key/value pairs, merged into
+#           the generated settings file
+#
+# Create the auth secret:
+#   kubectl create secret generic transmission-credentials \
+#     --from-literal=username=admin \
+#     --from-literal=password=changeme
+apiVersion: servarr.dev/v1alpha1
+kind: ServarrApp
+metadata:
+  name: transmission
+spec:
+  app: Transmission
+  persistence:
+    volumes:
+      - name: downloads
+        mountPath: /downloads
+        size: 100Gi
+  appConfig:
+    Transmission:
+      auth:
+        secretName: transmission-credentials
+      peerPort:
+        port: 51413
+        hostPort: true
+        randomOnStart: false
+      settings:
+        speed-limit-up-enabled: true
+        speed-limit-up: 500
+        ratio-limit-enabled: true
+        ratio-limit: 2.0
+        download-queue-size: 10

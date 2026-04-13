@@ -1,0 +1,71 @@
+wing: servarr_operator
+rooms:
+- name: crates
+  description: Rust workspace crates — servarr-api (HTTP clients for each app),
+    servarr-crds (CRD types and spec structs), servarr-operator (controller/reconciler
+    loop, webhook server, metrics), servarr-resources (Kubernetes resource builders)
+  keywords:
+  - crates
+  - rust
+  - api client
+  - controller
+  - reconciler
+  - webhook
+  - CRD
+  - spec
+  - resources
+  - builder
+- name: charts
+  description: Helm charts — servarr-crds (CRD manifests + validating webhook)
+    and servarr-operator (operator Deployment, RBAC, service account, cert-manager
+    webhook certificate)
+  keywords:
+  - charts
+  - helm
+  - CRD
+  - RBAC
+  - webhook
+  - deployment
+  - cert-manager
+- name: documentation
+  description: User-facing docs and example manifests — one YAML per supported
+    app type showing minimal ServarrApp CRs, plus a kitchen-sink example and
+    MediaStack example with all features
+  keywords:
+  - documentation
+  - docs
+  - examples
+  - ServarrApp
+  - MediaStack
+  - yaml
+- name: scripts
+  description: Maintenance scripts — generate-crds.sh (re-generates CRD YAML
+    from Rust types), helm-lint.sh (lints Helm charts), sync-image-defaults.sh
+    (syncs image-defaults.toml with current upstream tags)
+  keywords:
+  - scripts
+  - generate
+  - helm
+  - image defaults
+  - CRD generation
+- name: smoke_tests
+  description: CI smoke-test manifests and workflow — individual ServarrApp YAMLs
+    for every supported app type used in end-to-end GitHub Actions tests against
+    a real cluster; includes admin-secret and media-stack manifests
+  keywords:
+  - smoke test
+  - CI
+  - end-to-end
+  - github actions
+  - manifests
+- name: general
+  description: Top-level project files — Cargo.toml workspace definition,
+    Dockerfile, image-defaults.toml (default container image tags per app),
+    rust-toolchain.toml, pre-commit config, clippy/rustfmt settings
+  keywords:
+  - cargo
+  - workspace
+  - dockerfile
+  - image defaults
+  - toolchain
+  - pre-commit

@@ -1,0 +1,10 @@
+apiVersion: servarr.dev/v1alpha1
+kind: MediaStack
+metadata:
+  name: media
+spec:
+  apps:
+    - app: Jellyfin
+    - app: Transmission
+    - app: Sonarr
+      apiKeySecret: smoke-sonarr-api-key

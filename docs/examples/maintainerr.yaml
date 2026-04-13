@@ -1,0 +1,8 @@
+# Maintainerr — automated media cleanup
+# Uses a nonroot security profile (set automatically by the operator)
+apiVersion: servarr.dev/v1alpha1
+kind: ServarrApp
+metadata:
+  name: maintainerr
+spec:
+  app: Maintainerr

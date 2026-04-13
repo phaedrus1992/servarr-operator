@@ -1,0 +1,925 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: servarrapps.servarr.dev
+spec:
+  group: servarr.dev
+  names:
+    categories: []
+    kind: ServarrApp
+    plural: servarrapps
+    shortNames:
+    - sa
+    singular: servarrapp
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.app
+      name: App
+      type: string
+    - jsonPath: .spec.instance
+      name: Instance
+      priority: 1
+      type: string
+    - jsonPath: .status.ready
+      name: Ready
+      type: boolean
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: Auto-generated derived type for ServarrAppSpec via `CustomResource`
+        properties:
+          spec:
+            properties:
+              adminCredentials:
+                description: |-
+                  Admin credentials for this app. References a user-created Kubernetes Secret
+                  with `username` and `password` keys. The operator reads but never owns this secret.
+
+                  For Sonarr, Radarr, Lidarr, and Prowlarr: injected as `APP__AUTH__USERNAME`,
+                  `APP__AUTH__PASSWORD`, and `APP__AUTH__METHOD=Forms` env vars (requires restart).
+                  For other apps: applied via live API calls on every reconcile.
+                nullable: true
+                properties:
+                  secretName:
+                    description: Name of a Kubernetes Secret containing `username` and `password` keys.
+                    type: string
+                required:
+                - secretName
+                type: object
+              apiHealthCheck:
+                description: API-driven health check configuration.
+                nullable: true
+                properties:
+                  enabled:
+                    default: false
+                    description: Whether API health checking is enabled.
+                    type: boolean
+                  intervalSeconds:
+                    description: How often (in seconds) to poll the app API for health. Defaults to 60.
+                    format: uint32
+                    minimum: 0.0
+                    nullable: true
+                    type: integer
+                type: object
+              apiKeySecret:
+                description: |-
+                  Name of a Kubernetes Secret containing an `api-key` data field.
+                  Used for API health checks and backup operations.
+                nullable: true
+                type: string
+              app:
+                enum:
+                - Sonarr
+                - Radarr
+                - Lidarr
+                - Prowlarr
+                - Sabnzbd
+                - Transmission
+                - Tautulli
+                - Overseerr
+                - Maintainerr
+                - Jackett
+                - Jellyfin
+                - Plex
+                - SshBastion
+                type: string
+              appConfig:
+                nullable: true
+                oneOf:
+                - required:
+                  - transmission
+                - required:
+                  - sabnzbd
+                - required:
+                  - prowlarr
+                - required:
+                  - sshBastion
+                - required:
+                  - overseerr
+                properties:
+                  overseerr:
+                    description: |-
+                      Overseerr integration configuration.
+
+                      Provides default Sonarr and Radarr server settings used when the operator
+                      auto-registers discovered instances in Overseerr.
+                    properties:
+                      radarr:
+                        description: Default Radarr server settings for Overseerr registration.
+                        nullable: true
+                        properties:
+                          enableSeasonFolders:
+                            description: Enable season folders (Sonarr only).
+                            nullable: true
+                            type: boolean
+                          fourK:
+                            description: 4K variant overrides (used when the server is a 4K instance).
+                            nullable: true
+                            properties:
+                              enableSeasonFolders:
+                                description: Enable season folders for the 4K Sonarr instance.
+                                nullable: true
+                                type: boolean
+                              minimumAvailability:
+                                description: Minimum availability for the 4K Radarr instance.
+                                nullable: true
+                                type: string
+                              profileId:
+                                description: Quality profile ID for the 4K instance.
+                                format: double
+                                type: number
+                              profileName:
+                                description: Quality profile name for the 4K instance.
+                                type: string
+                              rootFolder:
+                                description: Root folder path for the 4K instance (e.g. "/movies4k").
+                                type: string
+                            required:
+                            - profileId
+                            - profileName
+                            - rootFolder
+                            type: object
+                          minimumAvailability:
+                            description: Minimum availability for Radarr (e.g. "released"). Ignored for Sonarr.
+                            nullable: true
+                            type: string
+                          profileId:
+                            description: Quality profile ID to set as active in Overseerr.
+                            format: double
+                            type: number
+                          profileName:
+                            description: Quality profile name.
+                            type: string
+                          rootFolder:
+                            description: Root folder path (e.g. "/movies", "/tv").
+                            type: string
+                        required:
+                        - profileId
+                        - profileName
+                        - rootFolder
+                        type: object
+                      sonarr:
+                        description: Default Sonarr server settings for Overseerr registration.
+                        nullable: true
+                        properties:
+                          enableSeasonFolders:
+                            description: Enable season folders (Sonarr only).
+                            nullable: true
+                            type: boolean
+                          fourK:
+                            description: 4K variant overrides (used when the server is a 4K instance).
+                            nullable: true
+                            properties:
+                              enableSeasonFolders:
+                                description: Enable season folders for the 4K Sonarr instance.
+                                nullable: true
+                                type: boolean
+                              minimumAvailability:
+                                description: Minimum availability for the 4K Radarr instance.
+                                nullable: true
+                                type: string
+                              profileId:
+                                description: Quality profile ID for the 4K instance.
+                                format: double
+                                type: number
+                              profileName:
+                                description: Quality profile name for the 4K instance.
+                                type: string
+                              rootFolder:
+                                description: Root folder path for the 4K instance (e.g. "/movies4k").
+                                type: string
+                            required:
+                            - profileId
+                            - profileName
+                            - rootFolder
+                            type: object
+                          minimumAvailability:
+                            description: Minimum availability for Radarr (e.g. "released"). Ignored for Sonarr.
+                            nullable: true
+                            type: string
+                          profileId:
+                            description: Quality profile ID to set as active in Overseerr.
+                            format: double
+                            type: number
+                          profileName:
+                            description: Quality profile name.
+                            type: string
+                          rootFolder:
+                            description: Root folder path (e.g. "/movies", "/tv").
+                            type: string
+                        required:
+                        - profileId
+                        - profileName
+                        - rootFolder
+                        type: object
+                    type: object
+                  prowlarr:
+                    properties:
+                      customDefinitions:
+                        default: []
+                        description: Custom indexer definitions to place in /config/Definitions/Custom.
+                        items:
+                          description: |-
+                            Custom indexer definition for Prowlarr.
+
+                            Each definition becomes a YAML file placed in
+                            `/config/Definitions/Custom/{name}.yml` inside the Prowlarr container.
+                          properties:
+                            content:
+                              description: The YAML body of the Prowlarr indexer definition.
+                              type: string
+                            name:
+                              description: |-
+                                Filename (without extension) for the definition. Must be alphanumeric
+                                with optional hyphens (e.g. `my-private-tracker`).
+                              type: string
+                          required:
+                          - content
+                          - name
+                          type: object
+                        type: array
+                    type: object
+                  sabnzbd:
+                    properties:
+                      hostWhitelist:
+                        default: []
+                        description: |-
+                          Hostnames that SABnzbd should accept connections from.
+                          Required for reverse proxy setups (e.g. `["sonarr.example.com"]`).
+                        items:
+                          type: string
+                        type: array
+                      tarUnpack:
+                        default: false
+                        description: |-
+                          Enable automatic tar/archive unpacking after downloads complete.
+                          Installs compression tools (tar, gzip, bzip2, xz, zstd) and adds
+                          a post-processing script.
+                        type: boolean
+                    type: object
+                  sshBastion:
+                    properties:
+                      disableSftp:
+                        default: false
+                        description: 'Disable SFTP subsystem (default: false).'
+                        type: boolean
+                      enablePasswordAuth:
+                        default: false
+                        description: 'Whether to allow password authentication (default: false).'
+                        type: boolean
+                      gatewayPorts:
+                        default: false
+                        description: 'Whether to allow gateway ports (default: false).'
+                        type: boolean
+                      motd:
+                        default: ''
+                        description: Message of the day shown on login.
+                        type: string
+                      sftpChroot:
+                        default: '%h'
+                        description: 'SFTP chroot directory (default: "%h" for user home).'
+                        type: string
+                      tcpForwarding:
+                        default: false
+                        description: 'Whether to allow TCP forwarding (default: false).'
+                        type: boolean
+                      users:
+                        default: []
+                        description: SSH users to provision on the bastion.
+                        items:
+                          description: An SSH user to provision on the bastion.
+                          properties:
+                            gid:
+                              description: Group ID.
+                              format: int64
+                              type: integer
+                            mode:
+                              default: shell
+                              description: 'SSH access mode for this user: shell, sftp, scp, rsync, or restricted-rsync.'
+                              enum:
+                              - shell
+                              - sftp
+                              - scp
+                              - rsync
+                              - restricted-rsync
+                              type: string
+                            name:
+                              description: Username.
+                              type: string
+                            publicKeys:
+                              default: ''
+                              description: SSH public keys (one per line).
+                              type: string
+                            restrictedRsync:
+                              description: Restricted rsync configuration (only applies when mode is restricted-rsync).
+                              nullable: true
+                              properties:
+                                allowedPaths:
+                                  default: []
+                                  description: Paths that users are allowed to rsync from.
+                                  items:
+                                    type: string
+                                  type: array
+                              type: object
+                            shell:
+                              description: 'Override login shell (only applies when mode is shell; default: /bin/sh).'
+                              nullable: true
+                              type: string
+                            uid:
+                              description: User ID.
+                              format: int64
+                              type: integer
+                          required:
+                          - gid
+                          - name
+                          - uid
+                          type: object
+                        type: array
+                    type: object
+                  transmission:
+                    properties:
+                      auth:
+                        nullable: true
+                        properties:
+                          secretName:
+                            type: string
+                        required:
+                        - secretName
+                        type: object
+                      peerPort:
+                        nullable: true
+                        properties:
+                          hostPort:
+                            default: false
+                            type: boolean
+                          port:
+                            format: int32
+                            type: integer
+                          randomHigh:
+                            default: 65535
+                            format: int32
+                            type: integer
+                          randomLow:
+                            default: 49152
+                            format: int32
+                            type: integer
+                          randomOnStart:
+                            default: false
+                            type: boolean
+                        required:
+                        - port
+                        type: object
+                      settings:
+                        type: object
+                        x-kubernetes-preserve-unknown-fields: true
+                    type: object
+                type: object
+              backup:
+                description: Backup configuration via the app's API.
+                nullable: true
+                properties:
+                  enabled:
+                    default: false
+                    description: Whether automated backups are enabled.
+                    type: boolean
+                  retentionCount:
+                    default: 5
+                    description: Number of backups to retain.
+                    format: uint32
+                    minimum: 0.0
+                    type: integer
+                  schedule:
+                    default: ''
+                    description: Cron expression for backup schedule (e.g. "0 3 * * *").
+                    type: string
+                type: object
+              env:
+                default: []
+                items:
+                  properties:
+                    name:
+                      type: string
+                    value:
+                      type: string
+                  required:
+                  - name
+                  - value
+                  type: object
+                type: array
+              gateway:
+                nullable: true
+                properties:
+                  enabled:
+                    default: false
+                    type: boolean
+                  hosts:
+                    default: []
+                    items:
+                      type: string
+                    type: array
+                  parentRefs:
+                    default: []
+                    items:
+                      properties:
+                        name:
+                          type: string
+                        namespace:
+                          default: ''
+                          type: string
+                        sectionName:
+                          default: ''
+                          type: string
+                      required:
+                      - name
+                      type: object
+                    type: array
+                  routeType:
+                    default: Http
+                    enum:
+                    - Http
+                    - Tcp
+                    type: string
+                  tls:
+                    description: |-
+                      TLS configuration. When enabled, the controller creates a cert-manager
+                      Certificate and uses a TCPRoute instead of an HTTPRoute.
+                    nullable: true
+                    properties:
+                      certIssuer:
+                        default: ''
+                        description: Name of the cert-manager ClusterIssuer or Issuer to use.
+                        type: string
+                      enabled:
+                        default: false
+                        description: Whether TLS is enabled.
+                        type: boolean
+                      secretName:
+                        description: Override for the TLS Secret name. If omitted, derived from the app name.
+                        nullable: true
+                        type: string
+                    type: object
+                type: object
+              gid:
+                format: int64
+                nullable: true
+                type: integer
+              gpu:
+                description: GPU passthrough configuration for hardware-accelerated transcoding.
+                nullable: true
+                properties:
+                  amd:
+                    description: AMD GPU count (adds `amd.com/gpu` resource limit+request).
+                    format: int32
+                    nullable: true
+                    type: integer
+                  intel:
+                    description: Intel iGPU count (adds `gpu.intel.com/i915` resource limit+request).
+                    format: int32
+                    nullable: true
+                    type: integer
+                  nvidia:
+                    description: NVIDIA GPU count (adds `nvidia.com/gpu` resource limit+request).
+                    format: int32
+                    nullable: true
+                    type: integer
+                type: object
+              image:
+                nullable: true
+                properties:
+                  digest:
+                    default: ''
+                    type: string
+                  pullPolicy:
+                    default: IfNotPresent
+                    type: string
+                  repository:
+                    type: string
+                  tag:
+                    default: ''
+                    type: string
+                required:
+                - repository
+                type: object
+              imagePullSecrets:
+                description: Names of Kubernetes Secrets for private registry authentication.
+                items:
+                  type: string
+                nullable: true
+                type: array
+              instance:
+                description: |-
+                  Optional instance label (e.g. "4k", "anime") to distinguish multiple
+                  instances of the same app type within a namespace.
+                nullable: true
+                type: string
+              networkPolicy:
+                nullable: true
+                type: boolean
+              networkPolicyConfig:
+                description: |-
+                  Fine-grained NetworkPolicy configuration. Takes precedence over the
+                  boolean `network_policy` flag when set.
+                nullable: true
+                properties:
+                  allowDns:
+                    default: true
+                    description: 'Allow egress to kube-system DNS (UDP/TCP 53) (default: true).'
+                    type: boolean
+                  allowInternetEgress:
+                    default: false
+                    description: 'Allow egress to the public internet (default: false).'
+                    type: boolean
+                  allowSameNamespace:
+                    default: true
+                    description: 'Allow pods in the same namespace to reach this app (default: true).'
+                    type: boolean
+                  customEgressRules:
+                    default: []
+                    description: Arbitrary additional egress rules (raw NetworkPolicyEgressRule JSON).
+                    items:
+                      type: object
+                    type: array
+                  deniedCidrBlocks:
+                    default: []
+                    description: CIDR blocks to deny in egress (e.g. RFC 1918 ranges).
+                    items:
+                      type: string
+                    type: array
+                type: object
+              overseerrSync:
+                description: Overseerr cross-app synchronization. Only applies to Overseerr-type apps.
+                nullable: true
+                properties:
+                  autoRemove:
+                    default: true
+                    description: Whether to remove servers from Overseerr when their CRs are deleted.
+                    type: boolean
+                  enabled:
+                    default: false
+                    description: Whether Overseerr sync is enabled.
+                    type: boolean
+                  namespaceScope:
+                    description: Namespace to discover apps in. Defaults to the Overseerr CR's namespace.
+                    nullable: true
+                    type: string
+                type: object
+              persistence:
+                nullable: true
+                properties:
+                  nfsMounts:
+                    default: []
+                    items:
+                      properties:
+                        mountPath:
+                          type: string
+                        name:
+                          type: string
+                        path:
+                          type: string
+                        readOnly:
+                          default: false
+                          type: boolean
+                        server:
+                          type: string
+                      required:
+                      - mountPath
+                      - name
+                      - path
+                      - server
+                      type: object
+                    type: array
+                  volumes:
+                    default: []
+                    items:
+                      properties:
+                        accessMode:
+                          default: ReadWriteOnce
+                          type: string
+                        mountPath:
+                          type: string
+                        name:
+                          type: string
+                        size:
+                          default: 1Gi
+                          type: string
+                        storageClass:
+                          default: ''
+                          type: string
+                      required:
+                      - mountPath
+                      - name
+                      type: object
+                    type: array
+                type: object
+              podAnnotations:
+                additionalProperties:
+                  type: string
+                description: Additional annotations to add to the pod template.
+                nullable: true
+                type: object
+              probes:
+                nullable: true
+                properties:
+                  liveness:
+                    default:
+                      command: []
+                      failureThreshold: 3
+                      initialDelaySeconds: 30
+                      path: /
+                      periodSeconds: 10
+                      probeType: Http
+                      timeoutSeconds: 1
+                    properties:
+                      command:
+                        default: []
+                        description: Command to run for Exec probes. Ignored for Http/Tcp probe types.
+                        items:
+                          type: string
+                        type: array
+                      failureThreshold:
+                        default: 3
+                        format: int32
+                        type: integer
+                      initialDelaySeconds:
+                        default: 30
+                        format: int32
+                        type: integer
+                      path:
+                        default: ''
+                        type: string
+                      periodSeconds:
+                        default: 10
+                        format: int32
+                        type: integer
+                      probeType:
+                        default: Http
+                        enum:
+                        - Http
+                        - Tcp
+                        - Exec
+                        type: string
+                      timeoutSeconds:
+                        default: 1
+                        format: int32
+                        type: integer
+                    type: object
+                  readiness:
+                    default:
+                      command: []
+                      failureThreshold: 3
+                      initialDelaySeconds: 30
+                      path: /
+                      periodSeconds: 10
+                      probeType: Http
+                      timeoutSeconds: 1
+                    properties:
+                      command:
+                        default: []
+                        description: Command to run for Exec probes. Ignored for Http/Tcp probe types.
+                        items:
+                          type: string
+                        type: array
+                      failureThreshold:
+                        default: 3
+                        format: int32
+                        type: integer
+                      initialDelaySeconds:
+                        default: 30
+                        format: int32
+                        type: integer
+                      path:
+                        default: ''
+                        type: string
+                      periodSeconds:
+                        default: 10
+                        format: int32
+                        type: integer
+                      probeType:
+                        default: Http
+                        enum:
+                        - Http
+                        - Tcp
+                        - Exec
+                        type: string
+                      timeoutSeconds:
+                        default: 1
+                        format: int32
+                        type: integer
+                    type: object
+                type: object
+              prowlarrSync:
+                description: Prowlarr cross-app synchronization. Only applies to Prowlarr-type apps.
+                nullable: true
+                properties:
+                  autoRemove:
+                    default: true
+                    description: Whether to remove apps from Prowlarr when their CRs are deleted.
+                    type: boolean
+                  enabled:
+                    default: false
+                    description: Whether Prowlarr sync is enabled.
+                    type: boolean
+                  namespaceScope:
+                    description: Namespace to discover apps in. Defaults to the Prowlarr CR's namespace.
+                    nullable: true
+                    type: string
+                type: object
+              resources:
+                nullable: true
+                properties:
+                  limits:
+                    default:
+                      cpu: ''
+                      memory: ''
+                    properties:
+                      cpu:
+                        default: ''
+                        type: string
+                      memory:
+                        default: ''
+                        type: string
+                    type: object
+                  requests:
+                    default:
+                      cpu: ''
+                      memory: ''
+                    properties:
+                      cpu:
+                        default: ''
+                        type: string
+                      memory:
+                        default: ''
+                        type: string
+                    type: object
+                type: object
+              scheduling:
+                nullable: true
+                properties:
+                  affinity:
+                    type: object
+                  nodeSelector:
+                    additionalProperties:
+                      type: string
+                    default: {}
+                    type: object
+                  tolerations:
+                    default: []
+                    items:
+                      type: object
+                    type: array
+                type: object
+              security:
+                description: |-
+                  Security profile for the container.
+
+                  `profileType` selects the security model:
+                  - `LinuxServer` (default): s6-overlay images needing CHOWN/SETGID/SETUID.
+                    Uses `user`/`group` for PUID/PGID env vars and fsGroup.
+                  - `NonRoot`: Images that run as a non-root user natively.
+                    Uses `user`/`group` for runAsUser/runAsGroup/fsGroup.
+                  - `Custom`: Full control over security context fields.
+                    Uses all fields including capabilities, readOnlyRootFilesystem, etc.
+                nullable: true
+                properties:
+                  allowPrivilegeEscalation:
+                    description: 'Override allowPrivilegeEscalation (default: false).'
+                    nullable: true
+                    type: boolean
+                  capabilitiesAdd:
+                    default: []
+                    description: Additional Linux capabilities to add.
+                    items:
+                      type: string
+                    type: array
+                  capabilitiesDrop:
+                    default: []
+                    description: 'Linux capabilities to drop (default: ["ALL"] for LinuxServer/NonRoot).'
+                    items:
+                      type: string
+                    type: array
+                  group:
+                    default: 65534
+                    format: int64
+                    type: integer
+                  profileType:
+                    default: LinuxServer
+                    enum:
+                    - LinuxServer
+                    - NonRoot
+                    - Custom
+                    type: string
+                  readOnlyRootFilesystem:
+                    description: 'Override readOnlyRootFilesystem (default: false).'
+                    nullable: true
+                    type: boolean
+                  runAsNonRoot:
+                    description: Override runAsNonRoot. Derived from profile_type if not set.
+                    nullable: true
+                    type: boolean
+                  user:
+                    default: 65534
+                    format: int64
+                    type: integer
+                type: object
+              service:
+                nullable: true
+                properties:
+                  ports:
+                    items:
+                      properties:
+                        containerPort:
+                          format: int32
+                          nullable: true
+                          type: integer
+                        hostPort:
+                          format: int32
+                          nullable: true
+                          type: integer
+                        name:
+                          type: string
+                        port:
+                          format: int32
+                          type: integer
+                        protocol:
+                          default: TCP
+                          type: string
+                      required:
+                      - name
+                      - port
+                      type: object
+                    type: array
+                  serviceType:
+                    default: ClusterIP
+                    type: string
+                required:
+                - ports
+                type: object
+              uid:
+                format: int64
+                nullable: true
+                type: integer
+            required:
+            - app
+            type: object
+          status:
+            nullable: true
+            properties:
+              backupStatus:
+                nullable: true
+                properties:
+                  backupCount:
+                    default: 0
+                    format: uint32
+                    minimum: 0.0
+                    type: integer
+                  lastBackupResult:
+                    nullable: true
+                    type: string
+                  lastBackupTime:
+                    nullable: true
+                    type: string
+                type: object
+              conditions:
+                default: []
+                items:
+                  properties:
+                    conditionType:
+                      type: string
+                    lastTransitionTime:
+                      default: ''
+                      type: string
+                    message:
+                      default: ''
+                      type: string
+                    reason:
+                      default: ''
+                      type: string
+                    status:
+                      type: string
+                  required:
+                  - conditionType
+                  - status
+                  type: object
+                type: array
+              observedGeneration:
+                default: 0
+                format: int64
+                type: integer
+              ready:
+                default: false
+                type: boolean
+              readyReplicas:
+                default: 0
+                format: int32
+                type: integer
+            type: object
+        required:
+        - spec
+        title: ServarrApp
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
+

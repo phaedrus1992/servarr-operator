@@ -1,0 +1,20 @@
+{{- if .Values.webhook.enabled }}
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: servarr-operator-webhook
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: servarr-operator
+    app.kubernetes.io/instance: {{ .Release.Name }}
+spec:
+  secretName: servarr-operator-webhook-tls
+  dnsNames:
+    - servarr-operator-webhook.{{ .Release.Namespace }}.svc
+    - servarr-operator-webhook.{{ .Release.Namespace }}.svc.cluster.local
+  issuerRef:
+    name: {{ .Values.webhook.certIssuer | default "selfsigned-issuer" }}
+    kind: {{ .Values.webhook.certIssuerKind | default "ClusterIssuer" }}
+  duration: 8760h  # 1 year
+  renewBefore: 720h  # 30 days
+{{- end }}

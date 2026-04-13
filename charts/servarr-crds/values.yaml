@@ -1,0 +1,9 @@
+# Namespace where the operator is installed (used for webhook service reference).
+# REQUIRED when webhook.enabled=true — there is no default.
+operatorNamespace: ""
+
+webhook:
+  enabled: true
+  # cert-manager issuer configuration for webhook TLS.
+  certIssuer: selfsigned-issuer
+  certIssuerKind: ClusterIssuer

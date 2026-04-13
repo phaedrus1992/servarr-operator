@@ -1,0 +1,67 @@
+# Minimal Jellyfin — no GPU, software transcoding only
+apiVersion: servarr.dev/v1alpha1
+kind: ServarrApp
+metadata:
+  name: jellyfin
+spec:
+  app: Jellyfin
+  persistence:
+    nfsMounts:
+      - name: media
+        server: nas.local
+        path: /media
+        mountPath: /media
+        readOnly: true
+---
+# Jellyfin with Intel QuickSync (iGPU) for hardware transcoding
+apiVersion: servarr.dev/v1alpha1
+kind: ServarrApp
+metadata:
+  name: jellyfin
+spec:
+  app: Jellyfin
+  gpu:
+    intel: 1
+  persistence:
+    nfsMounts:
+      - name: media
+        server: nas.local
+        path: /media
+        mountPath: /media
+        readOnly: true
+---
+# Jellyfin with NVIDIA GPU for hardware transcoding
+# Requires the NVIDIA device plugin DaemonSet in your cluster.
+# apiVersion: servarr.dev/v1alpha1
+# kind: ServarrApp
+# metadata:
+#   name: jellyfin
+# spec:
+#   app: Jellyfin
+#   gpu:
+#     nvidia: 1
+#   persistence:
+#     nfsMounts:
+#       - name: media
+#         server: nas.local
+#         path: /media
+#         mountPath: /media
+#         readOnly: true
+---
+# Jellyfin with AMD GPU for hardware transcoding
+# Requires the AMD device plugin in your cluster.
+# apiVersion: servarr.dev/v1alpha1
+# kind: ServarrApp
+# metadata:
+#   name: jellyfin
+# spec:
+#   app: Jellyfin
+#   gpu:
+#     amd: 1
+#   persistence:
+#     nfsMounts:
+#       - name: media
+#         server: nas.local
+#         path: /media
+#         mountPath: /media
+#         readOnly: true

@@ -1,0 +1,36 @@
+{{- if .Values.webhook.enabled }}
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: {{ .Release.Name }}-validating
+  labels:
+    app.kubernetes.io/name: servarr-operator
+    app.kubernetes.io/instance: {{ .Release.Name }}
+  annotations:
+    # cert-manager injects the CA bundle from the issued certificate into
+    # the caBundle field of each webhook rule automatically.
+    cert-manager.io/inject-ca-from: {{ .Release.Namespace }}/servarr-operator-webhook
+webhooks:
+  - name: validate.servarrapp.servarr.dev
+    admissionReviewVersions: ["v1"]
+    sideEffects: None
+    failurePolicy: Fail
+    matchPolicy: Equivalent
+    rules:
+      - apiGroups: ["servarr.dev"]
+        apiVersions: ["v1alpha1"]
+        resources: ["servarrapps"]
+        operations: ["CREATE", "UPDATE"]
+        scope: Namespaced
+    clientConfig:
+      service:
+        name: servarr-operator-webhook
+        namespace: {{ .Release.Namespace }}
+        path: /validate-servarrapp
+        port: 443
+    namespaceSelector:
+      matchExpressions:
+        - key: kubernetes.io/metadata.name
+          operator: NotIn
+          values: ["kube-system"]
+{{- end }}

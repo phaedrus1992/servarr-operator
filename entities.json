@@ -1,0 +1,56 @@
+{
+  "people": [],
+  "projects": [
+    "servarr-operator",
+    "servarr-crds",
+    "servarr-api",
+    "servarr-resources",
+    "MediaStack",
+    "ServarrApp"
+  ],
+  "concepts": [
+    "Kubernetes Operator",
+    "Custom Resource Definition",
+    "tiered rollout",
+    "NFS server",
+    "split4k",
+    "Prowlarr sync",
+    "Overseerr sync",
+    "admin credentials",
+    "API health check",
+    "backup",
+    "NetworkPolicy",
+    "Gateway API",
+    "cert-manager",
+    "SecurityProfile",
+    "LinuxServer",
+    "kube-rs",
+    "reflector store"
+  ],
+  "app_types": [
+    "Sonarr",
+    "Radarr",
+    "Lidarr",
+    "Prowlarr",
+    "Sabnzbd",
+    "Transmission",
+    "Tautulli",
+    "Overseerr",
+    "Maintainerr",
+    "Jackett",
+    "Jellyfin",
+    "Plex",
+    "SshBastion"
+  ],
+  "kubernetes_resources": [
+    "Deployment",
+    "Service",
+    "ConfigMap",
+    "Secret",
+    "PersistentVolumeClaim",
+    "NetworkPolicy",
+    "HTTPRoute",
+    "TCPRoute",
+    "Certificate"
+  ]
+}

@@ -1,0 +1,129 @@
+name: CI
+
+on:
+  push:
+    branches: ['**']
+    paths-ignore:
+      - "docs/**"
+      - "**.md"
+      - "LICENSE"
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # ── Stage 1: Fast lint ─────────────────────────────────────────────────
+  fmt:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Check formatting
+        run: cargo fmt --all --check
+
+  actionlint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Run actionlint
+        uses: reviewdog/action-actionlint@0d952c597ef8459f634d7145b0b044a9699e5e43 # v1.71.0
+
+  zizmor:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Run zizmor
+        uses: zizmorcore/zizmor-action@0dce2577a4760a2749d8cfb7a84b7d5585ebcb7d # v0.5.0
+        with:
+          advanced-security: false
+
+  helm-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Set up Helm
+        uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
+
+      - name: Lint charts
+        run: |
+          helm lint charts/servarr-crds/ --set operatorNamespace=servarr
+          helm lint charts/servarr-operator/
+          helm dependency build charts/servarr-operator/
+          helm template test charts/servarr-crds/ --set operatorNamespace=servarr > /dev/null
+          helm template test charts/servarr-crds/ --set webhook.enabled=false > /dev/null
+          helm template test charts/servarr-operator/ > /dev/null
+          helm template test charts/servarr-operator/ --set watchAllNamespaces=true > /dev/null
+
+  # ── Stage 2: Analysis + Tests ──────────────────────────────────────────
+  clippy:
+    needs: [fmt, actionlint, zizmor]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2.8.2
+
+      - name: Run clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+  test:
+    needs: [fmt, actionlint, zizmor]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2.8.2
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@1cf3de8de323df92fe08c793e53eaef58799aec4 # v2.68.3
+        with:
+          tool: cargo-llvm-cov
+
+      - name: Run tests with coverage
+        run: |
+          threshold=$(cat .coverage-threshold)
+          cargo llvm-cov --workspace --fail-under-lines "$threshold" --summary-only 2>&1 | tee /tmp/coverage-summary.txt
+
+      - name: Post coverage summary
+        if: always()
+        run: |
+          {
+            echo "### Code Coverage"
+            echo ""
+            echo '```'
+            tail -5 /tmp/coverage-summary.txt
+            echo '```'
+            echo ""
+            echo "Threshold: $(cat .coverage-threshold)% lines"
+          } >> "$GITHUB_STEP_SUMMARY"

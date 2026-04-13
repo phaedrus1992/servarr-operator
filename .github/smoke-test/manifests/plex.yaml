@@ -1,0 +1,6 @@
+apiVersion: servarr.dev/v1alpha1
+kind: ServarrApp
+metadata:
+  name: plex
+spec:
+  app: Plex

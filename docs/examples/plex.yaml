@@ -1,0 +1,49 @@
+# Minimal Plex — no GPU, software transcoding only
+apiVersion: servarr.dev/v1alpha1
+kind: ServarrApp
+metadata:
+  name: plex
+spec:
+  app: Plex
+  persistence:
+    nfsMounts:
+      - name: media
+        server: nas.local
+        path: /media
+        mountPath: /media
+        readOnly: true
+---
+# Plex with Intel QuickSync (iGPU) for hardware transcoding
+apiVersion: servarr.dev/v1alpha1
+kind: ServarrApp
+metadata:
+  name: plex
+spec:
+  app: Plex
+  gpu:
+    intel: 1
+  persistence:
+    nfsMounts:
+      - name: media
+        server: nas.local
+        path: /media
+        mountPath: /media
+        readOnly: true
+---
+# Plex with NVIDIA GPU for hardware transcoding
+# Requires the NVIDIA device plugin DaemonSet in your cluster.
+# apiVersion: servarr.dev/v1alpha1
+# kind: ServarrApp
+# metadata:
+#   name: plex
+# spec:
+#   app: Plex
+#   gpu:
+#     nvidia: 1
+#   persistence:
+#     nfsMounts:
+#       - name: media
+#         server: nas.local
+#         path: /media
+#         mountPath: /media
+#         readOnly: true

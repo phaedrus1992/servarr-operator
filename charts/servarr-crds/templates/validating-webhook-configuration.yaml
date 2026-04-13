@@ -1,0 +1,38 @@
+{{- if .Values.webhook.enabled }}
+{{- if not .Values.operatorNamespace }}
+{{- fail "webhook.enabled=true requires operatorNamespace to be set (the namespace where the operator is installed)" }}
+{{- end }}
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: servarr-operator-validating
+  labels:
+    app.kubernetes.io/name: servarr-crds
+    app.kubernetes.io/instance: {{ .Release.Name }}
+  annotations:
+    cert-manager.io/inject-ca-from: {{ .Values.operatorNamespace }}/servarr-operator-webhook
+webhooks:
+  - name: validate.servarrapp.servarr.dev
+    admissionReviewVersions:
+      - v1
+    clientConfig:
+      service:
+        name: servarr-operator-webhook
+        namespace: {{ .Values.operatorNamespace }}
+        path: /validate-servarrapp
+    rules:
+      - apiGroups:
+          - servarr.dev
+        apiVersions:
+          - v1alpha1
+        operations:
+          - CREATE
+          - UPDATE
+        resources:
+          - servarrapps
+    failurePolicy: Fail
+    sideEffects: None
+  # NOTE: MediaStack validation is not yet implemented in the operator webhook
+  # server. When added, a second webhook entry should be added here for
+  # mediastacks resources.
+{{- end }}

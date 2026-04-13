@@ -1,0 +1,7 @@
+# Tautulli — Plex monitoring dashboard
+apiVersion: servarr.dev/v1alpha1
+kind: ServarrApp
+metadata:
+  name: tautulli
+spec:
+  app: Tautulli

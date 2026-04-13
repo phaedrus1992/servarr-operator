@@ -1,0 +1,9 @@
+/target/
+/local/
+/.worktrees/
+.*.sw[op]
+.env
+# Helm dependency tarballs are downloaded at install time via `helm dependency build`
+charts/*/charts/*.tgz
+.semgrep-results/
+__pycache__/
