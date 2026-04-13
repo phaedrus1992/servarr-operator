@@ -40,7 +40,7 @@ impl AppDefaults {
             other => {
                 return Err(format!(
                     "unknown security profile in image-defaults.toml: {other}"
-                ))
+                ));
             }
         };
         if img.probe_type == "tcp" {

@@ -921,11 +921,7 @@ async fn sync_admin_credentials(client: &Client, app: &ServarrApp, ns: &str) -> 
                 None => String::new(),
             };
             let app_kind = app_type_to_kind(&app.spec.app)?;
-            match servarr_api::ServarrClient::new(
-                &base_url,
-                &api_key,
-                app_kind,
-            ) {
+            match servarr_api::ServarrClient::new(&base_url, &api_key, app_kind) {
                 Ok(c) => match c.configure_admin(&username, &password).await {
                     Ok(()) => Ok(()),
                     Err(servarr_api::ApiError::ApiResponse { status: 401, .. }) => {
@@ -1052,28 +1048,33 @@ pub(crate) async fn check_api_health(
         },
         AppType::Transmission => {
             // Pass credentials to the health check client when adminCredentials is set.
-            let (tx_user, tx_pass): (Option<String>, Option<String>) =
-                if let Some(ref ac) = app.spec.admin_credentials {
-                    let u = match servarr_api::read_secret_key(client, ns, &ac.secret_name, "username").await {
-                        Ok(v) => Some(v),
-                        Err(e) => {
-                            warn!(app = %app.name_any(), error = %e,
+            let (tx_user, tx_pass): (Option<String>, Option<String>) = if let Some(ref ac) =
+                app.spec.admin_credentials
+            {
+                let u = match servarr_api::read_secret_key(client, ns, &ac.secret_name, "username")
+                    .await
+                {
+                    Ok(v) => Some(v),
+                    Err(e) => {
+                        warn!(app = %app.name_any(), error = %e,
                                 "health-check: failed to read Transmission username, proceeding unauthenticated");
-                            None
-                        }
-                    };
-                    let p = match servarr_api::read_secret_key(client, ns, &ac.secret_name, "password").await {
-                        Ok(v) => Some(v),
-                        Err(e) => {
-                            warn!(app = %app.name_any(), error = %e,
-                                "health-check: failed to read Transmission password, proceeding unauthenticated");
-                            None
-                        }
-                    };
-                    (u, p)
-                } else {
-                    (None, None)
+                        None
+                    }
                 };
+                let p = match servarr_api::read_secret_key(client, ns, &ac.secret_name, "password")
+                    .await
+                {
+                    Ok(v) => Some(v),
+                    Err(e) => {
+                        warn!(app = %app.name_any(), error = %e,
+                                "health-check: failed to read Transmission password, proceeding unauthenticated");
+                        None
+                    }
+                };
+                (u, p)
+            } else {
+                (None, None)
+            };
             match servarr_api::TransmissionClient::new(
                 &base_url,
                 tx_user.as_deref(),
@@ -1578,7 +1579,10 @@ async fn maybe_restore_backup(
                 Err(e) => {
                     warn!(%name, error = %e, "failed to read API key for restore");
                     let scale_up = serde_json::json!({ "spec": { "replicas": 1 } });
-                    if let Err(se) = deploy_api.patch(name, &PatchParams::default(), &Patch::Merge(scale_up)).await {
+                    if let Err(se) = deploy_api
+                        .patch(name, &PatchParams::default(), &Patch::Merge(scale_up))
+                        .await
+                    {
                         warn!(%name, error = %se, "failed to scale back up after restore error; deployment may be at zero replicas");
                     }
                     return;
@@ -1588,7 +1592,10 @@ async fn maybe_restore_backup(
         None => {
             warn!(%name, "no api_key_secret configured, cannot restore");
             let scale_up = serde_json::json!({ "spec": { "replicas": 1 } });
-            if let Err(e) = deploy_api.patch(name, &PatchParams::default(), &Patch::Merge(scale_up)).await {
+            if let Err(e) = deploy_api
+                .patch(name, &PatchParams::default(), &Patch::Merge(scale_up))
+                .await
+            {
                 warn!(%name, error = %e, "failed to scale back up; deployment may be at zero replicas");
             }
             return;
@@ -1606,18 +1613,20 @@ async fn maybe_restore_backup(
         warn!(%name, app_type = ?app.spec.app, "restore: app type has no AppKind mapping");
         return;
     };
-    let restore_result =
-        match servarr_api::ServarrClient::new(&base_url, &api_key, app_kind) {
-            Ok(c) => c.restore_backup(backup_id).await,
-            Err(e) => {
-                warn!(%name, error = %e, "failed to create API client for restore");
-                let scale_up = serde_json::json!({ "spec": { "replicas": 1 } });
-                if let Err(se) = deploy_api.patch(name, &PatchParams::default(), &Patch::Merge(scale_up)).await {
-                    warn!(%name, error = %se, "failed to scale back up after client error; deployment may be at zero replicas");
-                }
-                return;
+    let restore_result = match servarr_api::ServarrClient::new(&base_url, &api_key, app_kind) {
+        Ok(c) => c.restore_backup(backup_id).await,
+        Err(e) => {
+            warn!(%name, error = %e, "failed to create API client for restore");
+            let scale_up = serde_json::json!({ "spec": { "replicas": 1 } });
+            if let Err(se) = deploy_api
+                .patch(name, &PatchParams::default(), &Patch::Merge(scale_up))
+                .await
+            {
+                warn!(%name, error = %se, "failed to scale back up after client error; deployment may be at zero replicas");
             }
-        };
+            return;
+        }
+    };
 
     match restore_result {
         Ok(()) => {
@@ -2792,22 +2801,34 @@ mod tests {
 
     #[test]
     fn app_type_to_kind_sonarr() {
-        assert!(matches!(app_type_to_kind(&AppType::Sonarr), Some(AppKind::Sonarr)));
+        assert!(matches!(
+            app_type_to_kind(&AppType::Sonarr),
+            Some(AppKind::Sonarr)
+        ));
     }
 
     #[test]
     fn app_type_to_kind_radarr() {
-        assert!(matches!(app_type_to_kind(&AppType::Radarr), Some(AppKind::Radarr)));
+        assert!(matches!(
+            app_type_to_kind(&AppType::Radarr),
+            Some(AppKind::Radarr)
+        ));
     }
 
     #[test]
     fn app_type_to_kind_lidarr() {
-        assert!(matches!(app_type_to_kind(&AppType::Lidarr), Some(AppKind::Lidarr)));
+        assert!(matches!(
+            app_type_to_kind(&AppType::Lidarr),
+            Some(AppKind::Lidarr)
+        ));
     }
 
     #[test]
     fn app_type_to_kind_prowlarr() {
-        assert!(matches!(app_type_to_kind(&AppType::Prowlarr), Some(AppKind::Prowlarr)));
+        assert!(matches!(
+            app_type_to_kind(&AppType::Prowlarr),
+            Some(AppKind::Prowlarr)
+        ));
     }
 
     #[test]
