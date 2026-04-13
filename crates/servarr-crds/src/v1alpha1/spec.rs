@@ -105,11 +105,11 @@ pub struct ServarrAppSpec {
     pub overseerr_sync: Option<OverseerrSyncSpec>,
 
     /// Bazarr cross-app synchronization. Only applies to Bazarr-type apps.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub bazarr_sync: Option<BazarrSyncSpec>,
 
     /// Subgen cross-app synchronization. Only applies to Subgen-type apps.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub subgen_sync: Option<SubgenSyncSpec>,
 
     /// Admin credentials for this app. References a user-created Kubernetes Secret

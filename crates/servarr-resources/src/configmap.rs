@@ -500,7 +500,7 @@ pub fn build_bazarr_init(app: &ServarrApp) -> Option<ConfigMap> {
     // Auth is configured post-boot via sync_admin_credentials; the auth fields default
     // to noauth so Bazarr starts accessible until credentials are applied.
     let script = r#"#!/bin/sh
-set -euo pipefail
+set -eu
 CONFIG=/config/config/config.yaml
 if [ -f "$CONFIG" ]; then
   echo "bazarr-init: config already exists, skipping"

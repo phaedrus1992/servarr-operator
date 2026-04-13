@@ -37,28 +37,6 @@ impl BazarrClient {
         })
     }
 
-    /// Ping the Bazarr health endpoint.
-    ///
-    /// # Errors
-    ///
-    /// Returns `ApiError` if the request fails or the server returns a non-2xx status.
-    pub async fn ping(&self) -> Result<(), ApiError> {
-        let url = format!("{}/api/system/ping", self.base_url);
-        let resp = self
-            .http
-            .get(&url)
-            .header("X-API-KEY", &self.api_key)
-            .send()
-            .await?;
-        let status = resp.status().as_u16();
-        if resp.status().is_success() {
-            Ok(())
-        } else {
-            let body = resp.text().await.unwrap_or_default();
-            Err(ApiError::ApiResponse { status, body })
-        }
-    }
-
     /// POST form data to `/api/system/settings`.
     ///
     /// Bazarr settings are form-encoded, not JSON. The caller assembles the form fields.
