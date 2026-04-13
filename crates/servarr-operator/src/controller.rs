@@ -24,13 +24,13 @@ use crate::metrics::{
     observe_reconcile_duration, set_managed_apps,
 };
 
-fn app_type_to_kind(app_type: &AppType) -> AppKind {
+fn app_type_to_kind(app_type: &AppType) -> Option<AppKind> {
     match app_type {
-        AppType::Sonarr => AppKind::Sonarr,
-        AppType::Radarr => AppKind::Radarr,
-        AppType::Lidarr => AppKind::Lidarr,
-        AppType::Prowlarr => AppKind::Prowlarr,
-        other => panic!("AppKind not supported for {other:?}"),
+        AppType::Sonarr => Some(AppKind::Sonarr),
+        AppType::Radarr => Some(AppKind::Radarr),
+        AppType::Lidarr => Some(AppKind::Lidarr),
+        AppType::Prowlarr => Some(AppKind::Prowlarr),
+        _ => None,
     }
 }
 
@@ -52,6 +52,11 @@ pub fn print_crd() -> Result<()> {
 }
 
 pub async fn run(client: kube::Client, server_state: crate::server::ServerState) -> Result<()> {
+    // Validate that every AppType has a complete entry in image-defaults.toml.
+    // Fail fast at startup rather than panicking inside the reconcile hot path.
+    servarr_crds::AppDefaults::validate_all()
+        .map_err(|e| anyhow::anyhow!("image-defaults.toml validation failed: {e}"))?;
+
     let ctx = Arc::new(Context::new(client.clone()));
 
     let (apps, deployments, services, config_maps, secrets) =
@@ -903,10 +908,13 @@ async fn sync_admin_credentials(client: &Client, app: &ServarrApp, ns: &str) -> 
                 },
                 None => String::new(),
             };
+            let Some(app_kind) = app_type_to_kind(&app.spec.app) else {
+                return None;
+            };
             match servarr_api::ServarrClient::new(
                 &base_url,
                 &api_key,
-                app_type_to_kind(&app.spec.app),
+                app_kind,
             ) {
                 Ok(c) => match c.configure_admin(&username, &password).await {
                     Ok(()) => Ok(()),
@@ -1013,11 +1021,10 @@ pub(crate) async fn check_api_health(
     use servarr_api::HealthCheck;
     let (healthy, update_cond): (Result<bool, String>, Option<Condition>) = match app.spec.app {
         AppType::Sonarr | AppType::Radarr | AppType::Lidarr | AppType::Prowlarr => {
-            match servarr_api::ServarrClient::new(
-                &base_url,
-                &api_key,
-                app_type_to_kind(&app.spec.app),
-            ) {
+            let Some(app_kind) = app_type_to_kind(&app.spec.app) else {
+                return (None, None);
+            };
+            match servarr_api::ServarrClient::new(&base_url, &api_key, app_kind) {
                 Ok(c) => {
                     let h = c.is_healthy().await.map_err(|e| e.to_string());
                     let uc = check_update_available(&c, &now).await;
@@ -1364,17 +1371,18 @@ async fn maybe_run_backup(
     let port = svc_spec.ports.first().map(|p| p.port).unwrap_or(80);
     let base_url = format!("http://{app_name}.{ns}.svc:{port}");
 
-    let api_client =
-        match servarr_api::ServarrClient::new(&base_url, &api_key, app_type_to_kind(&app.spec.app))
-        {
-            Ok(c) => c,
-            Err(e) => {
-                return Some(servarr_crds::BackupStatus {
-                    last_backup_result: Some(format!("client error: {e}")),
-                    ..Default::default()
-                });
-            }
-        };
+    let Some(app_kind) = app_type_to_kind(&app.spec.app) else {
+        return None;
+    };
+    let api_client = match servarr_api::ServarrClient::new(&base_url, &api_key, app_kind) {
+        Ok(c) => c,
+        Err(e) => {
+            return Some(servarr_crds::BackupStatus {
+                last_backup_result: Some(format!("client error: {e}")),
+                ..Default::default()
+            });
+        }
+    };
 
     let app_type = app.spec.app.as_str();
     let _ = recorder
@@ -1571,9 +1579,12 @@ async fn maybe_restore_backup(
     let base_url = format!("http://{app_name}.{ns}.svc:{port}");
 
     // Only Servarr v3 apps (Sonarr/Radarr/Lidarr/Prowlarr) support backup/restore
+    let Some(app_kind) = app_type_to_kind(&app.spec.app) else {
+        warn!(%name, app_type = ?app.spec.app, "restore: app type has no AppKind mapping");
+        return;
+    };
     let restore_result =
-        match servarr_api::ServarrClient::new(&base_url, &api_key, app_type_to_kind(&app.spec.app))
-        {
+        match servarr_api::ServarrClient::new(&base_url, &api_key, app_kind) {
             Ok(c) => c.restore_backup(backup_id).await,
             Err(e) => {
                 warn!(%name, error = %e, "failed to create API client for restore");
@@ -2308,7 +2319,7 @@ async fn sync_subgen_jellyfin(
         }
     };
 
-    // Read Jellyfin's API key from the configured secret
+    // Verify Jellyfin's API key secret is accessible (fail fast before patching Deployment).
     let jf_secret_name = match jellyfin.spec.api_key_secret.as_deref() {
         Some(s) => s.to_string(),
         None => {
@@ -2317,15 +2328,10 @@ async fn sync_subgen_jellyfin(
             return Ok(());
         }
     };
-    let jf_key =
-        match servarr_api::read_secret_key(client, target_ns, &jf_secret_name, "api-key").await {
-            Ok(k) => k,
-            Err(e) => {
-                warn!(subgen = %subgen_name, error = %e,
-                "subgen-sync: failed to read Jellyfin API key, skipping");
-                return Ok(());
-            }
-        };
+    // Verify the secret is readable; the Deployment will reference it via secretKeyRef.
+    servarr_api::read_secret_key(client, target_ns, &jf_secret_name, "api-key")
+        .await
+        .map_err(|e| anyhow::anyhow!("Jellyfin API key secret {jf_secret_name} unreadable: {e}"))?;
 
     let jf_app_name = servarr_resources::common::app_name(jellyfin);
     let jf_defaults = servarr_crds::AppDefaults::for_app(&jellyfin.spec.app);
@@ -2337,9 +2343,10 @@ async fn sync_subgen_jellyfin(
     let jf_port = jf_svc_spec.ports.first().map(|p| p.port).unwrap_or(8096);
     let jf_url = format!("http://{jf_app_name}.{target_ns}.svc:{jf_port}");
 
-    // Patch the env vars onto the Subgen Deployment via SSA
+    // Patch the env vars onto the Subgen Deployment via SSA.
+    // JELLYFIN_TOKEN uses secretKeyRef so the token is never stored plaintext in the Deployment.
     let deploy_api = Api::<Deployment>::namespaced(client.clone(), &ns);
-    let pp = PatchParams::apply("servarr-operator/subgen-jellyfin").force();
+    let pp = PatchParams::apply(FIELD_MANAGER).force();
     let patch = serde_json::json!({
         "apiVersion": "apps/v1",
         "kind": "Deployment",
@@ -2351,7 +2358,15 @@ async fn sync_subgen_jellyfin(
                         "name": subgen.spec.app.as_str(),
                         "env": [
                             { "name": "JELLYFIN_SERVER", "value": jf_url },
-                            { "name": "JELLYFIN_TOKEN", "value": jf_key },
+                            {
+                                "name": "JELLYFIN_TOKEN",
+                                "valueFrom": {
+                                    "secretKeyRef": {
+                                        "name": &jf_secret_name,
+                                        "key": "api-key"
+                                    }
+                                }
+                            },
                         ]
                     }]
                 }
@@ -2752,40 +2767,27 @@ mod tests {
 
     #[test]
     fn app_type_to_kind_sonarr() {
-        assert!(matches!(
-            app_type_to_kind(&AppType::Sonarr),
-            AppKind::Sonarr
-        ));
+        assert!(matches!(app_type_to_kind(&AppType::Sonarr), Some(AppKind::Sonarr)));
     }
 
     #[test]
     fn app_type_to_kind_radarr() {
-        assert!(matches!(
-            app_type_to_kind(&AppType::Radarr),
-            AppKind::Radarr
-        ));
+        assert!(matches!(app_type_to_kind(&AppType::Radarr), Some(AppKind::Radarr)));
     }
 
     #[test]
     fn app_type_to_kind_lidarr() {
-        assert!(matches!(
-            app_type_to_kind(&AppType::Lidarr),
-            AppKind::Lidarr
-        ));
+        assert!(matches!(app_type_to_kind(&AppType::Lidarr), Some(AppKind::Lidarr)));
     }
 
     #[test]
     fn app_type_to_kind_prowlarr() {
-        assert!(matches!(
-            app_type_to_kind(&AppType::Prowlarr),
-            AppKind::Prowlarr
-        ));
+        assert!(matches!(app_type_to_kind(&AppType::Prowlarr), Some(AppKind::Prowlarr)));
     }
 
     #[test]
-    #[should_panic(expected = "AppKind not supported")]
-    fn app_type_to_kind_unsupported_panics() {
-        app_type_to_kind(&AppType::Sabnzbd);
+    fn app_type_to_kind_unsupported_returns_none() {
+        assert!(app_type_to_kind(&AppType::Sabnzbd).is_none());
     }
 
     // ---- chrono_now ----

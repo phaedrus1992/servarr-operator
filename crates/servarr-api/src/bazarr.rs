@@ -1,5 +1,7 @@
 //! Bazarr API client for subtitle manager configuration.
 
+use std::time::Duration;
+
 use reqwest::Client;
 
 use crate::ApiError;
@@ -18,14 +20,20 @@ impl BazarrClient {
     /// # Errors
     ///
     /// Returns `ApiError::InvalidApiKey` if `api_key` contains non-visible-ASCII characters.
+    /// Returns `ApiError::Request` if the underlying HTTP client cannot be built.
     pub fn new(base_url: &str, api_key: &str) -> Result<Self, ApiError> {
         if api_key.bytes().any(|b| !(0x21..=0x7e).contains(&b)) {
             return Err(ApiError::InvalidApiKey);
         }
+        // 30s request timeout and 10s connect timeout to match other API clients.
+        let http = Client::builder()
+            .timeout(Duration::from_secs(30))
+            .connect_timeout(Duration::from_secs(10))
+            .build()?;
         Ok(Self {
             base_url: base_url.trim_end_matches('/').to_string(),
             api_key: api_key.to_string(),
-            http: Client::new(),
+            http,
         })
     }
 

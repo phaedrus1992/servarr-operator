@@ -455,6 +455,7 @@ echo "[transmission-auth] Admin credentials set successfully."
 }
 
 fn default_transmission_settings() -> String {
+    #[expect(clippy::unwrap_used, reason = "serde_json::json! literal is always serializable")]
     serde_json::to_string_pretty(&serde_json::json!({
         "download-dir": "/downloads/complete",
         "incomplete-dir": "/downloads/incomplete",
