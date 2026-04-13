@@ -125,6 +125,8 @@ fn test_crd_serde_roundtrip_all_fields() {
         gpu: None,
         prowlarr_sync: None,
         overseerr_sync: None,
+        bazarr_sync: None,
+        subgen_sync: None,
         admin_credentials: None,
     };
 

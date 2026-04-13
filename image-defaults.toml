@@ -84,6 +84,22 @@ security = "linuxserver"
 downloads = false
 probe_path = "/health"
 
+[bazarr]
+repository = "linuxserver/bazarr"
+tag = "1.5.6"
+port = 6767
+security = "linuxserver"
+downloads = false
+probe_path = "/api/system/ping"
+
+[subgen]
+repository = "mccloud/subgen"
+tag = "2026.04.3"
+port = 9000
+security = "nonroot"
+downloads = false
+probe_path = "/status"
+
 [jellyfin]
 repository = "linuxserver/jellyfin"
 tag = "10.10.7"

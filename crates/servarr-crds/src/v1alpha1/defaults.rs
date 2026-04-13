@@ -43,6 +43,23 @@ impl AppDefaults {
                 Some(AppConfig::Transmission(super::TransmissionConfig::default()));
         }
 
+        if matches!(app, super::AppType::Subgen) {
+            defaults
+                .persistence
+                .volumes
+                .push(pvc("models", "/subgen/models", "10Gi"));
+            defaults.env.extend([
+                EnvVar {
+                    name: "TRANSCRIBE_DEVICE".into(),
+                    value: "cpu".into(),
+                },
+                EnvVar {
+                    name: "WHISPER_MODEL".into(),
+                    value: "medium".into(),
+                },
+            ]);
+        }
+
         defaults
     }
 

@@ -515,6 +515,28 @@ fn build_volumes(app: &ServarrApp, persistence: &PersistenceSpec) -> Vec<Volume>
         }
     }
 
+    // Bazarr init scripts ConfigMap and api-key Secret volumes
+    if matches!(app.spec.app, AppType::Bazarr) {
+        use k8s_openapi::api::core::v1::SecretVolumeSource;
+        volumes.push(Volume {
+            name: "bazarr-init-scripts".into(),
+            config_map: Some(ConfigMapVolumeSource {
+                name: common::child_name(app, "init"),
+                default_mode: Some(0o755),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        volumes.push(Volume {
+            name: "bazarr-api-key".into(),
+            secret: Some(SecretVolumeSource {
+                secret_name: Some(common::child_name(app, "api-key")),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+    }
+
     // SABnzbd tar-unpack scripts ConfigMap
     if let Some(AppConfig::Sabnzbd(ref sc)) = app.spec.app_config
         && sc.tar_unpack
@@ -1075,6 +1097,54 @@ fn build_init_containers(
             command: Some(vec!["/bin/sh".into(), "/scripts/apply-settings.sh".into()]),
             security_context: Some(init_sec),
             volume_mounts: Some(apply_settings_mounts),
+            ..Default::default()
+        });
+    }
+
+    // Bazarr configure init container
+    if matches!(app.spec.app, AppType::Bazarr) {
+        let init_sec = SecurityContext {
+            run_as_user: Some(uid),
+            run_as_group: Some(gid),
+            ..security_context.clone()
+        };
+        let bazarr_init_mounts = vec![
+            VolumeMount {
+                name: "config".into(),
+                mount_path: "/config".into(),
+                ..Default::default()
+            },
+            VolumeMount {
+                name: "bazarr-init-scripts".into(),
+                mount_path: "/scripts".into(),
+                read_only: Some(true),
+                ..Default::default()
+            },
+            VolumeMount {
+                name: "bazarr-api-key".into(),
+                mount_path: "/run/secrets/api-key".into(),
+                read_only: Some(true),
+                ..Default::default()
+            },
+        ];
+        init.push(Container {
+            name: "bazarr-init".into(),
+            image: Some(image.to_string()),
+            command: Some(vec!["/bin/sh".into(), "/scripts/bazarr-init.sh".into()]),
+            env: Some(vec![EnvVar {
+                name: "BAZARR_API_KEY".into(),
+                value_from: Some(EnvVarSource {
+                    secret_key_ref: Some(SecretKeySelector {
+                        name: common::child_name(app, "api-key"),
+                        key: "api-key".into(),
+                        optional: Some(false),
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }]),
+            security_context: Some(init_sec),
+            volume_mounts: Some(bazarr_init_mounts),
             ..Default::default()
         });
     }

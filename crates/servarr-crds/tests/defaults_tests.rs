@@ -241,3 +241,93 @@ fn overseerr_sync_spec_default_values() {
     assert!(spec.namespace_scope.is_none());
     assert!(spec.auto_remove);
 }
+
+// ---------------------------------------------------------------------------
+// Bazarr and Subgen tier and display
+// ---------------------------------------------------------------------------
+
+#[test]
+fn bazarr_has_correct_tier() {
+    assert_eq!(AppType::Bazarr.tier(), 3);
+}
+
+#[test]
+fn subgen_has_correct_tier() {
+    assert_eq!(AppType::Subgen.tier(), 0);
+}
+
+#[test]
+fn bazarr_as_str() {
+    assert_eq!(AppType::Bazarr.as_str(), "bazarr");
+}
+
+#[test]
+fn subgen_as_str() {
+    assert_eq!(AppType::Subgen.as_str(), "subgen");
+}
+
+// ---------------------------------------------------------------------------
+// BazarrSyncSpec and SubgenSyncSpec defaults
+// ---------------------------------------------------------------------------
+
+#[test]
+fn bazarr_sync_spec_default_values() {
+    let spec = BazarrSyncSpec::default();
+    assert!(!spec.enabled);
+    assert!(spec.namespace_scope.is_none());
+    assert!(spec.auto_remove);
+}
+
+#[test]
+fn subgen_sync_spec_default_values() {
+    let spec = SubgenSyncSpec::default();
+    assert!(!spec.enabled);
+    assert!(spec.namespace_scope.is_none());
+}
+
+// ---------------------------------------------------------------------------
+// Subgen AppDefaults
+// ---------------------------------------------------------------------------
+
+#[test]
+fn subgen_has_models_pvc() {
+    let defaults = AppDefaults::for_app(&AppType::Subgen);
+    let has_models = defaults
+        .persistence
+        .volumes
+        .iter()
+        .any(|v| v.name == "models" && v.mount_path == "/subgen/models");
+    assert!(
+        has_models,
+        "Subgen should have a 'models' PVC at /subgen/models"
+    );
+}
+
+#[test]
+fn subgen_default_env_includes_transcribe_device() {
+    let defaults = AppDefaults::for_app(&AppType::Subgen);
+    let has_device = defaults
+        .env
+        .iter()
+        .any(|e| e.name == "TRANSCRIBE_DEVICE" && e.value == "cpu");
+    assert!(has_device, "Subgen should default TRANSCRIBE_DEVICE=cpu");
+}
+
+#[test]
+fn subgen_default_env_includes_whisper_model() {
+    let defaults = AppDefaults::for_app(&AppType::Subgen);
+    let has_model = defaults
+        .env
+        .iter()
+        .any(|e| e.name == "WHISPER_MODEL" && e.value == "medium");
+    assert!(has_model, "Subgen should default WHISPER_MODEL=medium");
+}
+
+#[test]
+fn bazarr_defaults_are_linuxserver_profile() {
+    let defaults = AppDefaults::for_app(&AppType::Bazarr);
+    // Bazarr uses linuxserver security profile — verify it builds without panicking
+    // (build.rs codegen would have panicked at compile time if image-defaults.toml was
+    // wrong)
+    assert!(!defaults.persistence.volumes.is_empty());
+}

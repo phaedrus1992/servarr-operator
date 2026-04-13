@@ -144,6 +144,10 @@ pub struct StackApp {
     #[serde(default)]
     pub overseerr_sync: Option<OverseerrSyncSpec>,
     #[serde(default)]
+    pub bazarr_sync: Option<BazarrSyncSpec>,
+    #[serde(default)]
+    pub subgen_sync: Option<SubgenSyncSpec>,
+    #[serde(default)]
     pub admin_credentials: Option<AdminCredentialsSpec>,
 
     /// When true, creates both a standard and a 4K instance of this app.
@@ -310,6 +314,8 @@ impl StackApp {
             gpu: self.gpu.clone(),
             prowlarr_sync: self.prowlarr_sync.clone(),
             overseerr_sync: self.overseerr_sync.clone(),
+            bazarr_sync: self.bazarr_sync.clone(),
+            subgen_sync: self.subgen_sync.clone(),
             admin_credentials: self.admin_credentials.clone().or(d.admin_credentials),
         }
     }

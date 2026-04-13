@@ -101,6 +101,18 @@ defaultImages:
   jackett:
     repository: linuxserver/jackett
     tag: "0.24.988"
+  bazarr:
+    repository: linuxserver/bazarr
+    tag: "1.5.6"
+  subgen:
+    repository: mccloud/subgen
+    tag: "2026.04.3"
   jellyfin:
     repository: linuxserver/jellyfin
     tag: "10.10.7"
+  plex:
+    repository: linuxserver/plex
+    tag: "1.41.4"
+  ssh-bastion:
+    repository: quay.io/panubo/sshd
+    tag: "1.10.0"
