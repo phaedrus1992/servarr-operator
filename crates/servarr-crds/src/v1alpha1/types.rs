@@ -508,6 +508,51 @@ impl Default for OverseerrSyncSpec {
     }
 }
 
+/// Sync spec for Bazarr → Sonarr/Radarr integration.
+///
+/// When enabled on a Bazarr-type ServarrApp, the operator discovers
+/// Sonarr/Radarr instances in the target namespace and registers them
+/// in Bazarr for subtitle management.
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct BazarrSyncSpec {
+    /// Enable Bazarr cross-app sync.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Namespace to discover companion apps in. Defaults to Bazarr's own namespace.
+    #[serde(default)]
+    pub namespace_scope: Option<String>,
+    /// Remove Sonarr/Radarr registrations from Bazarr when their CRs disappear.
+    #[serde(default = "default_true")]
+    pub auto_remove: bool,
+}
+
+impl Default for BazarrSyncSpec {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            namespace_scope: None,
+            auto_remove: true,
+        }
+    }
+}
+
+/// Sync spec for Subgen → Jellyfin integration.
+///
+/// When enabled on a Subgen-type ServarrApp, the operator discovers
+/// Jellyfin instances in the target namespace and registers them in
+/// Subgen for subtitle generation.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SubgenSyncSpec {
+    /// Enable Subgen cross-app sync with Jellyfin.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Namespace to discover Jellyfin in. Defaults to Subgen's own namespace.
+    #[serde(default)]
+    pub namespace_scope: Option<String>,
+}
+
 /// Configuration for the in-cluster NFS server deployed by the MediaStack operator.
 ///
 /// By default (when this field is absent or `enabled` is true), the operator

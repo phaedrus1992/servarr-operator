@@ -83,6 +83,8 @@ spec:
                 - Jellyfin
                 - Plex
                 - SshBastion
+                - Bazarr
+                - Subgen
                 type: string
               appConfig:
                 nullable: true
@@ -392,6 +394,23 @@ spec:
                   schedule:
                     default: ''
                     description: Cron expression for backup schedule (e.g. "0 3 * * *").
+                    type: string
+                type: object
+              bazarrSync:
+                description: Bazarr cross-app synchronization. Only applies to Bazarr-type apps.
+                nullable: true
+                properties:
+                  autoRemove:
+                    default: true
+                    description: Remove Sonarr/Radarr registrations from Bazarr when their CRs disappear.
+                    type: boolean
+                  enabled:
+                    default: false
+                    description: Enable Bazarr cross-app sync.
+                    type: boolean
+                  namespaceScope:
+                    description: Namespace to discover companion apps in. Defaults to Bazarr's own namespace.
+                    nullable: true
                     type: string
                 type: object
               env:
@@ -854,6 +873,19 @@ spec:
                     type: string
                 required:
                 - ports
+                type: object
+              subgenSync:
+                description: Subgen cross-app synchronization. Only applies to Subgen-type apps.
+                nullable: true
+                properties:
+                  enabled:
+                    default: false
+                    description: Enable Subgen cross-app sync with Jellyfin.
+                    type: boolean
+                  namespaceScope:
+                    description: Namespace to discover Jellyfin in. Defaults to Subgen's own namespace.
+                    nullable: true
+                    type: string
                 type: object
               uid:
                 format: int64

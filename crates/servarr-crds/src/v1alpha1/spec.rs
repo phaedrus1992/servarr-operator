@@ -104,6 +104,14 @@ pub struct ServarrAppSpec {
     #[serde(default)]
     pub overseerr_sync: Option<OverseerrSyncSpec>,
 
+    /// Bazarr cross-app synchronization. Only applies to Bazarr-type apps.
+    #[serde(default)]
+    pub bazarr_sync: Option<BazarrSyncSpec>,
+
+    /// Subgen cross-app synchronization. Only applies to Subgen-type apps.
+    #[serde(default)]
+    pub subgen_sync: Option<SubgenSyncSpec>,
+
     /// Admin credentials for this app. References a user-created Kubernetes Secret
     /// with `username` and `password` keys. The operator reads but never owns this secret.
     ///
@@ -130,6 +138,8 @@ pub enum AppType {
     Jellyfin,
     Plex,
     SshBastion,
+    Bazarr,
+    Subgen,
 }
 
 impl AppType {
@@ -148,6 +158,8 @@ impl AppType {
             Self::Jellyfin => "jellyfin",
             Self::Plex => "plex",
             Self::SshBastion => "ssh-bastion",
+            Self::Bazarr => "bazarr",
+            Self::Subgen => "subgen",
         }
     }
 
@@ -159,14 +171,15 @@ impl AppType {
     /// - Tier 3 — Ancillary (Tautulli, Overseerr, Maintainerr, Prowlarr, Jackett)
     pub fn tier(&self) -> u8 {
         match self {
-            Self::Plex | Self::Jellyfin | Self::SshBastion => 0,
+            Self::Plex | Self::Jellyfin | Self::SshBastion | Self::Subgen => 0,
             Self::Sabnzbd | Self::Transmission => 1,
             Self::Sonarr | Self::Radarr | Self::Lidarr => 2,
             Self::Tautulli
             | Self::Overseerr
             | Self::Maintainerr
             | Self::Prowlarr
-            | Self::Jackett => 3,
+            | Self::Jackett
+            | Self::Bazarr => 3,
         }
     }
 

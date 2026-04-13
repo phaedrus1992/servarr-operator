@@ -86,6 +86,8 @@ spec:
                       - Jellyfin
                       - Plex
                       - SshBastion
+                      - Bazarr
+                      - Subgen
                       type: string
                     appConfig:
                       nullable: true
@@ -395,6 +397,28 @@ spec:
                         schedule:
                           default: ''
                           description: Cron expression for backup schedule (e.g. "0 3 * * *").
+                          type: string
+                      type: object
+                    bazarrSync:
+                      description: |-
+                        Sync spec for Bazarr → Sonarr/Radarr integration.
+
+                        When enabled on a Bazarr-type ServarrApp, the operator discovers
+                        Sonarr/Radarr instances in the target namespace and registers them
+                        in Bazarr for subtitle management.
+                      nullable: true
+                      properties:
+                        autoRemove:
+                          default: true
+                          description: Remove Sonarr/Radarr registrations from Bazarr when their CRs disappear.
+                          type: boolean
+                        enabled:
+                          default: false
+                          description: Enable Bazarr cross-app sync.
+                          type: boolean
+                        namespaceScope:
+                          description: Namespace to discover companion apps in. Defaults to Bazarr's own namespace.
+                          nullable: true
                           type: string
                       type: object
                     enabled:
@@ -1091,6 +1115,24 @@ spec:
                           required:
                           - ports
                           type: object
+                      type: object
+                    subgenSync:
+                      description: |-
+                        Sync spec for Subgen → Jellyfin integration.
+
+                        When enabled on a Subgen-type ServarrApp, the operator discovers
+                        Jellyfin instances in the target namespace and registers them in
+                        Subgen for subtitle generation.
+                      nullable: true
+                      properties:
+                        enabled:
+                          default: false
+                          description: Enable Subgen cross-app sync with Jellyfin.
+                          type: boolean
+                        namespaceScope:
+                          description: Namespace to discover Jellyfin in. Defaults to Subgen's own namespace.
+                          nullable: true
+                          type: string
                       type: object
                     uid:
                       format: int64

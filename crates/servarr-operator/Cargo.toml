@@ -35,6 +35,7 @@ cron = "0.15"
 url = "2.5.8"
 rand = "0.9"
 sha2 = "0.10.9"
+md5 = "0.8"
 
 [dev-dependencies]
 wiremock.workspace = true

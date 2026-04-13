@@ -8,7 +8,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 TOML_FILE="${1:-$ROOT_DIR/image-defaults.toml}"
-VALUES_FILE="$ROOT_DIR/chart/values.yaml"
+VALUES_FILE="$ROOT_DIR/charts/servarr-operator/values.yaml"
 
 if [[ ! -f "$TOML_FILE" ]]; then
     echo "error: $TOML_FILE not found" >&2

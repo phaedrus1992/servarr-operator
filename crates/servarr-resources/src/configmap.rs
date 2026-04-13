@@ -455,6 +455,10 @@ echo "[transmission-auth] Admin credentials set successfully."
 }
 
 fn default_transmission_settings() -> String {
+    #[expect(
+        clippy::unwrap_used,
+        reason = "serde_json::json! literal is always serializable"
+    )]
     serde_json::to_string_pretty(&serde_json::json!({
         "download-dir": "/downloads/complete",
         "incomplete-dir": "/downloads/incomplete",
@@ -479,4 +483,56 @@ fn default_transmission_settings() -> String {
         "start-added-torrents": true,
     }))
     .unwrap()
+}
+
+/// Build the ConfigMap containing the Bazarr init script.
+///
+/// The init script writes `/config/config/config.yaml` if it does not already
+/// exist, seeding Bazarr with the operator-managed API key (and optional auth
+/// config). This is idempotent: a second run is a no-op if the file exists.
+pub fn build_bazarr_init(app: &ServarrApp) -> Option<ConfigMap> {
+    if !matches!(app.spec.app, AppType::Bazarr) {
+        return None;
+    }
+
+    let name = common::child_name(app, "init");
+    let ns = common::app_namespace(app);
+
+    // The script is intentionally simple — no jq dependency.
+    // BAZARR_API_KEY is injected from the operator-managed Secret via secretKeyRef.
+    // Auth is configured post-boot via sync_admin_credentials; the auth fields default
+    // to noauth so Bazarr starts accessible until credentials are applied.
+    let script = r#"#!/bin/sh
+set -eu
+CONFIG=/config/config/config.yaml
+if [ -f "$CONFIG" ]; then
+  echo "bazarr-init: config already exists, skipping"
+  exit 0
+fi
+mkdir -p "$(dirname "$CONFIG")"
+cat > "$CONFIG" << BAZARR_EOF
+general:
+  apikey: ${BAZARR_API_KEY}
+auth:
+  type: ${BAZARR_AUTH_TYPE:-noauth}
+  username: ${BAZARR_USERNAME:-}
+  password: ${BAZARR_PASSWORD_MD5:-}
+BAZARR_EOF
+echo "bazarr-init: wrote $CONFIG"
+"#;
+
+    Some(ConfigMap {
+        metadata: ObjectMeta {
+            name: Some(name),
+            namespace: Some(ns),
+            labels: Some(common::labels(app)),
+            owner_references: Some(vec![common::owner_reference(app)]),
+            ..Default::default()
+        },
+        data: Some(BTreeMap::from([(
+            "bazarr-init.sh".to_string(),
+            script.to_string(),
+        )])),
+        ..Default::default()
+    })
 }

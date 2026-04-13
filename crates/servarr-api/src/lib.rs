@@ -1,3 +1,4 @@
+pub mod bazarr;
 mod client;
 pub mod health;
 pub mod jellyfin;
@@ -10,6 +11,7 @@ pub mod servarr_v3;
 pub mod tautulli;
 pub mod transmission;
 
+pub use bazarr::BazarrClient;
 pub use client::{ApiError, HttpClient};
 pub use health::HealthCheck;
 pub use jellyfin::JellyfinClient;

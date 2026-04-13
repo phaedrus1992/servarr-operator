@@ -18,6 +18,96 @@ pub struct AppDefaults {
 }
 
 impl AppDefaults {
+    /// Load defaults for `app`, returning an error if the app has no entry in
+    /// `image-defaults.toml` or its security profile is unrecognised.
+    ///
+    /// Use [`for_app`] in the hot reconcile path (it panics on bad data, which
+    /// should only happen if `image-defaults.toml` is incomplete); call
+    /// [`validate_all`] at startup to catch that early.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error string if the app has no image defaults or an unknown
+    /// security profile.
+    pub fn try_for_app(app: &super::AppType) -> Result<Self, String> {
+        let app_name = app.to_string();
+        let img = image_defaults(&app_name)
+            .ok_or_else(|| format!("no image defaults for app: {app_name}"))?;
+        let mut defaults = match img.security {
+            "linuxserver" => Self::linuxserver_base(img.port, img.downloads, img.probe_path),
+            "nonroot" => Self::nonroot_base(img.port, img.probe_path),
+            "sshd" => Self::sshd_base(img.port),
+            other => {
+                return Err(format!(
+                    "unknown security profile in image-defaults.toml: {other}"
+                ));
+            }
+        };
+        if img.probe_type == "tcp" {
+            defaults.probes = tcp_probes(30, 10);
+        }
+        defaults.image = image(img.repository, img.tag);
+        if matches!(app, super::AppType::Transmission) {
+            defaults.app_config =
+                Some(AppConfig::Transmission(super::TransmissionConfig::default()));
+        }
+        if matches!(app, super::AppType::Subgen) {
+            defaults
+                .persistence
+                .volumes
+                .push(pvc("models", "/subgen/models", "10Gi"));
+            defaults.env.extend([
+                EnvVar {
+                    name: "TRANSCRIBE_DEVICE".into(),
+                    value: "cpu".into(),
+                },
+                EnvVar {
+                    name: "WHISPER_MODEL".into(),
+                    value: "medium".into(),
+                },
+            ]);
+        }
+        Ok(defaults)
+    }
+
+    /// Validate that every known [`AppType`] has a complete entry in
+    /// `image-defaults.toml`. Call this at operator startup so misconfiguration
+    /// is caught before the first reconcile.
+    ///
+    /// # Errors
+    ///
+    /// Returns a combined error message listing every app with missing or
+    /// invalid defaults.
+    pub fn validate_all() -> Result<(), String> {
+        use super::AppType;
+        let all = [
+            AppType::Sonarr,
+            AppType::Radarr,
+            AppType::Lidarr,
+            AppType::Prowlarr,
+            AppType::Sabnzbd,
+            AppType::Transmission,
+            AppType::Tautulli,
+            AppType::Overseerr,
+            AppType::Maintainerr,
+            AppType::Jackett,
+            AppType::Jellyfin,
+            AppType::Plex,
+            AppType::SshBastion,
+            AppType::Bazarr,
+            AppType::Subgen,
+        ];
+        let errors: Vec<String> = all
+            .iter()
+            .filter_map(|app| Self::try_for_app(app).err())
+            .collect();
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors.join("; "))
+        }
+    }
+
     pub fn for_app(app: &super::AppType) -> Self {
         let app_name = app.to_string();
         let img = image_defaults(&app_name)
@@ -41,6 +131,23 @@ impl AppDefaults {
         if matches!(app, super::AppType::Transmission) {
             defaults.app_config =
                 Some(AppConfig::Transmission(super::TransmissionConfig::default()));
+        }
+
+        if matches!(app, super::AppType::Subgen) {
+            defaults
+                .persistence
+                .volumes
+                .push(pvc("models", "/subgen/models", "10Gi"));
+            defaults.env.extend([
+                EnvVar {
+                    name: "TRANSCRIBE_DEVICE".into(),
+                    value: "cpu".into(),
+                },
+                EnvVar {
+                    name: "WHISPER_MODEL".into(),
+                    value: "medium".into(),
+                },
+            ]);
         }
 
         defaults
