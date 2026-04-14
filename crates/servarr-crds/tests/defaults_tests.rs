@@ -253,7 +253,8 @@ fn bazarr_has_correct_tier() {
 
 #[test]
 fn subgen_has_correct_tier() {
-    assert_eq!(AppType::Subgen.tier(), 0);
+    // #10: Subgen depends on Jellyfin so it belongs in tier 3 (Ancillary), not tier 0
+    assert_eq!(AppType::Subgen.tier(), 3);
 }
 
 #[test]

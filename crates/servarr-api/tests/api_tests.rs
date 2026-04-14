@@ -1484,6 +1484,62 @@ mod k8s_secret {
     }
 }
 
+// ---------------------------------------------------------------------------
+// BazarrClient tests
+// ---------------------------------------------------------------------------
+
+mod bazarr_client {
+    use super::*;
+    use servarr_api::BazarrClient;
+    use wiremock::matchers::body_string_contains;
+
+    #[tokio::test]
+    async fn configure_sonarr_accepts_i32_port_and_sends_correct_value() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/system/settings"))
+            .and(body_string_contains("settings-sonarr-port=8989"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+
+        // #12: port is i32 to match ServicePort.port type in the rest of the codebase
+        let port: i32 = 8989;
+        let client = BazarrClient::new(&server.uri(), "test-key").unwrap();
+        let result = client
+            .configure_sonarr("sonarr.default.svc", port, "abc123")
+            .await;
+        assert!(
+            result.is_ok(),
+            "configure_sonarr should succeed, got: {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn configure_radarr_accepts_i32_port_and_sends_correct_value() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/system/settings"))
+            .and(body_string_contains("settings-radarr-port=7878"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+
+        // #12: port is i32 to match ServicePort.port type in the rest of the codebase
+        let port: i32 = 7878;
+        let client = BazarrClient::new(&server.uri(), "test-key").unwrap();
+        let result = client
+            .configure_radarr("radarr.default.svc", port, "xyz789")
+            .await;
+        assert!(
+            result.is_ok(),
+            "configure_radarr should succeed, got: {result:?}"
+        );
+    }
+}
+
 mod prowlarr_client {
     use super::*;
 

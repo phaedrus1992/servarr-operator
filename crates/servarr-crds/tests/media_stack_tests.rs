@@ -19,6 +19,9 @@ fn test_tier_assignment() {
     assert_eq!(AppType::Maintainerr.tier(), 3);
     assert_eq!(AppType::Prowlarr.tier(), 3);
     assert_eq!(AppType::Jackett.tier(), 3);
+    // #10: Subgen depends on Jellyfin and must start after it (tier 3)
+    assert_eq!(AppType::Bazarr.tier(), 3);
+    assert_eq!(AppType::Subgen.tier(), 3);
 }
 
 #[test]

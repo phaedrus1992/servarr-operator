@@ -232,15 +232,35 @@ pub async fn reconcile(app: Arc<ServarrApp>, ctx: Arc<Context>) -> Result<Action
     }
 
     // Check for restore-from-backup annotation
-    if let Some(restore_id) = app
+    let restore_condition = if let Some(restore_id) = app
         .metadata
         .annotations
         .as_ref()
         .and_then(|a| a.get("servarr.dev/restore-from"))
         .cloned()
     {
-        maybe_restore_backup(client, &app, &ns, &name, &restore_id, &recorder, &obj_ref).await;
-    }
+        let now = chrono_now();
+        match maybe_restore_backup(client, &app, &ns, &name, &restore_id, &recorder, &obj_ref).await
+        {
+            Ok(()) => Some(Condition::ok(
+                condition_types::RESTORE_READY,
+                "RestoreComplete",
+                &format!("Restored from backup {restore_id}"),
+                &now,
+            )),
+            Err(e) => {
+                warn!(%name, error = %e, "restore-from-backup failed");
+                Some(Condition::fail(
+                    condition_types::RESTORE_READY,
+                    "RestoreFailed",
+                    &e.to_string(),
+                    &now,
+                ))
+            }
+        }
+    } else {
+        None
+    };
 
     // Build and apply Deployment
     let deployment = servarr_resources::deployment::build(&app, &ctx.image_overrides);
@@ -531,26 +551,60 @@ pub async fn reconcile(app: Arc<ServarrApp>, ctx: Arc<Context>) -> Result<Action
     }
 
     // Bazarr cross-app sync
-    if app.spec.app == AppType::Bazarr
+    let bazarr_sync_condition = if app.spec.app == AppType::Bazarr
         && let Some(ref sync_spec) = app.spec.bazarr_sync
         && sync_spec.enabled
     {
         let target_ns = sync_spec.namespace_scope.as_deref().unwrap_or(&ns);
-        if let Err(e) = sync_bazarr_apps(client, &app, target_ns).await {
-            warn!(%name, error = %e, "Bazarr sync failed");
+        let now = chrono_now();
+        match sync_bazarr_apps(client, &app, target_ns).await {
+            Ok(()) => Some(Condition::ok(
+                condition_types::BAZARR_SYNC_READY,
+                "SyncComplete",
+                "Sonarr and Radarr configured in Bazarr",
+                &now,
+            )),
+            Err(e) => {
+                warn!(%name, error = %e, "Bazarr sync failed");
+                Some(Condition::fail(
+                    condition_types::BAZARR_SYNC_READY,
+                    "SyncFailed",
+                    &e.to_string(),
+                    &now,
+                ))
+            }
         }
-    }
+    } else {
+        None
+    };
 
     // Subgen → Jellyfin sync
-    if app.spec.app == AppType::Subgen
+    let subgen_sync_condition = if app.spec.app == AppType::Subgen
         && let Some(ref sync_spec) = app.spec.subgen_sync
         && sync_spec.enabled
     {
         let target_ns = sync_spec.namespace_scope.as_deref().unwrap_or(&ns);
-        if let Err(e) = sync_subgen_jellyfin(client, &app, target_ns).await {
-            warn!(%name, error = %e, "Subgen Jellyfin sync failed");
+        let now = chrono_now();
+        match sync_subgen_jellyfin(client, &app, target_ns).await {
+            Ok(()) => Some(Condition::ok(
+                condition_types::SUBGEN_SYNC_READY,
+                "SyncComplete",
+                "Jellyfin env vars injected into Subgen Deployment",
+                &now,
+            )),
+            Err(e) => {
+                warn!(%name, error = %e, "Subgen Jellyfin sync failed");
+                Some(Condition::fail(
+                    condition_types::SUBGEN_SYNC_READY,
+                    "SyncFailed",
+                    &e.to_string(),
+                    &now,
+                ))
+            }
         }
-    }
+    } else {
+        None
+    };
 
     // Update status
     tracing::debug!(%name, "updating status");
@@ -563,6 +617,9 @@ pub async fn reconcile(app: Arc<ServarrApp>, ctx: Arc<Context>) -> Result<Action
             health: health_condition,
             update: update_condition,
             admin_creds: admin_creds_condition,
+            bazarr_sync: bazarr_sync_condition,
+            subgen_sync: subgen_sync_condition,
+            restore: restore_condition,
         },
         backup_status,
     )
@@ -1162,6 +1219,12 @@ pub(crate) struct StatusConditions {
     pub health: Option<Condition>,
     pub update: Option<Condition>,
     pub admin_creds: Option<Condition>,
+    /// Bazarr cross-app sync result (only set for Bazarr apps with sync enabled).
+    pub bazarr_sync: Option<Condition>,
+    /// Subgen → Jellyfin sync result (only set for Subgen apps with sync enabled).
+    pub subgen_sync: Option<Condition>,
+    /// Backup restore result (only set when a restore was attempted this reconcile).
+    pub restore: Option<Condition>,
 }
 
 pub(crate) async fn update_status(
@@ -1176,6 +1239,9 @@ pub(crate) async fn update_status(
         health: health_condition,
         update: update_condition,
         admin_creds: admin_creds_condition,
+        bazarr_sync: bazarr_sync_condition,
+        subgen_sync: subgen_sync_condition,
+        restore: restore_condition,
     } = conditions;
     let deploy_api = Api::<Deployment>::namespaced(client.clone(), ns);
     let (ready, ready_replicas) = match deploy_api.get(name).await {
@@ -1280,6 +1346,18 @@ pub(crate) async fn update_status(
     }
     // Admin credentials condition
     if let Some(cond) = admin_creds_condition {
+        status.set_condition(cond);
+    }
+    // Bazarr cross-app sync condition
+    if let Some(cond) = bazarr_sync_condition {
+        status.set_condition(cond);
+    }
+    // Subgen → Jellyfin sync condition
+    if let Some(cond) = subgen_sync_condition {
+        status.set_condition(cond);
+    }
+    // Backup restore condition
+    if let Some(cond) = restore_condition {
         status.set_condition(cond);
     }
 
@@ -1495,6 +1573,18 @@ async fn maybe_run_backup(
 /// Handle restore-from-backup triggered by the `servarr.dev/restore-from` annotation.
 /// Scales the Deployment to 0, calls restore via the API, scales back up, and removes
 /// the annotation to prevent re-triggering.
+/// Attempt a backup restore for `app`.
+///
+/// Returns `Ok(())` when the restore completed and the annotation was removed.
+/// Returns `Err` when any step fails; scale-up is always attempted before returning
+/// the error so the deployment is not left at zero replicas.
+///
+/// # Errors
+///
+/// Returns `Err` on scale-down failure, API key read failure, client creation failure,
+/// restore API failure, or annotation removal failure (annotation removal failure in
+/// particular is returned as an error so the caller can surface it as a status condition,
+/// which prevents the silent re-trigger loop caused by the annotation remaining).
 async fn maybe_restore_backup(
     client: &Client,
     app: &ServarrApp,
@@ -1503,23 +1593,19 @@ async fn maybe_restore_backup(
     restore_id: &str,
     recorder: &Recorder,
     obj_ref: &k8s_openapi::api::core::v1::ObjectReference,
-) {
+) -> Result<(), anyhow::Error> {
     // Only Servarr v3 apps support backup/restore API
     if !matches!(
         app.spec.app,
         AppType::Sonarr | AppType::Radarr | AppType::Lidarr | AppType::Prowlarr
     ) {
         warn!(%name, app_type = ?app.spec.app, "restore-from annotation set on unsupported app type, ignoring");
-        return;
+        return Ok(());
     }
 
-    let backup_id: i64 = match restore_id.parse() {
-        Ok(id) => id,
-        Err(_) => {
-            warn!(%name, restore_id, "invalid restore-from annotation value, expected integer backup ID");
-            return;
-        }
-    };
+    let backup_id: i64 = restore_id.parse().map_err(|_| {
+        anyhow::anyhow!("invalid restore-from value {restore_id:?}: expected integer backup ID")
+    })?;
 
     info!(%name, backup_id, "restore-from-backup triggered");
 
@@ -1542,13 +1628,10 @@ async fn maybe_restore_backup(
     let scale_down = serde_json::json!({
         "spec": { "replicas": 0 }
     });
-    if let Err(e) = deploy_api
+    deploy_api
         .patch(name, &PatchParams::default(), &Patch::Merge(scale_down))
         .await
-    {
-        warn!(%name, error = %e, "failed to scale down for restore");
-        return;
-    }
+        .map_err(|e| anyhow::anyhow!("failed to scale down for restore: {e}"))?;
 
     // Wait for pods to terminate (poll for up to 60 seconds)
     for _ in 0..12 {
@@ -1571,34 +1654,63 @@ async fn maybe_restore_backup(
         }
     }
 
-    // Step 2: Build API client and call restore
-    let api_key = match app.spec.api_key_secret.as_deref() {
-        Some(secret_name) => {
-            match servarr_api::read_secret_key(client, ns, secret_name, "api-key").await {
-                Ok(k) => k,
-                Err(e) => {
-                    warn!(%name, error = %e, "failed to read API key for restore");
-                    let scale_up = serde_json::json!({ "spec": { "replicas": 1 } });
-                    if let Err(se) = deploy_api
-                        .patch(name, &PatchParams::default(), &Patch::Merge(scale_up))
-                        .await
-                    {
-                        warn!(%name, error = %se, "failed to scale back up after restore error; deployment may be at zero replicas");
-                    }
-                    return;
-                }
+    // Step 2: Build API client and call restore; always attempt scale-up on failure.
+    let restore_outcome = try_restore(client, app, ns, name, backup_id, recorder, obj_ref).await;
+
+    let scale_up = serde_json::json!({ "spec": { "replicas": 1 } });
+    if let Err(se) = deploy_api
+        .patch(name, &PatchParams::default(), &Patch::Merge(scale_up))
+        .await
+    {
+        warn!(%name, error = %se, "failed to scale back up after restore; deployment may be at zero replicas");
+    }
+
+    restore_outcome?;
+
+    // Step 4: Remove the restore-from annotation to prevent re-triggering.
+    // Return Err if removal fails so the status condition reflects the failure and
+    // operators can diagnose the re-trigger loop.
+    let servarr_api_resource = Api::<ServarrApp>::namespaced(client.clone(), ns);
+    let remove_annotation = serde_json::json!({
+        "metadata": {
+            "annotations": {
+                "servarr.dev/restore-from": null
             }
         }
+    });
+    servarr_api_resource
+        .patch(
+            name,
+            &PatchParams::default(),
+            &Patch::Merge(remove_annotation),
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!("restore succeeded but failed to remove annotation (will re-trigger on next reconcile): {e}"))?;
+
+    Ok(())
+}
+
+/// Inner restore logic — performs the API call and fires events.
+///
+/// Separated from `maybe_restore_backup` so the outer function can unconditionally
+/// attempt scale-up regardless of whether this returns `Ok` or `Err`.
+async fn try_restore(
+    client: &Client,
+    app: &ServarrApp,
+    ns: &str,
+    name: &str,
+    backup_id: i64,
+    recorder: &Recorder,
+    obj_ref: &k8s_openapi::api::core::v1::ObjectReference,
+) -> Result<(), anyhow::Error> {
+    let api_key = match app.spec.api_key_secret.as_deref() {
+        Some(secret_name) => servarr_api::read_secret_key(client, ns, secret_name, "api-key")
+            .await
+            .map_err(|e| anyhow::anyhow!("failed to read API key for restore: {e}"))?,
         None => {
-            warn!(%name, "no api_key_secret configured, cannot restore");
-            let scale_up = serde_json::json!({ "spec": { "replicas": 1 } });
-            if let Err(e) = deploy_api
-                .patch(name, &PatchParams::default(), &Patch::Merge(scale_up))
-                .await
-            {
-                warn!(%name, error = %e, "failed to scale back up; deployment may be at zero replicas");
-            }
-            return;
+            return Err(anyhow::anyhow!(
+                "no api_key_secret configured, cannot restore"
+            ));
         }
     };
 
@@ -1608,27 +1720,17 @@ async fn maybe_restore_backup(
     let port = svc_spec.ports.first().map(|p| p.port).unwrap_or(80);
     let base_url = format!("http://{app_name}.{ns}.svc:{port}");
 
-    // Only Servarr v3 apps (Sonarr/Radarr/Lidarr/Prowlarr) support backup/restore
     let Some(app_kind) = app_type_to_kind(&app.spec.app) else {
-        warn!(%name, app_type = ?app.spec.app, "restore: app type has no AppKind mapping");
-        return;
-    };
-    let restore_result = match servarr_api::ServarrClient::new(&base_url, &api_key, app_kind) {
-        Ok(c) => c.restore_backup(backup_id).await,
-        Err(e) => {
-            warn!(%name, error = %e, "failed to create API client for restore");
-            let scale_up = serde_json::json!({ "spec": { "replicas": 1 } });
-            if let Err(se) = deploy_api
-                .patch(name, &PatchParams::default(), &Patch::Merge(scale_up))
-                .await
-            {
-                warn!(%name, error = %se, "failed to scale back up after client error; deployment may be at zero replicas");
-            }
-            return;
-        }
+        return Err(anyhow::anyhow!(
+            "restore: app type {:?} has no AppKind mapping",
+            app.spec.app
+        ));
     };
 
-    match restore_result {
+    let servarr_client = servarr_api::ServarrClient::new(&base_url, &api_key, app_kind)
+        .map_err(|e| anyhow::anyhow!("failed to create API client for restore: {e}"))?;
+
+    match servarr_client.restore_backup(backup_id).await {
         Ok(()) => {
             info!(%name, backup_id, "restore completed successfully");
             increment_backup_operations(app.spec.app.as_str(), "restore", "success");
@@ -1644,6 +1746,7 @@ async fn maybe_restore_backup(
                     obj_ref,
                 )
                 .await;
+            Ok(())
         }
         Err(e) => {
             warn!(%name, backup_id, error = %e, "restore API call failed");
@@ -1660,36 +1763,8 @@ async fn maybe_restore_backup(
                     obj_ref,
                 )
                 .await;
+            Err(anyhow::anyhow!("restore API call failed: {e}"))
         }
-    }
-
-    // Step 3: Scale back up
-    let scale_up = serde_json::json!({ "spec": { "replicas": 1 } });
-    if let Err(e) = deploy_api
-        .patch(name, &PatchParams::default(), &Patch::Merge(scale_up))
-        .await
-    {
-        warn!(%name, error = %e, "failed to scale back up after restore");
-    }
-
-    // Step 4: Remove the restore-from annotation to prevent re-triggering
-    let servarr_api_resource = Api::<ServarrApp>::namespaced(client.clone(), ns);
-    let remove_annotation = serde_json::json!({
-        "metadata": {
-            "annotations": {
-                "servarr.dev/restore-from": null
-            }
-        }
-    });
-    if let Err(e) = servarr_api_resource
-        .patch(
-            name,
-            &PatchParams::default(),
-            &Patch::Merge(remove_annotation),
-        )
-        .await
-    {
-        warn!(%name, error = %e, "failed to remove restore-from annotation");
     }
 }
 
@@ -1699,6 +1774,10 @@ pub(crate) struct DiscoveredApp {
     pub(crate) name: String,
     pub(crate) app_type: AppType,
     pub(crate) base_url: String,
+    /// Hostname component of `base_url` (e.g. `"sonarr.default.svc"`).
+    pub(crate) host: String,
+    /// Port component of `base_url`, matching the `i32` type used by `ServicePort.port`.
+    pub(crate) port: i32,
     pub(crate) api_key: String,
     pub(crate) instance: Option<String>,
 }
@@ -1746,12 +1825,15 @@ pub(crate) async fn discover_namespace_apps(
         let defaults = servarr_crds::AppDefaults::for_app(&app.spec.app);
         let svc_spec = app.spec.service.as_ref().unwrap_or(&defaults.service);
         let port = svc_spec.ports.first().map(|p| p.port).unwrap_or(80);
-        let base_url = format!("http://{app_name}.{namespace}.svc:{port}");
+        let host = format!("{app_name}.{namespace}.svc");
+        let base_url = format!("http://{host}:{port}");
 
         discovered.push(DiscoveredApp {
             name: app.name_any(),
             app_type: app.spec.app.clone(),
             base_url,
+            host,
+            port,
             api_key,
             instance: app.spec.instance.clone(),
         });
@@ -2054,10 +2136,8 @@ async fn sync_overseerr_servers(
     let mut synced_radarr_keys = std::collections::HashSet::new();
 
     for app in &discovered {
-        let url = url::Url::parse(&app.base_url)
-            .map_err(|e| anyhow::anyhow!("invalid base_url for {}: {e}", app.base_url))?;
-        let hostname = url.host_str().unwrap_or("").to_string();
-        let port = url.port().unwrap_or(80) as f64;
+        let hostname = app.host.clone();
+        let port = app.port as f64;
         let is4k = app.instance.as_deref() == Some("4k");
 
         match app.app_type {
@@ -2274,19 +2354,11 @@ async fn sync_bazarr_apps(
     let has_radarr = discovered.iter().any(|a| a.app_type == AppType::Radarr);
 
     for app in &discovered {
-        let url = url::Url::parse(&app.base_url)
-            .map_err(|e| anyhow::anyhow!("invalid companion URL {}: {e}", app.base_url))?;
-        let host = url
-            .host_str()
-            .ok_or_else(|| anyhow::anyhow!("no host in {}", app.base_url))?
-            .to_string();
-        let companion_port = url.port().unwrap_or(80);
-
         match app.app_type {
             AppType::Sonarr => {
                 info!(bazarr = %bazarr_name, sonarr = %app.name, "syncing Sonarr into Bazarr");
                 if let Err(e) = bazarr_client
-                    .configure_sonarr(&host, companion_port, &app.api_key)
+                    .configure_sonarr(&app.host, app.port, &app.api_key)
                     .await
                 {
                     warn!(bazarr = %bazarr_name, sonarr = %app.name, error = %e,
@@ -2296,7 +2368,7 @@ async fn sync_bazarr_apps(
             AppType::Radarr => {
                 info!(bazarr = %bazarr_name, radarr = %app.name, "syncing Radarr into Bazarr");
                 if let Err(e) = bazarr_client
-                    .configure_radarr(&host, companion_port, &app.api_key)
+                    .configure_radarr(&app.host, app.port, &app.api_key)
                     .await
                 {
                     warn!(bazarr = %bazarr_name, radarr = %app.name, error = %e,
@@ -3171,6 +3243,9 @@ mod tests {
                 health: None,
                 update: None,
                 admin_creds: None,
+                bazarr_sync: None,
+                subgen_sync: None,
+                restore: None,
             },
             None,
         )
@@ -3248,6 +3323,9 @@ mod tests {
                 health: None,
                 update: None,
                 admin_creds: None,
+                bazarr_sync: None,
+                subgen_sync: None,
+                restore: None,
             },
             None,
         )

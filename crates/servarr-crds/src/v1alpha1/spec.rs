@@ -168,10 +168,10 @@ impl AppType {
     /// - Tier 0 — Infrastructure & Media Servers (Plex, Jellyfin, SshBastion)
     /// - Tier 1 — Download Clients (Sabnzbd, Transmission)
     /// - Tier 2 — Media Managers (Sonarr, Radarr, Lidarr)
-    /// - Tier 3 — Ancillary (Tautulli, Overseerr, Maintainerr, Prowlarr, Jackett)
+    /// - Tier 3 — Ancillary (Tautulli, Overseerr, Maintainerr, Prowlarr, Jackett, Bazarr, Subgen)
     pub fn tier(&self) -> u8 {
         match self {
-            Self::Plex | Self::Jellyfin | Self::SshBastion | Self::Subgen => 0,
+            Self::Plex | Self::Jellyfin | Self::SshBastion => 0,
             Self::Sabnzbd | Self::Transmission => 1,
             Self::Sonarr | Self::Radarr | Self::Lidarr => 2,
             Self::Tautulli
@@ -179,7 +179,10 @@ impl AppType {
             | Self::Maintainerr
             | Self::Prowlarr
             | Self::Jackett
-            | Self::Bazarr => 3,
+            | Self::Bazarr
+            // #10: Subgen depends on Jellyfin (subgenSync requires a Jellyfin CR) so it must
+            // start after Jellyfin is ready, not at the same time (tier 0).
+            | Self::Subgen => 3,
         }
     }
 

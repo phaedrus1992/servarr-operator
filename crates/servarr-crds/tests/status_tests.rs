@@ -274,6 +274,45 @@ fn condition_types_constants_are_correct() {
     assert_eq!(condition_types::DEGRADED, "Degraded");
     assert_eq!(condition_types::APP_HEALTHY, "AppHealthy");
     assert_eq!(condition_types::UPDATE_AVAILABLE, "UpdateAvailable");
+    // #11: sync conditions for Bazarr and Subgen cross-app sync
+    assert_eq!(condition_types::BAZARR_SYNC_READY, "BazarrSyncReady");
+    assert_eq!(condition_types::SUBGEN_SYNC_READY, "SubgenSyncReady");
+}
+
+#[test]
+fn bazarr_sync_ready_condition_reflects_sync_success() {
+    let mut status = ServarrAppStatus::default();
+    status.set_condition(Condition::ok(
+        condition_types::BAZARR_SYNC_READY,
+        "SyncComplete",
+        "Sonarr and Radarr configured in Bazarr",
+        "2025-06-01T00:00:00Z",
+    ));
+    let cond = status
+        .conditions
+        .iter()
+        .find(|c| c.condition_type == "BazarrSyncReady")
+        .expect("BazarrSyncReady condition missing");
+    assert_eq!(cond.status, "True");
+    assert_eq!(cond.reason, "SyncComplete");
+}
+
+#[test]
+fn subgen_sync_ready_condition_reflects_sync_failure() {
+    let mut status = ServarrAppStatus::default();
+    status.set_condition(Condition::fail(
+        condition_types::SUBGEN_SYNC_READY,
+        "JellyfinUnavailable",
+        "no Jellyfin CR found in namespace media",
+        "2025-06-01T00:00:00Z",
+    ));
+    let cond = status
+        .conditions
+        .iter()
+        .find(|c| c.condition_type == "SubgenSyncReady")
+        .expect("SubgenSyncReady condition missing");
+    assert_eq!(cond.status, "False");
+    assert_eq!(cond.reason, "JellyfinUnavailable");
 }
 
 // ---------------------------------------------------------------------------
