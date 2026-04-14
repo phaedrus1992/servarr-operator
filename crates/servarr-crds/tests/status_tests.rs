@@ -274,9 +274,16 @@ fn condition_types_constants_are_correct() {
     assert_eq!(condition_types::DEGRADED, "Degraded");
     assert_eq!(condition_types::APP_HEALTHY, "AppHealthy");
     assert_eq!(condition_types::UPDATE_AVAILABLE, "UpdateAvailable");
+    assert_eq!(
+        condition_types::ADMIN_CREDENTIALS_CONFIGURED,
+        "AdminCredentialsConfigured"
+    );
     // #11: sync conditions for Bazarr and Subgen cross-app sync
     assert_eq!(condition_types::BAZARR_SYNC_READY, "BazarrSyncReady");
     assert_eq!(condition_types::SUBGEN_SYNC_READY, "SubgenSyncReady");
+    assert_eq!(condition_types::PROWLARR_SYNC_READY, "ProwlarrSyncReady");
+    assert_eq!(condition_types::OVERSEERR_SYNC_READY, "OverseerrSyncReady");
+    assert_eq!(condition_types::RESTORE_READY, "RestoreReady");
 }
 
 #[test]
@@ -313,6 +320,134 @@ fn subgen_sync_ready_condition_reflects_sync_failure() {
         .expect("SubgenSyncReady condition missing");
     assert_eq!(cond.status, "False");
     assert_eq!(cond.reason, "JellyfinUnavailable");
+}
+
+// ---------------------------------------------------------------------------
+// RESTORE_READY behavioral tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn restore_ready_condition_reflects_restore_success() {
+    let mut status = ServarrAppStatus::default();
+    status.set_condition(Condition::ok(
+        condition_types::RESTORE_READY,
+        "RestoreComplete",
+        "Backup 42 restored successfully",
+        "2025-06-01T00:00:00Z",
+    ));
+    let cond = status
+        .conditions
+        .iter()
+        .find(|c| c.condition_type == "RestoreReady")
+        .expect("RestoreReady condition missing");
+    assert_eq!(cond.status, "True");
+    assert_eq!(cond.reason, "RestoreComplete");
+}
+
+#[test]
+fn restore_ready_condition_reflects_restore_failure() {
+    let mut status = ServarrAppStatus::default();
+    status.set_condition(Condition::fail(
+        condition_types::RESTORE_READY,
+        "RestoreFailed",
+        "failed to scale down for restore: connection refused",
+        "2025-06-01T00:00:00Z",
+    ));
+    let cond = status
+        .conditions
+        .iter()
+        .find(|c| c.condition_type == "RestoreReady")
+        .expect("RestoreReady condition missing");
+    assert_eq!(cond.status, "False");
+    assert_eq!(cond.reason, "RestoreFailed");
+}
+
+// ---------------------------------------------------------------------------
+// Serde roundtrip for new sync condition types
+// ---------------------------------------------------------------------------
+
+#[test]
+fn new_sync_condition_types_survive_serde_roundtrip() {
+    let status = ServarrAppStatus {
+        ready: true,
+        ready_replicas: 1,
+        observed_generation: 1,
+        conditions: vec![
+            Condition::ok(
+                condition_types::BAZARR_SYNC_READY,
+                "SyncComplete",
+                "Sonarr and Radarr configured in Bazarr",
+                "2025-06-01T00:00:00Z",
+            ),
+            Condition::fail(
+                condition_types::SUBGEN_SYNC_READY,
+                "JellyfinUnavailable",
+                "no Jellyfin CR found in namespace media",
+                "2025-06-01T00:00:01Z",
+            ),
+            Condition::ok(
+                condition_types::RESTORE_READY,
+                "RestoreComplete",
+                "Backup 1 restored",
+                "2025-06-01T00:00:02Z",
+            ),
+            Condition::ok(
+                condition_types::PROWLARR_SYNC_READY,
+                "SyncComplete",
+                "apps synced from Prowlarr",
+                "2025-06-01T00:00:03Z",
+            ),
+            Condition::fail(
+                condition_types::OVERSEERR_SYNC_READY,
+                "SyncFailed",
+                "Overseerr unreachable",
+                "2025-06-01T00:00:04Z",
+            ),
+        ],
+        backup_status: None,
+    };
+
+    let json = serde_json::to_string(&status).expect("serialization failed");
+    let deserialized: ServarrAppStatus =
+        serde_json::from_str(&json).expect("deserialization failed");
+
+    let types: Vec<&str> = deserialized
+        .conditions
+        .iter()
+        .map(|c| c.condition_type.as_str())
+        .collect();
+    assert!(
+        types.contains(&"BazarrSyncReady"),
+        "BazarrSyncReady missing"
+    );
+    assert!(
+        types.contains(&"SubgenSyncReady"),
+        "SubgenSyncReady missing"
+    );
+    assert!(types.contains(&"RestoreReady"), "RestoreReady missing");
+    assert!(
+        types.contains(&"ProwlarrSyncReady"),
+        "ProwlarrSyncReady missing"
+    );
+    assert!(
+        types.contains(&"OverseerrSyncReady"),
+        "OverseerrSyncReady missing"
+    );
+
+    let bazarr = deserialized
+        .conditions
+        .iter()
+        .find(|c| c.condition_type == "BazarrSyncReady")
+        .unwrap();
+    assert_eq!(bazarr.status, "True");
+
+    let subgen = deserialized
+        .conditions
+        .iter()
+        .find(|c| c.condition_type == "SubgenSyncReady")
+        .unwrap();
+    assert_eq!(subgen.status, "False");
+    assert_eq!(subgen.reason, "JellyfinUnavailable");
 }
 
 // ---------------------------------------------------------------------------

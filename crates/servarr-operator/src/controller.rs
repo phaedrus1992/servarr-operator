@@ -529,26 +529,60 @@ pub async fn reconcile(app: Arc<ServarrApp>, ctx: Arc<Context>) -> Result<Action
     let backup_status = maybe_run_backup(client, &app, &ns, &recorder, &obj_ref).await;
 
     // Prowlarr cross-app sync (only for Prowlarr-type apps with sync enabled)
-    if app.spec.app == AppType::Prowlarr
+    let prowlarr_sync_condition = if app.spec.app == AppType::Prowlarr
         && let Some(ref sync_spec) = app.spec.prowlarr_sync
         && sync_spec.enabled
     {
         let target_ns = sync_spec.namespace_scope.as_deref().unwrap_or(&ns);
-        if let Err(e) = sync_prowlarr_apps(client, &app, target_ns, &recorder, &obj_ref).await {
-            warn!(%name, error = %e, "Prowlarr sync failed");
+        let now = chrono_now();
+        match sync_prowlarr_apps(client, &app, target_ns, &recorder, &obj_ref).await {
+            Ok(()) => Some(Condition::ok(
+                condition_types::PROWLARR_SYNC_READY,
+                "SyncComplete",
+                "Sonarr, Radarr, and Lidarr synced from Prowlarr",
+                &now,
+            )),
+            Err(e) => {
+                warn!(%name, error = %e, "Prowlarr sync failed");
+                Some(Condition::fail(
+                    condition_types::PROWLARR_SYNC_READY,
+                    "SyncFailed",
+                    &e.to_string(),
+                    &now,
+                ))
+            }
         }
-    }
+    } else {
+        None
+    };
 
     // Overseerr cross-app sync (only for Overseerr-type apps with sync enabled)
-    if app.spec.app == AppType::Overseerr
+    let overseerr_sync_condition = if app.spec.app == AppType::Overseerr
         && let Some(ref sync_spec) = app.spec.overseerr_sync
         && sync_spec.enabled
     {
         let target_ns = sync_spec.namespace_scope.as_deref().unwrap_or(&ns);
-        if let Err(e) = sync_overseerr_servers(client, &app, target_ns, &recorder, &obj_ref).await {
-            warn!(%name, error = %e, "Overseerr sync failed");
+        let now = chrono_now();
+        match sync_overseerr_servers(client, &app, target_ns, &recorder, &obj_ref).await {
+            Ok(()) => Some(Condition::ok(
+                condition_types::OVERSEERR_SYNC_READY,
+                "SyncComplete",
+                "Sonarr and Radarr servers synced into Overseerr",
+                &now,
+            )),
+            Err(e) => {
+                warn!(%name, error = %e, "Overseerr sync failed");
+                Some(Condition::fail(
+                    condition_types::OVERSEERR_SYNC_READY,
+                    "SyncFailed",
+                    &e.to_string(),
+                    &now,
+                ))
+            }
         }
-    }
+    } else {
+        None
+    };
 
     // Bazarr cross-app sync
     let bazarr_sync_condition = if app.spec.app == AppType::Bazarr
@@ -619,6 +653,8 @@ pub async fn reconcile(app: Arc<ServarrApp>, ctx: Arc<Context>) -> Result<Action
             admin_creds: admin_creds_condition,
             bazarr_sync: bazarr_sync_condition,
             subgen_sync: subgen_sync_condition,
+            prowlarr_sync: prowlarr_sync_condition,
+            overseerr_sync: overseerr_sync_condition,
             restore: restore_condition,
         },
         backup_status,
@@ -1223,6 +1259,10 @@ pub(crate) struct StatusConditions {
     pub bazarr_sync: Option<Condition>,
     /// Subgen → Jellyfin sync result (only set for Subgen apps with sync enabled).
     pub subgen_sync: Option<Condition>,
+    /// Prowlarr cross-app sync result (only set for Prowlarr apps with sync enabled).
+    pub prowlarr_sync: Option<Condition>,
+    /// Overseerr cross-app sync result (only set for Overseerr apps with sync enabled).
+    pub overseerr_sync: Option<Condition>,
     /// Backup restore result (only set when a restore was attempted this reconcile).
     pub restore: Option<Condition>,
 }
@@ -1241,6 +1281,8 @@ pub(crate) async fn update_status(
         admin_creds: admin_creds_condition,
         bazarr_sync: bazarr_sync_condition,
         subgen_sync: subgen_sync_condition,
+        prowlarr_sync: prowlarr_sync_condition,
+        overseerr_sync: overseerr_sync_condition,
         restore: restore_condition,
     } = conditions;
     let deploy_api = Api::<Deployment>::namespaced(client.clone(), ns);
@@ -1354,6 +1396,14 @@ pub(crate) async fn update_status(
     }
     // Subgen → Jellyfin sync condition
     if let Some(cond) = subgen_sync_condition {
+        status.set_condition(cond);
+    }
+    // Prowlarr cross-app sync condition
+    if let Some(cond) = prowlarr_sync_condition {
+        status.set_condition(cond);
+    }
+    // Overseerr cross-app sync condition
+    if let Some(cond) = overseerr_sync_condition {
         status.set_condition(cond);
     }
     // Backup restore condition
@@ -1570,9 +1620,6 @@ async fn maybe_run_backup(
     }
 }
 
-/// Handle restore-from-backup triggered by the `servarr.dev/restore-from` annotation.
-/// Scales the Deployment to 0, calls restore via the API, scales back up, and removes
-/// the annotation to prevent re-triggering.
 /// Attempt a backup restore for `app`.
 ///
 /// Returns `Ok(())` when the restore completed and the annotation was removed.
@@ -1625,38 +1672,49 @@ async fn maybe_restore_backup(
         )
         .await;
 
-    let scale_down = serde_json::json!({
-        "spec": { "replicas": 0 }
-    });
-    deploy_api
-        .patch(name, &PatchParams::default(), &Patch::Merge(scale_down))
-        .await
-        .map_err(|e| anyhow::anyhow!("failed to scale down for restore: {e}"))?;
+    // Step 1: Scale deployment to 0 and wait for pods to terminate.
+    // Captured as a Result so scale-up (Step 3) always runs even if this fails.
+    let scale_down_outcome: Result<(), anyhow::Error> = async {
+        let scale_down = serde_json::json!({
+            "spec": { "replicas": 0 }
+        });
+        deploy_api
+            .patch(name, &PatchParams::default(), &Patch::Merge(scale_down))
+            .await
+            .map_err(|e| anyhow::anyhow!("failed to scale down for restore: {e}"))?;
 
-    // Wait for pods to terminate (poll for up to 60 seconds)
-    for _ in 0..12 {
-        tokio::time::sleep(Duration::from_secs(5)).await;
-        match deploy_api.get(name).await {
-            Ok(d) => {
-                let ready = d
-                    .status
-                    .as_ref()
-                    .and_then(|s| s.ready_replicas)
-                    .unwrap_or(0);
-                if ready == 0 {
+        // Wait for pods to terminate (poll for up to 60 seconds)
+        for _ in 0..12 {
+            tokio::time::sleep(Duration::from_secs(5)).await;
+            match deploy_api.get(name).await {
+                Ok(d) => {
+                    let ready = d
+                        .status
+                        .as_ref()
+                        .and_then(|s| s.ready_replicas)
+                        .unwrap_or(0);
+                    if ready == 0 {
+                        break;
+                    }
+                }
+                Err(e) => {
+                    warn!(%name, error = %e, "failed to check deployment status during restore");
                     break;
                 }
             }
-            Err(e) => {
-                warn!(%name, error = %e, "failed to check deployment status during restore");
-                break;
-            }
         }
+        Ok(())
     }
+    .await;
 
     // Step 2: Build API client and call restore; always attempt scale-up on failure.
-    let restore_outcome = try_restore(client, app, ns, name, backup_id, recorder, obj_ref).await;
+    let restore_outcome = if scale_down_outcome.is_ok() {
+        try_restore(client, app, ns, name, backup_id, recorder, obj_ref).await
+    } else {
+        scale_down_outcome
+    };
 
+    // Step 3: Scale the deployment back up (always runs, even on restore failure).
     let scale_up = serde_json::json!({ "spec": { "replicas": 1 } });
     if let Err(se) = deploy_api
         .patch(name, &PatchParams::default(), &Patch::Merge(scale_up))
@@ -1703,16 +1761,14 @@ async fn try_restore(
     recorder: &Recorder,
     obj_ref: &k8s_openapi::api::core::v1::ObjectReference,
 ) -> Result<(), anyhow::Error> {
-    let api_key = match app.spec.api_key_secret.as_deref() {
-        Some(secret_name) => servarr_api::read_secret_key(client, ns, secret_name, "api-key")
-            .await
-            .map_err(|e| anyhow::anyhow!("failed to read API key for restore: {e}"))?,
-        None => {
-            return Err(anyhow::anyhow!(
-                "no api_key_secret configured, cannot restore"
-            ));
-        }
-    };
+    let secret_name = app
+        .spec
+        .api_key_secret
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("no api_key_secret configured, cannot restore"))?;
+    let api_key = servarr_api::read_secret_key(client, ns, secret_name, "api-key")
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to read API key for restore: {e}"))?;
 
     let app_name = servarr_resources::common::app_name(app);
     let defaults = servarr_crds::AppDefaults::for_app(&app.spec.app);
@@ -2132,17 +2188,19 @@ async fn sync_overseerr_servers(
         .unwrap_or(true);
 
     // Track which hostname:port combos we sync so we can detect stale entries
-    let mut synced_sonarr_keys = std::collections::HashSet::new();
-    let mut synced_radarr_keys = std::collections::HashSet::new();
+    let mut synced_sonarr_keys: std::collections::HashSet<(String, i32)> =
+        std::collections::HashSet::new();
+    let mut synced_radarr_keys: std::collections::HashSet<(String, i32)> =
+        std::collections::HashSet::new();
 
     for app in &discovered {
         let hostname = app.host.clone();
-        let port = app.port as f64;
+        let port = f64::from(app.port); // Overseerr API uses f64 for port numbers
         let is4k = app.instance.as_deref() == Some("4k");
 
         match app.app_type {
             AppType::Sonarr => {
-                let key = (hostname.clone(), port as u16);
+                let key = (hostname.clone(), app.port);
                 synced_sonarr_keys.insert(key);
 
                 let sonarr_defaults = overseerr_config.and_then(|c| c.sonarr.as_ref());
@@ -2202,7 +2260,7 @@ async fn sync_overseerr_servers(
                 }
             }
             AppType::Radarr => {
-                let key = (hostname.clone(), port as u16);
+                let key = (hostname.clone(), app.port);
                 synced_radarr_keys.insert(key);
 
                 let radarr_defaults = overseerr_config.and_then(|c| c.radarr.as_ref());
@@ -2270,7 +2328,7 @@ async fn sync_overseerr_servers(
     // Remove stale servers
     if auto_remove {
         for existing in &existing_sonarr {
-            let key = (existing.hostname.clone(), existing.port as u16);
+            let key = (existing.hostname.clone(), existing.port as i32);
             if !synced_sonarr_keys.contains(&key) {
                 let id = existing.id.unwrap_or(0.0) as i32;
                 info!(overseerr = %overseerr_name, server = %existing.name, "removing stale Sonarr server from Overseerr");
@@ -2280,7 +2338,7 @@ async fn sync_overseerr_servers(
             }
         }
         for existing in &existing_radarr {
-            let key = (existing.hostname.clone(), existing.port as u16);
+            let key = (existing.hostname.clone(), existing.port as i32);
             if !synced_radarr_keys.contains(&key) {
                 let id = existing.id.unwrap_or(0.0) as i32;
                 info!(overseerr = %overseerr_name, server = %existing.name, "removing stale Radarr server from Overseerr");
@@ -2353,6 +2411,8 @@ async fn sync_bazarr_apps(
     let has_sonarr = discovered.iter().any(|a| a.app_type == AppType::Sonarr);
     let has_radarr = discovered.iter().any(|a| a.app_type == AppType::Radarr);
 
+    let mut first_error: Option<anyhow::Error> = None;
+
     for app in &discovered {
         match app.app_type {
             AppType::Sonarr => {
@@ -2363,6 +2423,9 @@ async fn sync_bazarr_apps(
                 {
                     warn!(bazarr = %bazarr_name, sonarr = %app.name, error = %e,
                         "failed to configure Sonarr in Bazarr");
+                    first_error.get_or_insert_with(|| {
+                        anyhow::anyhow!("configure_sonarr({}) failed: {e}", app.name)
+                    });
                 }
             }
             AppType::Radarr => {
@@ -2373,6 +2436,9 @@ async fn sync_bazarr_apps(
                 {
                     warn!(bazarr = %bazarr_name, radarr = %app.name, error = %e,
                         "failed to configure Radarr in Bazarr");
+                    first_error.get_or_insert_with(|| {
+                        anyhow::anyhow!("configure_radarr({}) failed: {e}", app.name)
+                    });
                 }
             }
             _ => {}
@@ -2382,10 +2448,16 @@ async fn sync_bazarr_apps(
     if auto_remove {
         if !has_sonarr && let Err(e) = bazarr_client.disable_sonarr().await {
             warn!(bazarr = %bazarr_name, error = %e, "failed to disable Sonarr in Bazarr");
+            first_error.get_or_insert_with(|| anyhow::anyhow!("disable_sonarr failed: {e}"));
         }
         if !has_radarr && let Err(e) = bazarr_client.disable_radarr().await {
             warn!(bazarr = %bazarr_name, error = %e, "failed to disable Radarr in Bazarr");
+            first_error.get_or_insert_with(|| anyhow::anyhow!("disable_radarr failed: {e}"));
         }
+    }
+
+    if let Some(e) = first_error {
+        return Err(e);
     }
 
     Ok(())
@@ -2418,7 +2490,9 @@ async fn sync_subgen_jellyfin(
         None => {
             warn!(subgen = %subgen_name,
                 "subgen-sync: no Jellyfin CR found in namespace {target_ns}, skipping");
-            return Ok(());
+            return Err(anyhow::anyhow!(
+                "no Jellyfin CR found in namespace {target_ns}"
+            ));
         }
     };
 
@@ -2428,7 +2502,9 @@ async fn sync_subgen_jellyfin(
         None => {
             warn!(subgen = %subgen_name,
                 "subgen-sync: Jellyfin CR has no apiKeySecret, skipping");
-            return Ok(());
+            return Err(anyhow::anyhow!(
+                "Jellyfin CR has no apiKeySecret configured"
+            ));
         }
     };
     // Verify the secret is readable; the Deployment will reference it via secretKeyRef.
@@ -2562,7 +2638,7 @@ async fn cleanup_overseerr_registration(
             let existing = overseerr_client.list_sonarr().await?;
             if let Some(registered) = existing
                 .iter()
-                .find(|s| s.hostname == app_hostname && s.port == port as f64)
+                .find(|s| s.hostname == app_hostname && s.port == f64::from(port))
             {
                 let id = registered.id.unwrap_or(0.0) as i32;
                 info!(
@@ -2590,7 +2666,7 @@ async fn cleanup_overseerr_registration(
             let existing = overseerr_client.list_radarr().await?;
             if let Some(registered) = existing
                 .iter()
-                .find(|s| s.hostname == app_hostname && s.port == port as f64)
+                .find(|s| s.hostname == app_hostname && s.port == f64::from(port))
             {
                 let id = registered.id.unwrap_or(0.0) as i32;
                 info!(
@@ -3245,6 +3321,8 @@ mod tests {
                 admin_creds: None,
                 bazarr_sync: None,
                 subgen_sync: None,
+                prowlarr_sync: None,
+                overseerr_sync: None,
                 restore: None,
             },
             None,
@@ -3325,6 +3403,8 @@ mod tests {
                 admin_creds: None,
                 bazarr_sync: None,
                 subgen_sync: None,
+                prowlarr_sync: None,
+                overseerr_sync: None,
                 restore: None,
             },
             None,

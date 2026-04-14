@@ -71,6 +71,10 @@ pub mod condition_types {
     pub const BAZARR_SYNC_READY: &str = "BazarrSyncReady";
     /// Cross-app sync health for Subgen → Jellyfin (True = OK, False = failed).
     pub const SUBGEN_SYNC_READY: &str = "SubgenSyncReady";
+    /// Cross-app sync health for Prowlarr (True = last sync OK, False = last sync failed).
+    pub const PROWLARR_SYNC_READY: &str = "ProwlarrSyncReady";
+    /// Cross-app sync health for Overseerr (True = last sync OK, False = last sync failed).
+    pub const OVERSEERR_SYNC_READY: &str = "OverseerrSyncReady";
     /// Backup restore result (True = restore succeeded, False = restore failed).
     pub const RESTORE_READY: &str = "RestoreReady";
 }
