@@ -70,7 +70,7 @@ impl BazarrClient {
     pub async fn configure_sonarr(
         &self,
         host: &str,
-        port: u16,
+        port: i32,
         api_key: &str,
     ) -> Result<(), ApiError> {
         self.post_settings(&[
@@ -92,7 +92,7 @@ impl BazarrClient {
     pub async fn configure_radarr(
         &self,
         host: &str,
-        port: u16,
+        port: i32,
         api_key: &str,
     ) -> Result<(), ApiError> {
         self.post_settings(&[
