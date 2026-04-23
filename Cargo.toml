@@ -13,19 +13,19 @@ license = "MIT"
 repository = "https://github.com/servarr/servarr-operator"
 
 [workspace.dependencies]
-kube = { version = "3.0.1", default-features = false, features = ["runtime", "derive", "client", "rustls-tls", "config"] }
-k8s-openapi = { version = "0.27.0", features = ["v1_34", "schemars"] }
+kube = { version = "3.1.0", default-features = false, features = ["runtime", "derive", "client", "rustls-tls", "config"] }
+k8s-openapi = { version = "0.27.1", features = ["v1_34", "schemars"] }
 schemars = "1.2.1"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 serde_yaml = "0.9.34"
-tokio = { version = "1.49.0", features = ["full"] }
-futures = "0.3.31"
+tokio = { version = "1.52.1", features = ["full"] }
+futures = "0.3.32"
 thiserror = "2.0.18"
 tracing = "0.1.44"
-tracing-subscriber = { version = "0.3.22", features = ["env-filter", "json"] }
-anyhow = "1.0.101"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
+anyhow = "1.0.102"
 
 servarr-crds = { path = "crates/servarr-crds" }
 servarr-resources = { path = "crates/servarr-resources" }
-wiremock = "0.6"
+wiremock = "0.6.5"
