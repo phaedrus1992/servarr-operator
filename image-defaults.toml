@@ -122,3 +122,17 @@ port = 2222
 security = "sshd"
 downloads = false
 probe_type = "tcp"
+
+[navidrome]
+repository = "deluan/navidrome"
+tag = "0.61.2"
+port = 4533
+security = "nonroot"
+downloads = false
+
+[poutine]
+repository = "ghcr.io/benders/poutine"
+tag = "0.4.5"
+port = 3000
+security = "nonroot"
+downloads = false
