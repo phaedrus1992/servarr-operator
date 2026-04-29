@@ -531,3 +531,23 @@ fn validate_all_includes_navidrome_and_poutine() {
     // This panics if either app is missing from image-defaults.toml or validate_all.
     AppDefaults::validate_all().expect("all app defaults should be valid");
 }
+
+// ---------------------------------------------------------------------------
+// PoutineConfig round-trip
+// ---------------------------------------------------------------------------
+
+#[test]
+fn poutine_config_serializes_peers() {
+    let config = PoutineConfig {
+        peers: vec![
+            PoutinePeer {
+                id: "friend-instance".into(),
+                url: "https://music.friend.example.com".into(),
+                public_key: "ed25519:fooBARbaz==".into(),
+            },
+        ],
+    };
+    let json = serde_json::to_string(&config).expect("serialize");
+    assert!(json.contains("friend-instance"));
+    assert!(json.contains("ed25519:fooBARbaz=="));
+}

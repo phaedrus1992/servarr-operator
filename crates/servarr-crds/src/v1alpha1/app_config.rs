@@ -9,6 +9,7 @@ pub enum AppConfig {
     Prowlarr(ProwlarrConfig),
     SshBastion(SshBastionConfig),
     Overseerr(Box<OverseerrConfig>),
+    Poutine(PoutineConfig),
 }
 
 // --- Prowlarr ---
@@ -238,4 +239,36 @@ pub struct OverseerrServerDefaults4k {
     /// Enable season folders for the 4K Sonarr instance.
     #[serde(default)]
     pub enable_season_folders: Option<bool>,
+}
+
+// --- Poutine ---
+
+/// A federation peer for Poutine.
+///
+/// Each peer entry is written to `peers.yaml` and mounted at
+/// `/app/config/peers.yaml` inside the container. All three fields are
+/// required — Poutine will refuse to start if any are missing.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct PoutinePeer {
+    /// The peer's `POUTINE_INSTANCE_ID` value.
+    pub id: String,
+    /// Base URL of the peer hub (e.g. `"https://music.friend.example.com"`).
+    pub url: String,
+    /// ed25519 public key string shown on the peer's Settings page
+    /// (e.g. `"ed25519:fooBARbaz=="`).
+    pub public_key: String,
+}
+
+/// Poutine federation configuration.
+///
+/// When `peers` is non-empty the operator generates a `peers.yaml` ConfigMap
+/// and mounts it read-only at `/app/config/peers.yaml`. When empty no
+/// ConfigMap is created and Poutine runs in standalone mode.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct PoutineConfig {
+    /// List of federation peers.
+    #[serde(default)]
+    pub peers: Vec<PoutinePeer>,
 }
