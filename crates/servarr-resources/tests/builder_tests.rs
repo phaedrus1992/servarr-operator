@@ -3592,3 +3592,81 @@ fn test_httproute_ssa_body_has_type_meta() {
         "SSA body must contain kind"
     );
 }
+
+#[test]
+fn test_poutine_peers_configmap_with_peers() {
+    let app = ServarrApp {
+        metadata: ObjectMeta {
+            name: Some("poutine".into()),
+            namespace: Some("media".into()),
+            uid: Some("uid-poutine-001".into()),
+            ..Default::default()
+        },
+        spec: ServarrAppSpec {
+            app: AppType::Poutine,
+            app_config: Some(AppConfig::Poutine(PoutineConfig {
+                peers: vec![
+                    PoutinePeer {
+                        id: "friend-instance".into(),
+                        url: "https://music.friend.example.com".into(),
+                        public_key: "ed25519:fooBARbaz==".into(),
+                    },
+                    PoutinePeer {
+                        id: "second-peer".into(),
+                        url: "https://music.second.example.com".into(),
+                        public_key: "ed25519:anotherKey==".into(),
+                    },
+                ],
+            })),
+            ..Default::default()
+        },
+        status: None,
+    };
+
+    let cm = servarr_resources::configmap::build_poutine_peers(&app);
+    assert!(
+        cm.is_some(),
+        "Poutine with peers should produce a ConfigMap"
+    );
+    let cm = cm.unwrap();
+    let data = cm.data.unwrap();
+    assert!(data.contains_key("peers.yaml"), "ConfigMap should have 'peers.yaml' key");
+    let yaml = &data["peers.yaml"];
+    assert!(yaml.contains("friend-instance"), "yaml should contain first peer id");
+    assert!(yaml.contains("ed25519:fooBARbaz=="), "yaml should contain first peer public_key");
+    assert!(yaml.contains("second-peer"), "yaml should contain second peer id");
+}
+
+#[test]
+fn test_poutine_peers_configmap_empty_peers_returns_none() {
+    let app = ServarrApp {
+        metadata: ObjectMeta {
+            name: Some("poutine".into()),
+            namespace: Some("media".into()),
+            uid: Some("uid-poutine-002".into()),
+            ..Default::default()
+        },
+        spec: ServarrAppSpec {
+            app: AppType::Poutine,
+            app_config: Some(AppConfig::Poutine(PoutineConfig { peers: vec![] })),
+            ..Default::default()
+        },
+        status: None,
+    };
+
+    let cm = servarr_resources::configmap::build_poutine_peers(&app);
+    assert!(
+        cm.is_none(),
+        "Poutine with empty peers should return None"
+    );
+}
+
+#[test]
+fn test_poutine_peers_configmap_no_app_config_returns_none() {
+    let app = make_app(AppType::Poutine);
+    let cm = servarr_resources::configmap::build_poutine_peers(&app);
+    assert!(
+        cm.is_none(),
+        "Poutine with no app_config should return None"
+    );
+}
