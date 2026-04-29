@@ -1,0 +1,17 @@
+# Navidrome music server with NFS-mounted music library.
+# Navidrome requires credentials set at first boot via the web UI.
+# Connect Poutine to this instance via NAVIDROME_URL, NAVIDROME_USERNAME,
+# and NAVIDROME_PASSWORD env vars on the Poutine ServarrApp.
+apiVersion: servarr.dev/v1alpha1
+kind: ServarrApp
+metadata:
+  name: navidrome
+spec:
+  app: Navidrome
+  persistence:
+    nfsMounts:
+      - name: music
+        server: nas.local
+        path: /music
+        mountPath: /music
+        readOnly: true
