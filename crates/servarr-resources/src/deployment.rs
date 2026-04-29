@@ -404,6 +404,22 @@ fn build_volume_mounts(persistence: &PersistenceSpec, app: &ServarrApp) -> Vec<V
         });
     }
 
+    // Poutine peers config
+    if app
+        .spec
+        .app_config
+        .as_ref()
+        .is_some_and(|c| matches!(c, AppConfig::Poutine(pc) if !pc.peers.is_empty()))
+    {
+        mounts.push(VolumeMount {
+            name: "poutine-peers".into(),
+            mount_path: "/app/config/peers.yaml".into(),
+            sub_path: Some("peers.yaml".into()),
+            read_only: Some(true),
+            ..Default::default()
+        });
+    }
+
     // SSH bastion: mount the whole authorized-keys Secret as a read-only directory.
     // panubo/sshd ≥1.10.0 has a bug: its `while read -d ''` loop exits with code 1
     // (causing set -e to abort) when the last file it chmod's is not writable.
@@ -582,6 +598,23 @@ fn build_volumes(app: &ServarrApp, persistence: &PersistenceSpec) -> Vec<Volume>
             name: "prowlarr-definitions".into(),
             config_map: Some(ConfigMapVolumeSource {
                 name: common::child_name(app, "prowlarr-definitions"),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+    }
+
+    // Poutine peers ConfigMap
+    if app
+        .spec
+        .app_config
+        .as_ref()
+        .is_some_and(|c| matches!(c, AppConfig::Poutine(pc) if !pc.peers.is_empty()))
+    {
+        volumes.push(Volume {
+            name: "poutine-peers".into(),
+            config_map: Some(ConfigMapVolumeSource {
+                name: common::child_name(app, "poutine-peers"),
                 ..Default::default()
             }),
             ..Default::default()
@@ -796,6 +829,20 @@ fn build_env_vars(app: &ServarrApp, defaults: &AppDefaults, uid: i64, gid: i64) 
                 ..Default::default()
             });
         }
+    }
+
+    // Poutine: inject POUTINE_PEERS_CONFIG when peers are configured
+    if app
+        .spec
+        .app_config
+        .as_ref()
+        .is_some_and(|c| matches!(c, AppConfig::Poutine(pc) if !pc.peers.is_empty()))
+    {
+        env.push(EnvVar {
+            name: "POUTINE_PEERS_CONFIG".into(),
+            value: Some("/app/config/peers.yaml".into()),
+            ..Default::default()
+        });
     }
 
     if let Some(ref ac) = app.spec.admin_credentials {
