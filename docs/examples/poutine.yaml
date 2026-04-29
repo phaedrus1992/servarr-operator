@@ -1,0 +1,25 @@
+# Poutine federated music hub.
+# Required env vars (set via a Secret or directly):
+#   NAVIDROME_URL            — internal URL of the Navidrome service
+#   NAVIDROME_USERNAME       — Navidrome admin username
+#   NAVIDROME_PASSWORD       — Navidrome admin password
+#   POUTINE_INSTANCE_ID      — unique ID for this Poutine instance
+#   POUTINE_OWNER_USERNAME   — initial owner account username
+#   POUTINE_OWNER_PASSWORD   — initial owner account password
+apiVersion: servarr.dev/v1alpha1
+kind: ServarrApp
+metadata:
+  name: poutine
+spec:
+  app: Poutine
+  env:
+    - name: NAVIDROME_URL
+      value: "http://navidrome:4533"
+    - name: POUTINE_INSTANCE_ID
+      value: "my-poutine-instance"
+  appConfig:
+    poutine:
+      peers:
+        - id: "friend-instance"
+          url: "https://music.friend.example.com"
+          publicKey: "ed25519:fooBARbaz=="
