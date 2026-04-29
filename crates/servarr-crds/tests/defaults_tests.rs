@@ -360,3 +360,174 @@ fn poutine_as_str() {
 fn poutine_is_tier_three() {
     assert_eq!(AppType::Poutine.tier(), 3);
 }
+
+// ---------------------------------------------------------------------------
+// Navidrome AppDefaults
+// ---------------------------------------------------------------------------
+
+#[test]
+fn navidrome_defaults_port() {
+    let defaults = AppDefaults::for_app(&AppType::Navidrome);
+    assert_eq!(defaults.service.ports[0].port, 4533);
+}
+
+#[test]
+fn navidrome_defaults_image() {
+    let defaults = AppDefaults::for_app(&AppType::Navidrome);
+    assert_eq!(defaults.image.repository, "deluan/navidrome");
+    assert_eq!(defaults.image.tag, "0.61.2");
+}
+
+#[test]
+fn navidrome_has_data_pvc() {
+    let defaults = AppDefaults::for_app(&AppType::Navidrome);
+    let has_data = defaults
+        .persistence
+        .volumes
+        .iter()
+        .any(|v| v.name == "data" && v.mount_path == "/data");
+    assert!(has_data, "Navidrome should have a 'data' PVC at /data");
+}
+
+#[test]
+fn navidrome_env_includes_nd_loglevel() {
+    let defaults = AppDefaults::for_app(&AppType::Navidrome);
+    let has = defaults
+        .env
+        .iter()
+        .any(|e| e.name == "ND_LOGLEVEL" && e.value == "info");
+    assert!(has, "Navidrome should default ND_LOGLEVEL=info");
+}
+
+#[test]
+fn navidrome_env_includes_nd_scanschedule() {
+    let defaults = AppDefaults::for_app(&AppType::Navidrome);
+    let has = defaults
+        .env
+        .iter()
+        .any(|e| e.name == "ND_SCANSCHEDULE" && e.value == "1h");
+    assert!(has, "Navidrome should default ND_SCANSCHEDULE=1h");
+}
+
+#[test]
+fn navidrome_env_includes_nd_sessiontimeout() {
+    let defaults = AppDefaults::for_app(&AppType::Navidrome);
+    let has = defaults
+        .env
+        .iter()
+        .any(|e| e.name == "ND_SESSIONTIMEOUT" && e.value == "24h");
+    assert!(has, "Navidrome should default ND_SESSIONTIMEOUT=24h");
+}
+
+#[test]
+fn navidrome_env_includes_nd_enableexternalservices() {
+    let defaults = AppDefaults::for_app(&AppType::Navidrome);
+    let has = defaults
+        .env
+        .iter()
+        .any(|e| e.name == "ND_ENABLEEXTERNALSERVICES" && e.value == "false");
+    assert!(
+        has,
+        "Navidrome should default ND_ENABLEEXTERNALSERVICES=false"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Poutine AppDefaults
+// ---------------------------------------------------------------------------
+
+#[test]
+fn poutine_defaults_port() {
+    let defaults = AppDefaults::for_app(&AppType::Poutine);
+    assert_eq!(defaults.service.ports[0].port, 3000);
+}
+
+#[test]
+fn poutine_defaults_image() {
+    let defaults = AppDefaults::for_app(&AppType::Poutine);
+    assert_eq!(defaults.image.repository, "ghcr.io/benders/poutine");
+    assert_eq!(defaults.image.tag, "0.4.5");
+}
+
+#[test]
+fn poutine_has_data_pvc_at_app_data() {
+    let defaults = AppDefaults::for_app(&AppType::Poutine);
+    let has_data = defaults
+        .persistence
+        .volumes
+        .iter()
+        .any(|v| v.name == "data" && v.mount_path == "/app/data");
+    assert!(
+        has_data,
+        "Poutine should have a 'data' PVC at /app/data, got: {:?}",
+        defaults.persistence.volumes
+    );
+}
+
+#[test]
+fn poutine_has_no_config_pvc() {
+    let defaults = AppDefaults::for_app(&AppType::Poutine);
+    let has_config = defaults
+        .persistence
+        .volumes
+        .iter()
+        .any(|v| v.name == "config");
+    assert!(
+        !has_config,
+        "Poutine should not have a 'config' PVC — config is managed by ConfigMap"
+    );
+}
+
+#[test]
+fn poutine_env_includes_node_env() {
+    let defaults = AppDefaults::for_app(&AppType::Poutine);
+    let has = defaults
+        .env
+        .iter()
+        .any(|e| e.name == "NODE_ENV" && e.value == "production");
+    assert!(has, "Poutine should default NODE_ENV=production");
+}
+
+#[test]
+fn poutine_env_includes_database_path() {
+    let defaults = AppDefaults::for_app(&AppType::Poutine);
+    let has = defaults
+        .env
+        .iter()
+        .any(|e| e.name == "DATABASE_PATH" && e.value == "/app/data/poutine.db");
+    assert!(has, "Poutine should default DATABASE_PATH=/app/data/poutine.db");
+}
+
+#[test]
+fn poutine_env_includes_private_key_path() {
+    let defaults = AppDefaults::for_app(&AppType::Poutine);
+    let has = defaults
+        .env
+        .iter()
+        .any(|e| e.name == "POUTINE_PRIVATE_KEY_PATH" && e.value == "/app/data/poutine_ed25519.pem");
+    assert!(
+        has,
+        "Poutine should default POUTINE_PRIVATE_KEY_PATH=/app/data/poutine_ed25519.pem"
+    );
+}
+
+#[test]
+fn poutine_no_peers_config_env_by_default() {
+    // POUTINE_PEERS_CONFIG is injected dynamically only when peers are configured,
+    // not as a compiled-in default env var.
+    let defaults = AppDefaults::for_app(&AppType::Poutine);
+    let has = defaults
+        .env
+        .iter()
+        .any(|e| e.name == "POUTINE_PEERS_CONFIG");
+    assert!(
+        !has,
+        "POUTINE_PEERS_CONFIG should not be a default env var (injected only when peers set)"
+    );
+}
+
+#[test]
+fn validate_all_includes_navidrome_and_poutine() {
+    // This panics if either app is missing from image-defaults.toml or validate_all.
+    AppDefaults::validate_all().expect("all app defaults should be valid");
+}

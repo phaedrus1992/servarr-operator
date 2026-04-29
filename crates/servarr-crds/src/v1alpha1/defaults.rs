@@ -96,6 +96,8 @@ impl AppDefaults {
             AppType::SshBastion,
             AppType::Bazarr,
             AppType::Subgen,
+            AppType::Navidrome,
+            AppType::Poutine,
         ];
         let errors: Vec<String> = all
             .iter()
@@ -146,6 +148,58 @@ impl AppDefaults {
                 EnvVar {
                     name: "WHISPER_MODEL".into(),
                     value: "medium".into(),
+                },
+            ]);
+        }
+
+        if matches!(app, super::AppType::Navidrome) {
+            // Rename the default "config" PVC to "data" at /data
+            for vol in &mut defaults.persistence.volumes {
+                if vol.name == "config" {
+                    vol.name = "data".into();
+                    vol.mount_path = "/data".into();
+                }
+            }
+            defaults.env.extend([
+                EnvVar {
+                    name: "ND_LOGLEVEL".into(),
+                    value: "info".into(),
+                },
+                EnvVar {
+                    name: "ND_SCANSCHEDULE".into(),
+                    value: "1h".into(),
+                },
+                EnvVar {
+                    name: "ND_SESSIONTIMEOUT".into(),
+                    value: "24h".into(),
+                },
+                EnvVar {
+                    name: "ND_ENABLEEXTERNALSERVICES".into(),
+                    value: "false".into(),
+                },
+            ]);
+        }
+
+        if matches!(app, super::AppType::Poutine) {
+            // Rename the default "config" PVC to "data" at /app/data
+            for vol in &mut defaults.persistence.volumes {
+                if vol.name == "config" {
+                    vol.name = "data".into();
+                    vol.mount_path = "/app/data".into();
+                }
+            }
+            defaults.env.extend([
+                EnvVar {
+                    name: "NODE_ENV".into(),
+                    value: "production".into(),
+                },
+                EnvVar {
+                    name: "DATABASE_PATH".into(),
+                    value: "/app/data/poutine.db".into(),
+                },
+                EnvVar {
+                    name: "POUTINE_PRIVATE_KEY_PATH".into(),
+                    value: "/app/data/poutine_ed25519.pem".into(),
                 },
             ]);
         }
