@@ -11,6 +11,7 @@ networking, backups, and cross-app integration.
 |-----|------|-------------|------|
 | Plex | Media server | 32400 | 0 - Media Servers |
 | Jellyfin | Media server | 8096 | 0 - Media Servers |
+| Navidrome | Music server | 4533 | 0 - Media Servers |
 | SABnzbd | Usenet client | 8080 | 1 - Download Clients |
 | Transmission | BitTorrent client | 9091 | 1 - Download Clients |
 | Sonarr | TV management | 8989 | 2 - Media Managers |
@@ -21,6 +22,7 @@ networking, backups, and cross-app integration.
 | Maintainerr | Media cleanup | 6246 | 3 - Ancillary |
 | Prowlarr | Indexer manager | 9696 | 3 - Ancillary |
 | Jackett | Indexer proxy | 9117 | 3 - Ancillary |
+| Poutine | Federated music hub | 3000 | 3 - Ancillary |
 
 ## Custom Resources
 
