@@ -332,3 +332,31 @@ fn bazarr_defaults_are_linuxserver_profile() {
     // wrong)
     assert!(!defaults.persistence.volumes.is_empty());
 }
+
+// ---------------------------------------------------------------------------
+// Navidrome AppType
+// ---------------------------------------------------------------------------
+
+#[test]
+fn navidrome_as_str() {
+    assert_eq!(AppType::Navidrome.as_str(), "navidrome");
+}
+
+#[test]
+fn navidrome_is_tier_zero() {
+    assert_eq!(AppType::Navidrome.tier(), 0);
+}
+
+// ---------------------------------------------------------------------------
+// Poutine AppType
+// ---------------------------------------------------------------------------
+
+#[test]
+fn poutine_as_str() {
+    assert_eq!(AppType::Poutine.as_str(), "poutine");
+}
+
+#[test]
+fn poutine_is_tier_three() {
+    assert_eq!(AppType::Poutine.tier(), 3);
+}
