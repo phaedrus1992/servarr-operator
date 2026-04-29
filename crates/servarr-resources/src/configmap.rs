@@ -4,11 +4,13 @@ use servarr_crds::{AppConfig, AppType, ServarrApp, SshMode};
 use std::collections::BTreeMap;
 
 use crate::common;
+use serde_yaml;
 
 pub fn build(app: &ServarrApp) -> Option<ConfigMap> {
     match app.spec.app {
         AppType::Transmission => build_transmission(app),
         AppType::Sabnzbd => build_sabnzbd(app),
+        AppType::Poutine => build_poutine_peers(app),
         _ => None,
     }
 }
@@ -533,6 +535,38 @@ echo "bazarr-init: wrote $CONFIG"
             "bazarr-init.sh".to_string(),
             script.to_string(),
         )])),
+        ..Default::default()
+    })
+}
+
+/// Build a ConfigMap containing the Poutine federation peers config.
+///
+/// Generates `peers.yaml` as a YAML list of peer objects and mounts it
+/// at `/app/config/peers.yaml` inside the container. Returns `None` when
+/// there are no peers configured (standalone mode).
+pub fn build_poutine_peers(app: &ServarrApp) -> Option<ConfigMap> {
+    let peers = match app.spec.app_config {
+        Some(AppConfig::Poutine(ref pc)) if !pc.peers.is_empty() => &pc.peers,
+        _ => return None,
+    };
+
+    // Serialize peers to YAML. serde_yaml serializes Vec<PoutinePeer> as a
+    // YAML sequence, which is exactly the format Poutine expects.
+    #[expect(clippy::unwrap_used, reason = "serde_yaml serialization of static struct cannot fail")]
+    let yaml = serde_yaml::to_string(peers).unwrap();
+
+    let mut data = BTreeMap::new();
+    data.insert("peers.yaml".into(), yaml);
+
+    Some(ConfigMap {
+        metadata: ObjectMeta {
+            name: Some(common::child_name(app, "poutine-peers")),
+            namespace: Some(common::app_namespace(app)),
+            labels: Some(common::labels(app)),
+            owner_references: Some(vec![common::owner_reference(app)]),
+            ..Default::default()
+        },
+        data: Some(data),
         ..Default::default()
     })
 }
