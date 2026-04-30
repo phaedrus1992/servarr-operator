@@ -40,7 +40,11 @@
     "Jackett",
     "Jellyfin",
     "Plex",
-    "SshBastion"
+    "SshBastion",
+    "Bazarr",
+    "Subgen",
+    "Navidrome",
+    "Poutine"
   ],
   "kubernetes_resources": [
     "Deployment",

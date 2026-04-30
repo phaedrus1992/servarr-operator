@@ -337,6 +337,7 @@ fn validate_app_config_match(spec: &ServarrAppSpec, errors: &mut Vec<String>) {
                 | (AppType::Prowlarr, AppConfig::Prowlarr(_))
                 | (AppType::SshBastion, AppConfig::SshBastion(_))
                 | (AppType::Overseerr, AppConfig::Overseerr(_))
+                | (AppType::Poutine, AppConfig::Poutine(_))
         );
         if !valid {
             errors.push(format!(
@@ -708,6 +709,15 @@ mod tests {
     fn app_config_match_ssh_bastion_ok() {
         let mut spec = minimal_spec(AppType::SshBastion);
         spec.app_config = Some(AppConfig::SshBastion(SshBastionConfig::default()));
+        let mut errors = Vec::new();
+        validate_app_config_match(&spec, &mut errors);
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn app_config_match_poutine_ok() {
+        let mut spec = minimal_spec(AppType::Poutine);
+        spec.app_config = Some(AppConfig::Poutine(PoutineConfig::default()));
         let mut errors = Vec::new();
         validate_app_config_match(&spec, &mut errors);
         assert!(errors.is_empty());

@@ -140,6 +140,8 @@ pub enum AppType {
     SshBastion,
     Bazarr,
     Subgen,
+    Navidrome,
+    Poutine,
 }
 
 impl AppType {
@@ -160,6 +162,8 @@ impl AppType {
             Self::SshBastion => "ssh-bastion",
             Self::Bazarr => "bazarr",
             Self::Subgen => "subgen",
+            Self::Navidrome => "navidrome",
+            Self::Poutine => "poutine",
         }
     }
 
@@ -171,7 +175,7 @@ impl AppType {
     /// - Tier 3 — Ancillary (Tautulli, Overseerr, Maintainerr, Prowlarr, Jackett, Bazarr, Subgen)
     pub fn tier(&self) -> u8 {
         match self {
-            Self::Plex | Self::Jellyfin | Self::SshBastion => 0,
+            Self::Plex | Self::Jellyfin | Self::SshBastion | Self::Navidrome => 0,
             Self::Sabnzbd | Self::Transmission => 1,
             Self::Sonarr | Self::Radarr | Self::Lidarr => 2,
             Self::Tautulli
@@ -182,7 +186,8 @@ impl AppType {
             | Self::Bazarr
             // #10: Subgen depends on Jellyfin (subgenSync requires a Jellyfin CR) so it must
             // start after Jellyfin is ready, not at the same time (tier 0).
-            | Self::Subgen => 3,
+            | Self::Subgen
+            | Self::Poutine => 3,
         }
     }
 
