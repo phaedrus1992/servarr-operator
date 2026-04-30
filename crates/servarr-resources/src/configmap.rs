@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 
 use crate::common;
 use serde_yaml;
+use tracing;
 
 pub fn build(app: &ServarrApp) -> Option<ConfigMap> {
     match app.spec.app {
@@ -552,8 +553,17 @@ pub fn build_poutine_peers(app: &ServarrApp) -> Option<ConfigMap> {
 
     // Serialize peers to YAML. serde_yaml serializes Vec<PoutinePeer> as a
     // YAML sequence, which is exactly the format Poutine expects.
-    #[expect(clippy::unwrap_used, reason = "serde_yaml serialization of static struct cannot fail")]
-    let yaml = serde_yaml::to_string(peers).unwrap();
+    let yaml = match serde_yaml::to_string(peers) {
+        Ok(y) => y,
+        Err(e) => {
+            tracing::error!(
+                app = %common::app_name(app),
+                error = %e,
+                "failed to serialize Poutine peers — peers ConfigMap will not be created"
+            );
+            return None;
+        }
+    };
 
     let mut data = BTreeMap::new();
     data.insert("peers.yaml".into(), yaml);
