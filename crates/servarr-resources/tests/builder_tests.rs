@@ -3628,11 +3628,23 @@ fn test_poutine_peers_configmap_with_peers() {
     );
     let cm = cm.unwrap();
     let data = cm.data.unwrap();
-    assert!(data.contains_key("peers.yaml"), "ConfigMap should have 'peers.yaml' key");
+    assert!(
+        data.contains_key("peers.yaml"),
+        "ConfigMap should have 'peers.yaml' key"
+    );
     let yaml = &data["peers.yaml"];
-    assert!(yaml.contains("friend-instance"), "yaml should contain first peer id");
-    assert!(yaml.contains("ed25519:fooBARbaz=="), "yaml should contain first peer public_key");
-    assert!(yaml.contains("second-peer"), "yaml should contain second peer id");
+    assert!(
+        yaml.contains("friend-instance"),
+        "yaml should contain first peer id"
+    );
+    assert!(
+        yaml.contains("ed25519:fooBARbaz=="),
+        "yaml should contain first peer public_key"
+    );
+    assert!(
+        yaml.contains("second-peer"),
+        "yaml should contain second peer id"
+    );
 }
 
 #[test]
@@ -3653,10 +3665,7 @@ fn test_poutine_peers_configmap_empty_peers_returns_none() {
     };
 
     let cm = servarr_resources::configmap::build_poutine_peers(&app);
-    assert!(
-        cm.is_none(),
-        "Poutine with empty peers should return None"
-    );
+    assert!(cm.is_none(), "Poutine with empty peers should return None");
 }
 
 #[test]
@@ -3697,22 +3706,31 @@ fn test_poutine_peers_mounted_in_deployment() {
 
     let volumes = pod_spec.volumes.unwrap_or_default();
     let has_peers_vol = volumes.iter().any(|v| v.name == "poutine-peers");
-    assert!(has_peers_vol, "Poutine deployment should have a 'poutine-peers' volume");
+    assert!(
+        has_peers_vol,
+        "Poutine deployment should have a 'poutine-peers' volume"
+    );
 
     let container = &pod_spec.containers[0];
     let mounts = container.volume_mounts.as_ref().unwrap();
     let peers_mount = mounts.iter().find(|m| m.name == "poutine-peers");
-    assert!(peers_mount.is_some(), "Poutine container should have a 'poutine-peers' VolumeMount");
+    assert!(
+        peers_mount.is_some(),
+        "Poutine container should have a 'poutine-peers' VolumeMount"
+    );
     let peers_mount = peers_mount.unwrap();
     assert_eq!(peers_mount.mount_path, "/app/config/peers.yaml");
     assert_eq!(peers_mount.sub_path.as_deref(), Some("peers.yaml"));
     assert_eq!(peers_mount.read_only, Some(true));
 
     let env = container.env.as_ref().unwrap();
-    let has_peers_env = env
-        .iter()
-        .any(|e| e.name == "POUTINE_PEERS_CONFIG" && e.value.as_deref() == Some("/app/config/peers.yaml"));
-    assert!(has_peers_env, "Poutine with peers should have POUTINE_PEERS_CONFIG env var");
+    let has_peers_env = env.iter().any(|e| {
+        e.name == "POUTINE_PEERS_CONFIG" && e.value.as_deref() == Some("/app/config/peers.yaml")
+    });
+    assert!(
+        has_peers_env,
+        "Poutine with peers should have POUTINE_PEERS_CONFIG env var"
+    );
 }
 
 #[test]

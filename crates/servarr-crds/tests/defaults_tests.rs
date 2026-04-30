@@ -495,16 +495,18 @@ fn poutine_env_includes_database_path() {
         .env
         .iter()
         .any(|e| e.name == "DATABASE_PATH" && e.value == "/app/data/poutine.db");
-    assert!(has, "Poutine should default DATABASE_PATH=/app/data/poutine.db");
+    assert!(
+        has,
+        "Poutine should default DATABASE_PATH=/app/data/poutine.db"
+    );
 }
 
 #[test]
 fn poutine_env_includes_private_key_path() {
     let defaults = AppDefaults::for_app(&AppType::Poutine);
-    let has = defaults
-        .env
-        .iter()
-        .any(|e| e.name == "POUTINE_PRIVATE_KEY_PATH" && e.value == "/app/data/poutine_ed25519.pem");
+    let has = defaults.env.iter().any(|e| {
+        e.name == "POUTINE_PRIVATE_KEY_PATH" && e.value == "/app/data/poutine_ed25519.pem"
+    });
     assert!(
         has,
         "Poutine should default POUTINE_PRIVATE_KEY_PATH=/app/data/poutine_ed25519.pem"
@@ -539,13 +541,11 @@ fn validate_all_includes_navidrome_and_poutine() {
 #[test]
 fn poutine_config_serializes_peers() {
     let config = PoutineConfig {
-        peers: vec![
-            PoutinePeer {
-                id: "friend-instance".into(),
-                url: "https://music.friend.example.com".into(),
-                public_key: "ed25519:fooBARbaz==".into(),
-            },
-        ],
+        peers: vec![PoutinePeer {
+            id: "friend-instance".into(),
+            url: "https://music.friend.example.com".into(),
+            public_key: "ed25519:fooBARbaz==".into(),
+        }],
     };
     let json = serde_json::to_string(&config).expect("serialize");
     assert!(json.contains("friend-instance"));
