@@ -14,6 +14,13 @@ use std::collections::{BTreeMap, HashMap};
 
 use crate::common;
 
+fn has_poutine_peers(app: &ServarrApp) -> bool {
+    app.spec
+        .app_config
+        .as_ref()
+        .is_some_and(|c| matches!(c, AppConfig::Poutine(pc) if !pc.peers.is_empty()))
+}
+
 /// Compute a SHA-256 checksum of any config data that should trigger a pod restart.
 pub fn config_checksum(app: &ServarrApp) -> Option<String> {
     use sha2::{Digest, Sha256};
@@ -405,12 +412,7 @@ fn build_volume_mounts(persistence: &PersistenceSpec, app: &ServarrApp) -> Vec<V
     }
 
     // Poutine peers config
-    if app
-        .spec
-        .app_config
-        .as_ref()
-        .is_some_and(|c| matches!(c, AppConfig::Poutine(pc) if !pc.peers.is_empty()))
-    {
+    if has_poutine_peers(app) {
         mounts.push(VolumeMount {
             name: "poutine-peers".into(),
             mount_path: "/app/config/peers.yaml".into(),
@@ -608,12 +610,7 @@ fn build_volumes(app: &ServarrApp, persistence: &PersistenceSpec) -> Vec<Volume>
     }
 
     // Poutine peers ConfigMap
-    if app
-        .spec
-        .app_config
-        .as_ref()
-        .is_some_and(|c| matches!(c, AppConfig::Poutine(pc) if !pc.peers.is_empty()))
-    {
+    if has_poutine_peers(app) {
         volumes.push(Volume {
             name: "poutine-peers".into(),
             config_map: Some(ConfigMapVolumeSource {
@@ -835,12 +832,7 @@ fn build_env_vars(app: &ServarrApp, defaults: &AppDefaults, uid: i64, gid: i64) 
     }
 
     // Poutine: inject POUTINE_PEERS_CONFIG when peers are configured
-    if app
-        .spec
-        .app_config
-        .as_ref()
-        .is_some_and(|c| matches!(c, AppConfig::Poutine(pc) if !pc.peers.is_empty()))
-    {
+    if has_poutine_peers(app) {
         env.push(EnvVar {
             name: "POUTINE_PEERS_CONFIG".into(),
             value: Some("/app/config/peers.yaml".into()),
