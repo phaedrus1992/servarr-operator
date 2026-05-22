@@ -449,7 +449,10 @@ fn build_volumes(app: &ServarrApp, persistence: &PersistenceSpec) -> Vec<Volume>
         .map(|v| Volume {
             name: v.name.clone(),
             persistent_volume_claim: Some(PersistentVolumeClaimVolumeSource {
-                claim_name: common::child_name(app, &v.name),
+                claim_name: v
+                    .existing_claim_name
+                    .clone()
+                    .unwrap_or_else(|| common::child_name(app, &v.name)),
                 read_only: None,
             }),
             ..Default::default()

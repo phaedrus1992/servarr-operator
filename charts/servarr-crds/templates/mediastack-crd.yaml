@@ -636,6 +636,15 @@ spec:
                               accessMode:
                                 default: ReadWriteOnce
                                 type: string
+                              existingClaimName:
+                                description: |-
+                                  Name of a pre-existing PVC to use instead of creating one.
+
+                                  When set, the operator mounts this PVC directly and skips creating
+                                  the normally-generated `{app}-{name}` PVC. Useful when migrating
+                                  from a prior install that used different PVC naming conventions.
+                                nullable: true
+                                type: string
                               mountPath:
                                 type: string
                               name:
@@ -1038,6 +1047,15 @@ spec:
                                   accessMode:
                                     default: ReadWriteOnce
                                     type: string
+                                  existingClaimName:
+                                    description: |-
+                                      Name of a pre-existing PVC to use instead of creating one.
+
+                                      When set, the operator mounts this PVC directly and skips creating
+                                      the normally-generated `{app}-{name}` PVC. Useful when migrating
+                                      from a prior install that used different PVC naming conventions.
+                                    nullable: true
+                                    type: string
                                   mountPath:
                                     type: string
                                   name:
@@ -1305,6 +1323,15 @@ spec:
                           properties:
                             accessMode:
                               default: ReadWriteOnce
+                              type: string
+                            existingClaimName:
+                              description: |-
+                                Name of a pre-existing PVC to use instead of creating one.
+
+                                When set, the operator mounts this PVC directly and skips creating
+                                the normally-generated `{app}-{name}` PVC. Useful when migrating
+                                from a prior install that used different PVC naming conventions.
+                              nullable: true
                               type: string
                             mountPath:
                               type: string
