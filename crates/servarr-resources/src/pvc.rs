@@ -21,6 +21,7 @@ pub fn build_all(app: &ServarrApp) -> Vec<PersistentVolumeClaim> {
     let mut pvcs: Vec<PersistentVolumeClaim> = persistence
         .volumes
         .iter()
+        .filter(|v| v.existing_claim_name.is_none())
         .map(|v| build_one(app, v))
         .collect();
 

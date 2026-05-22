@@ -245,6 +245,7 @@ fn pvc(name: &str, mount: &str, size: &str) -> PvcVolume {
         access_mode: "ReadWriteOnce".into(),
         size: size.into(),
         storage_class: String::new(),
+        existing_claim_name: None,
     }
 }
 

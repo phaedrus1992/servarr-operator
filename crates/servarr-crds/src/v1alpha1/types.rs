@@ -29,6 +29,13 @@ pub struct PvcVolume {
     pub size: String,
     #[serde(default)]
     pub storage_class: String,
+    /// Name of a pre-existing PVC to use instead of creating one.
+    ///
+    /// When set, the operator mounts this PVC directly and skips creating
+    /// the normally-generated `{app}-{name}` PVC. Useful when migrating
+    /// from a prior install that used different PVC naming conventions.
+    #[serde(default)]
+    pub existing_claim_name: Option<String>,
 }
 
 fn default_access_mode() -> String {
