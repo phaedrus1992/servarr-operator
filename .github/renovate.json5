@@ -27,67 +27,102 @@
   prCreation: 'not-pending',
   prHourlyLimit: 0,
   rangeStrategy: 'bump',
+  rebaseWhen: 'behind-base-branch',
 
   // Specific Package Rules
   packageRules: [
+    // Helm versioning applies to all updates (major included). Split from
+    // the grouping rule below because Renovate disallows combining
+    // matchUpdateTypes with versioning in a single rule.
     {
-      groupName: 'Helm Chart Support',
-      groupSlug: 'helm-charts',
-      matchManagers: [
-        'helmv3',
-      ],
+      matchManagers: ['helmv3'],
       versioning: 'helm',
     },
     {
+      groupName: 'Helm Chart Support',
+      groupSlug: 'helm-charts',
+      matchManagers: ['helmv3'],
+      matchUpdateTypes: ['minor', 'patch', 'pin', 'digest'],
+    },
+
+    {
       groupName: 'auto-merge non-major dependencies',
       groupSlug: 'all-non-major',
-      matchUpdateTypes: [
-        '!major',
-      ],
+      matchUpdateTypes: ['!major'],
       automerge: true,
     },
     {
       groupName: 'auto-merge developer dependencies',
       groupSlug: 'dev-dependencies',
-      matchDepTypes: [
-        'devDependencies',
-      ],
+      matchDepTypes: ['devDependencies'],
       automerge: true,
     },
+    {
+      description: 'Separate major updates into individual PRs for review',
+      matchUpdateTypes: ['major'],
+      groupName: null,
+    },
 
-    // Group Rust crate updates together
+    // Group non-major GitHub Actions updates
+    {
+      groupName: 'non-major GitHub Actions',
+      groupSlug: 'github-actions-non-major',
+      matchManagers: ['github-actions'],
+      matchUpdateTypes: ['minor', 'patch', 'pin', 'digest'],
+    },
+
+    // Rust crate subcategories — listed before the catch-all so they take
+    // precedence (later rules override groupName for matching packages).
     {
       groupName: 'Rust Dependencies',
       groupSlug: 'rust-deps',
-      matchManagers: [
-        'cargo',
-      ],
-      matchUpdateTypes: [
-        '!major',
-      ],
+      matchManagers: ['cargo'],
+      matchUpdateTypes: ['!major'],
+    },
+    {
+      groupName: 'Rust Kubernetes crates',
+      groupSlug: 'rust-kubernetes',
+      matchManagers: ['cargo'],
+      matchPackageNames: ['/^kube/', '/^k8s/', '/^schemars/'],
+      matchUpdateTypes: ['minor', 'patch', 'pin', 'digest'],
+    },
+    {
+      groupName: 'Rust Serde crates',
+      groupSlug: 'rust-serde',
+      matchManagers: ['cargo'],
+      matchPackageNames: ['/^serde/'],
+      matchUpdateTypes: ['minor', 'patch', 'pin', 'digest'],
+    },
+    {
+      groupName: 'Rust Tokio crates',
+      groupSlug: 'rust-tokio',
+      matchManagers: ['cargo'],
+      matchPackageNames: ['/^tokio/'],
+      matchUpdateTypes: ['minor', 'patch', 'pin', 'digest'],
     },
 
     // Rust toolchain version (from custom regex manager)
     {
       groupName: 'Rust Toolchain',
       groupSlug: 'rust-toolchain',
-      matchDepNames: [
-        'rust',
-      ],
-      matchManagers: [
-        'custom.regex',
-      ],
+      matchDepNames: ['rust'],
+      matchManagers: ['custom.regex'],
     },
 
     // Container image versions in image-defaults.toml
     {
       groupName: 'Servarr App Images',
       groupSlug: 'servarr-images',
-      matchFileNames: [
-        'image-defaults.toml',
-      ],
+      matchFileNames: ['image-defaults.toml'],
     },
   ],
+
+  // CVE fixes: vulnerabilityAlerts defaults give us separate PRs (groupName: null),
+  // no release-age delay, and immediate creation. Security PRs also bypass
+  // branchConcurrentLimit/prConcurrentLimit.
+  vulnerabilityAlerts: {
+    labels: ['dependencies', 'security'],
+  },
 
   // Custom managers for non-standard dependency sources
   customManagers: [
@@ -106,9 +141,6 @@
     },
 
     // Container image tags in image-defaults.toml
-    //
-    // Rust base image in Dockerfile (already handled by dockerfile manager,
-    // but this ensures the rust-toolchain.toml and Dockerfile stay grouped)
     {
       customType: 'regex',
       managerFilePatterns: [
