@@ -7,3 +7,4 @@
 charts/*/charts/*.tgz
 .semgrep-results/
 __pycache__/
+.claude/settings.local.json
