@@ -12,9 +12,7 @@ fn arb_timestamp() -> impl Strategy<Value = String> {
         0u8..=59,
         0u8..=59,
     )
-        .prop_map(|(y, mo, d, h, mi, s)| {
-            format!("{y:04}-{mo:02}-{d:02}T{h:02}:{mi:02}:{s:02}Z")
-        })
+        .prop_map(|(y, mo, d, h, mi, s)| format!("{y:04}-{mo:02}-{d:02}T{h:02}:{mi:02}:{s:02}Z"))
 }
 
 fn arb_condition() -> impl Strategy<Value = Condition> {
@@ -32,18 +30,13 @@ fn arb_condition() -> impl Strategy<Value = Condition> {
 fn arb_backup_status() -> impl Strategy<Value = Option<BackupStatus>> {
     prop_oneof![
         Just(None),
-        (
-            prop::option::of(".*"),
-            prop::option::of(".*"),
-            any::<u32>(),
-        )
-            .prop_map(|(last_backup_time, last_backup_result, backup_count)| Some(
-                BackupStatus {
-                    last_backup_time,
-                    last_backup_result,
-                    backup_count,
-                }
-            )),
+        (prop::option::of(".*"), prop::option::of(".*"), any::<u32>(),).prop_map(
+            |(last_backup_time, last_backup_result, backup_count)| Some(BackupStatus {
+                last_backup_time,
+                last_backup_result,
+                backup_count,
+            })
+        ),
     ]
 }
 
