@@ -566,6 +566,7 @@ fn test_nfs_mounts() {
                     access_mode: "ReadWriteOnce".into(),
                     size: "1Gi".into(),
                     storage_class: String::new(),
+                    existing_claim_name: None,
                 }],
                 nfs_mounts: vec![NfsMount {
                     name: "media".into(),
@@ -629,7 +630,7 @@ fn test_deployment_builder_plex() {
     let container = &pod_spec.containers[0];
 
     assert_eq!(container.name, "plex");
-    assert_eq!(container.image.as_deref(), Some("linuxserver/plex:1.41.4"));
+    assert_eq!(container.image.as_deref(), Some("linuxserver/plex:1.43.0"));
 
     // Check port
     let ports = container.ports.as_ref().unwrap();
@@ -671,7 +672,7 @@ fn test_deployment_builder_jellyfin() {
     assert_eq!(container.name, "jellyfin");
     assert_eq!(
         container.image.as_deref(),
-        Some("linuxserver/jellyfin:10.10.7")
+        Some("linuxserver/jellyfin:10.11.7")
     );
 
     // Check port
@@ -2401,6 +2402,7 @@ fn test_networkpolicy_ssh_bastion_nfs_egress() {
                     access_mode: "ReadWriteOnce".into(),
                     size: "10Mi".into(),
                     storage_class: String::new(),
+                    existing_claim_name: None,
                 }],
                 nfs_mounts: vec![NfsMount {
                     name: "media".into(),

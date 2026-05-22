@@ -93,6 +93,7 @@ fn test_crd_serde_roundtrip_all_fields() {
                 access_mode: "ReadWriteOnce".into(),
                 size: "2Gi".into(),
                 storage_class: "fast".into(),
+                existing_claim_name: None,
             }],
             nfs_mounts: vec![NfsMount {
                 name: "media".into(),
