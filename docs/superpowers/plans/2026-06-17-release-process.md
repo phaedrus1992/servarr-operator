@@ -127,8 +127,20 @@ git commit -m "docs: add Keep a Changelog CHANGELOG.md"
 
 ## Task 3: Add `release.toml`
 
+> **Implementation note (actual):** This is a *virtual* workspace, so
+> cargo-release runs `pre-release-replacements` once per crate with paths
+> relative to each crate's manifest (it looked for `crates/servarr-api/CHANGELOG.md`
+> and errored). The shared policy (`publish/tag/push=false`, `shared-version`,
+> `allow-branch`, `tag-name`, commit message) stays in root `release.toml`, but
+> the `pre-release-replacements` were moved to
+> `crates/servarr-operator/Cargo.toml` `[package.metadata.release]` with `../../`
+> paths so they run exactly once against the workspace-root files. Validated with
+> `cargo release config` (confirms `publish=false`) and a dry run on a
+> `release/*` branch.
+
 **Files:**
 - Create: `release.toml`
+- Modify: `crates/servarr-operator/Cargo.toml` (add `[package.metadata.release]`)
 
 - [ ] **Step 1: Create `release.toml`**
 
@@ -485,6 +497,10 @@ git commit -m "ci: build rich release notes with changelog and helm instructions
 ---
 
 ## Task 6: Safety rail in `release.yaml`
+
+> **Implementation note (actual):** the Cargo version is read with
+> `awk -F'"' '/^version = /{print $2; exit}' Cargo.toml` instead of `grep | sed`
+> — deterministic and immune to `grep` output-prefix quirks.
 
 **Files:**
 - Modify: `.github/workflows/release.yaml` (the `version` job)
