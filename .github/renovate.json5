@@ -101,6 +101,28 @@
       matchPackageNames: ['/^tokio/'],
       matchUpdateTypes: ['minor', 'patch', 'pin', 'digest'],
     },
+    {
+      groupName: 'Rust Tracing crates',
+      groupSlug: 'rust-tracing',
+      matchManagers: ['cargo'],
+      matchPackageNames: ['/^tracing/'],
+      matchUpdateTypes: ['minor', 'patch', 'pin', 'digest'],
+    },
+    {
+      groupName: 'Rust Axum crates',
+      groupSlug: 'rust-axum',
+      matchManagers: ['cargo'],
+      matchPackageNames: ['/^axum/'],
+      matchUpdateTypes: ['minor', 'patch', 'pin', 'digest'],
+    },
+    // Servarr app API client crates — bump the integration family together.
+    {
+      groupName: 'Servarr API client crates',
+      groupSlug: 'servarr-api-clients',
+      matchManagers: ['cargo'],
+      matchPackageNames: ['overseerr', 'sonarr', 'radarr', 'lidarr', 'prowlarr'],
+      matchUpdateTypes: ['minor', 'patch', 'pin', 'digest'],
+    },
 
     // Rust toolchain version (from custom regex manager)
     {
