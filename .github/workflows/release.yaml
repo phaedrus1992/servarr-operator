@@ -14,11 +14,32 @@ jobs:
       semver: ${{ steps.v.outputs.semver }}
       tag: ${{ steps.v.outputs.tag }}
     steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+
       - name: Compute version from tag
         id: v
         run: |
           echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
           echo "semver=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Verify tag matches Cargo version and changelog
+        env:
+          SEMVER: ${{ steps.v.outputs.semver }}
+        run: |
+          set -euo pipefail
+          cargo_version="$(awk -F'"' '/^version = /{print $2; exit}' Cargo.toml)"
+          if [ "${cargo_version}" != "${SEMVER}" ]; then
+            echo "::error::tag v${SEMVER} does not match [workspace.package] version ${cargo_version}" >&2
+            exit 1
+          fi
+          if ! scripts/changelog-extract.sh "${SEMVER}" CHANGELOG.md >/dev/null; then
+            echo "::error::no CHANGELOG.md section for ${SEMVER}; did cargo-release run?" >&2
+            exit 1
+          fi
+          echo "version ${SEMVER}: tag, Cargo.toml, and CHANGELOG.md agree"
 
   ci:
     uses: ./.github/workflows/_ci.yaml
