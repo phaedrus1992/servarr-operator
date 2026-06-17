@@ -740,12 +740,8 @@ async fn ensure_api_key_secret(client: &Client, app: &ServarrApp, ns: &str) -> R
         Err(e) => return Err(Error::Kube(e)),
     }
 
-    use rand::Rng as _;
-    let key: String = rand::rng()
-        .sample_iter(rand::distr::Alphanumeric)
-        .take(32)
-        .map(char::from)
-        .collect();
+    use rand::distr::SampleString as _;
+    let key = rand::distr::Alphanumeric.sample_string(&mut rand::rng(), 32);
 
     let secret = if is_bazarr {
         // Build the secret directly — child_name-based, not tied to api_key_secret field.
