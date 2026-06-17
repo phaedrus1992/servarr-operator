@@ -108,6 +108,10 @@ pub struct StackApp {
     pub security: Option<SecurityProfile>,
     #[serde(default)]
     pub service: Option<ServiceSpec>,
+    /// Override the generated Service name for this app (see
+    /// `ServarrAppSpec::service_name`).
+    #[serde(default)]
+    pub service_name: Option<String>,
     #[serde(default)]
     pub gateway: Option<GatewaySpec>,
     #[serde(default)]
@@ -174,6 +178,9 @@ pub struct Split4kOverrides {
     pub env: Vec<EnvVar>,
     #[serde(default)]
     pub service: Option<ServiceSpec>,
+    /// Override the generated Service name for the 4K instance (e.g. `radarr4k`).
+    #[serde(default)]
+    pub service_name: Option<String>,
     #[serde(default)]
     pub gateway: Option<GatewaySpec>,
     #[serde(default)]
@@ -254,6 +261,9 @@ impl StackApp {
                 if overrides.service.is_some() {
                     four_k_app.service = overrides.service.clone();
                 }
+                if overrides.service_name.is_some() {
+                    four_k_app.service_name = overrides.service_name.clone();
+                }
                 if overrides.gateway.is_some() {
                     four_k_app.gateway = overrides.gateway.clone();
                 }
@@ -294,6 +304,7 @@ impl StackApp {
             gid: self.gid.or(d.gid),
             security: self.security.clone().or(d.security),
             service: self.service.clone(),
+            service_name: self.service_name.clone(),
             gateway: match (self.gateway.clone(), d.gateway.as_ref()) {
                 (Some(gw), Some(def_gw)) => Some(gw.merge_with(def_gw)),
                 (Some(gw), None) => Some(gw),

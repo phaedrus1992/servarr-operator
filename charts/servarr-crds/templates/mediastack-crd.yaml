@@ -577,6 +577,7 @@ spec:
                           description: Arbitrary additional egress rules (raw NetworkPolicyEgressRule JSON).
                           items:
                             type: object
+                            x-kubernetes-preserve-unknown-fields: true
                           type: array
                         deniedCidrBlocks:
                           default: []
@@ -814,6 +815,7 @@ spec:
                       properties:
                         affinity:
                           type: object
+                          x-kubernetes-preserve-unknown-fields: true
                         nodeSelector:
                           additionalProperties:
                             type: string
@@ -823,6 +825,7 @@ spec:
                           default: []
                           items:
                             type: object
+                            x-kubernetes-preserve-unknown-fields: true
                           type: array
                       type: object
                     security:
@@ -911,6 +914,12 @@ spec:
                       required:
                       - ports
                       type: object
+                    serviceName:
+                      description: |-
+                        Override the generated Service name for this app (see
+                        `ServarrAppSpec::service_name`).
+                      nullable: true
+                      type: string
                     split4k:
                       description: |-
                         When true, creates both a standard and a 4K instance of this app.
@@ -1139,6 +1148,10 @@ spec:
                           required:
                           - ports
                           type: object
+                        serviceName:
+                          description: Override the generated Service name for the 4K instance (e.g. `radarr4k`).
+                          nullable: true
+                          type: string
                       type: object
                     subgenSync:
                       description: |-
@@ -1293,6 +1306,7 @@ spec:
                         description: Arbitrary additional egress rules (raw NetworkPolicyEgressRule JSON).
                         items:
                           type: object
+                          x-kubernetes-preserve-unknown-fields: true
                         type: array
                       deniedCidrBlocks:
                         default: []
@@ -1396,6 +1410,7 @@ spec:
                     properties:
                       affinity:
                         type: object
+                        x-kubernetes-preserve-unknown-fields: true
                       nodeSelector:
                         additionalProperties:
                           type: string
@@ -1405,6 +1420,7 @@ spec:
                         default: []
                         items:
                           type: object
+                          x-kubernetes-preserve-unknown-fields: true
                         type: array
                     type: object
                   security:

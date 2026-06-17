@@ -55,6 +55,7 @@ fn test_crd_serde_roundtrip_all_fields() {
         uid: Some(1000),
         gid: Some(1000),
         security: Some(SecurityProfile::linux_server(1000, 1000)),
+        service_name: Some("radarr4k".into()),
         service: Some(ServiceSpec {
             service_type: "ClusterIP".into(),
             ports: vec![ServicePort {

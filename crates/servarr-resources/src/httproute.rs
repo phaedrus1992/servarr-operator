@@ -50,7 +50,7 @@ pub fn build(app: &ServarrApp) -> Option<DynamicObject> {
             "hostnames": hostnames,
             "rules": [{
                 "backendRefs": [{
-                    "name": name,
+                    "name": common::service_name(app),
                     "port": first_port,
                 }],
             }],

@@ -17,6 +17,15 @@ pub fn name_for(app: &ServarrApp, suffix: &str) -> String {
     child_name(app, suffix)
 }
 
+/// Name of the Service (and route backendRef) for this app. Falls back to
+/// the app's own name when no `service_name` override is set.
+pub fn service_name(app: &ServarrApp) -> String {
+    app.spec
+        .service_name
+        .clone()
+        .unwrap_or_else(|| app_name(app))
+}
+
 pub fn app_namespace(app: &ServarrApp) -> String {
     app.metadata
         .namespace

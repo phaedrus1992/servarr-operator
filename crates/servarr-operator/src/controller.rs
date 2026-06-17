@@ -320,12 +320,14 @@ pub async fn reconcile(app: Arc<ServarrApp>, ctx: Arc<Context>) -> Result<Action
         }
     }
 
-    // Build and apply Service
+    // Build and apply Service. The Service name may differ from the app name
+    // when `service_name` is set, so the SSA URL must use the service name.
     let service = servarr_resources::service::build(&app);
+    let svc_name = servarr_resources::common::service_name(&app);
     let svc_api = Api::<Service>::namespaced(client.clone(), &ns);
-    tracing::debug!(%name, "SSA: applying Service");
+    tracing::debug!(%svc_name, "SSA: applying Service");
     svc_api
-        .patch(&name, &pp, &Patch::Apply(&service))
+        .patch(&svc_name, &pp, &Patch::Apply(&service))
         .await
         .map_err(Error::Kube)?;
 
@@ -879,7 +881,7 @@ async fn sync_admin_credentials(client: &Client, app: &ServarrApp, ns: &str) -> 
         }
     };
 
-    let app_name = servarr_resources::common::app_name(app);
+    let app_name = servarr_resources::common::service_name(app);
     let defaults = servarr_crds::AppDefaults::for_app(&app.spec.app);
     let svc_spec = app.spec.service.as_ref().unwrap_or(&defaults.service);
     let port = svc_spec.ports.first().map(|p| p.port).unwrap_or(80);
@@ -1111,7 +1113,7 @@ pub(crate) async fn check_api_health(
         }
     };
 
-    let app_name = servarr_resources::common::app_name(app);
+    let app_name = servarr_resources::common::service_name(app);
     let defaults = servarr_crds::AppDefaults::for_app(&app.spec.app);
     let svc_spec = app.spec.service.as_ref().unwrap_or(&defaults.service);
     let port = svc_spec.ports.first().map(|p| p.port).unwrap_or(80);
@@ -1520,7 +1522,7 @@ async fn maybe_run_backup(
         return app.status.as_ref().and_then(|s| s.backup_status.clone());
     }
 
-    let app_name = servarr_resources::common::app_name(app);
+    let app_name = servarr_resources::common::service_name(app);
     let defaults = servarr_crds::AppDefaults::for_app(&app.spec.app);
     let svc_spec = app.spec.service.as_ref().unwrap_or(&defaults.service);
     let port = svc_spec.ports.first().map(|p| p.port).unwrap_or(80);
@@ -1770,7 +1772,7 @@ async fn try_restore(
         .await
         .map_err(|e| anyhow::anyhow!("failed to read API key for restore: {e}"))?;
 
-    let app_name = servarr_resources::common::app_name(app);
+    let app_name = servarr_resources::common::service_name(app);
     let defaults = servarr_crds::AppDefaults::for_app(&app.spec.app);
     let svc_spec = app.spec.service.as_ref().unwrap_or(&defaults.service);
     let port = svc_spec.ports.first().map(|p| p.port).unwrap_or(80);
@@ -1877,7 +1879,7 @@ pub(crate) async fn discover_namespace_apps(
             }
         };
 
-        let app_name = servarr_resources::common::app_name(app);
+        let app_name = servarr_resources::common::service_name(app);
         let defaults = servarr_crds::AppDefaults::for_app(&app.spec.app);
         let svc_spec = app.spec.service.as_ref().unwrap_or(&defaults.service);
         let port = svc_spec.ports.first().map(|p| p.port).unwrap_or(80);
@@ -1917,7 +1919,7 @@ async fn sync_prowlarr_apps(
         .ok_or_else(|| anyhow::anyhow!("Prowlarr sync requires api_key_secret"))?;
     let prowlarr_key = servarr_api::read_secret_key(client, &ns, secret_name, "api-key").await?;
 
-    let prowlarr_app_name = servarr_resources::common::app_name(prowlarr);
+    let prowlarr_app_name = servarr_resources::common::service_name(prowlarr);
     let defaults = servarr_crds::AppDefaults::for_app(&prowlarr.spec.app);
     let svc_spec = prowlarr.spec.service.as_ref().unwrap_or(&defaults.service);
     let port = svc_spec.ports.first().map(|p| p.port).unwrap_or(80);
@@ -2071,7 +2073,7 @@ async fn cleanup_prowlarr_registration(
 ) -> Result<(), anyhow::Error> {
     use kube::api::ListParams;
 
-    let app_name_str = servarr_resources::common::app_name(app);
+    let app_name_str = servarr_resources::common::service_name(app);
     let defaults = servarr_crds::AppDefaults::for_app(&app.spec.app);
     let svc_spec = app.spec.service.as_ref().unwrap_or(&defaults.service);
     let port = svc_spec.ports.first().map(|p| p.port).unwrap_or(80);
@@ -2097,7 +2099,7 @@ async fn cleanup_prowlarr_registration(
     let prowlarr_key =
         servarr_api::read_secret_key(client, namespace, secret_name, "api-key").await?;
 
-    let prowlarr_app_name = servarr_resources::common::app_name(prowlarr);
+    let prowlarr_app_name = servarr_resources::common::service_name(prowlarr);
     let prowlarr_defaults = servarr_crds::AppDefaults::for_app(&prowlarr.spec.app);
     let prowlarr_svc = prowlarr
         .spec
@@ -2159,7 +2161,7 @@ async fn sync_overseerr_servers(
         .ok_or_else(|| anyhow::anyhow!("Overseerr sync requires api_key_secret"))?;
     let overseerr_key = servarr_api::read_secret_key(client, &ns, secret_name, "api-key").await?;
 
-    let overseerr_app_name = servarr_resources::common::app_name(overseerr);
+    let overseerr_app_name = servarr_resources::common::service_name(overseerr);
     let defaults = servarr_crds::AppDefaults::for_app(&overseerr.spec.app);
     let svc_spec = overseerr.spec.service.as_ref().unwrap_or(&defaults.service);
     let port = svc_spec.ports.first().map(|p| p.port).unwrap_or(80);
@@ -2390,7 +2392,7 @@ async fn sync_bazarr_apps(
     let api_key_secret = servarr_resources::common::child_name(bazarr, "api-key");
     let bazarr_key = servarr_api::read_secret_key(client, &ns, &api_key_secret, "api-key").await?;
 
-    let bazarr_app_name = servarr_resources::common::app_name(bazarr);
+    let bazarr_app_name = servarr_resources::common::service_name(bazarr);
     let defaults = servarr_crds::AppDefaults::for_app(&bazarr.spec.app);
     let svc_spec = bazarr.spec.service.as_ref().unwrap_or(&defaults.service);
     let port = svc_spec.ports.first().map(|p| p.port).unwrap_or(80);
@@ -2512,7 +2514,7 @@ async fn sync_subgen_jellyfin(
         .await
         .map_err(|e| anyhow::anyhow!("Jellyfin API key secret {jf_secret_name} unreadable: {e}"))?;
 
-    let jf_app_name = servarr_resources::common::app_name(jellyfin);
+    let jf_app_name = servarr_resources::common::service_name(jellyfin);
     let jf_defaults = servarr_crds::AppDefaults::for_app(&jellyfin.spec.app);
     let jf_svc_spec = jellyfin
         .spec
@@ -2588,7 +2590,7 @@ async fn cleanup_overseerr_registration(
 ) -> Result<(), anyhow::Error> {
     use kube::api::ListParams;
 
-    let app_name_str = servarr_resources::common::app_name(app);
+    let app_name_str = servarr_resources::common::service_name(app);
     let defaults_for_app = servarr_crds::AppDefaults::for_app(&app.spec.app);
     let svc_spec = app
         .spec
@@ -2620,7 +2622,7 @@ async fn cleanup_overseerr_registration(
     let overseerr_key =
         servarr_api::read_secret_key(client, &overseerr_ns, secret_name, "api-key").await?;
 
-    let overseerr_app_name = servarr_resources::common::app_name(overseerr);
+    let overseerr_app_name = servarr_resources::common::service_name(overseerr);
     let overseerr_defaults = servarr_crds::AppDefaults::for_app(&overseerr.spec.app);
     let overseerr_svc = overseerr
         .spec

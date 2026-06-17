@@ -561,6 +561,7 @@ spec:
                     description: Arbitrary additional egress rules (raw NetworkPolicyEgressRule JSON).
                     items:
                       type: object
+                      x-kubernetes-preserve-unknown-fields: true
                     type: array
                   deniedCidrBlocks:
                     default: []
@@ -789,6 +790,7 @@ spec:
                 properties:
                   affinity:
                     type: object
+                    x-kubernetes-preserve-unknown-fields: true
                   nodeSelector:
                     additionalProperties:
                       type: string
@@ -798,6 +800,7 @@ spec:
                     default: []
                     items:
                       type: object
+                      x-kubernetes-preserve-unknown-fields: true
                     type: array
                 type: object
               security:
@@ -886,6 +889,15 @@ spec:
                 required:
                 - ports
                 type: object
+              serviceName:
+                description: |-
+                  Override the name of the generated Service (and the route backendRef
+                  that targets it). Defaults to the ServarrApp's own name. Useful for
+                  preserving in-cluster DNS names from a prior deployment so other apps'
+                  stored configs keep resolving (e.g. `transmission` instead of
+                  `media-transmission`). Does not affect the Deployment or pod labels.
+                nullable: true
+                type: string
               subgenSync:
                 description: Subgen cross-app synchronization. Only applies to Subgen-type apps.
                 nullable: true
@@ -966,3 +978,4 @@ spec:
     storage: true
     subresources:
       status: {}
+
