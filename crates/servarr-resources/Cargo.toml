@@ -9,5 +9,5 @@ k8s-openapi.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 servarr-crds.workspace = true
-sha2 = "0.10.9"
+sha2 = "0.11.0"
 tracing.workspace = true

@@ -20,12 +20,12 @@ serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 serde_yaml = "0.9.34"
 tokio = { version = "1.49.0", features = ["full"] }
-futures = "0.3.31"
+futures = "0.3.32"
 thiserror = "2.0.18"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.22", features = ["env-filter", "json"] }
-anyhow = "1.0.101"
+anyhow = "1.0.102"
 
 servarr-crds = { path = "crates/servarr-crds" }
 servarr-resources = { path = "crates/servarr-resources" }
-wiremock = "0.6"
+wiremock = "0.6.5"
