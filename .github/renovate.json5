@@ -45,22 +45,23 @@
       matchUpdateTypes: ['minor', 'patch', 'pin', 'digest'],
     },
 
+    // Auto-merge every non-major update. Sets NO groupName on purpose: it only
+    // controls merge policy. Grouping is owned by the per-manager rules below.
+    // This split stops non-major updates from collapsing into one giant PR
+    // where a single failing check blocks everything.
     {
-      groupName: 'auto-merge non-major dependencies',
-      groupSlug: 'all-non-major',
       matchUpdateTypes: ['!major'],
       automerge: true,
     },
     {
+      // matchUpdateTypes added deliberately: without it, automerge here also
+      // applied to MAJOR devDependency bumps (the major-isolation rule strips
+      // groupName but not automerge). Majors now get individual reviewed PRs.
       groupName: 'auto-merge developer dependencies',
       groupSlug: 'dev-dependencies',
       matchDepTypes: ['devDependencies'],
+      matchUpdateTypes: ['minor', 'patch', 'pin', 'digest'],
       automerge: true,
-    },
-    {
-      description: 'Separate major updates into individual PRs for review',
-      matchUpdateTypes: ['major'],
-      groupName: null,
     },
 
     // Group non-major GitHub Actions updates
@@ -114,6 +115,15 @@
       groupName: 'Servarr App Images',
       groupSlug: 'servarr-images',
       matchFileNames: ['image-defaults.toml'],
+    },
+
+    // Major isolation (most specific — placed LAST so it overrides the
+    // groupName set by any rule above, including those without
+    // matchUpdateTypes like Rust Toolchain and Servarr App Images).
+    {
+      description: 'Separate major updates into individual PRs for review',
+      matchUpdateTypes: ['major'],
+      groupName: null,
     },
   ],
 
