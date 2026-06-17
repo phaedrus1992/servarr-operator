@@ -442,7 +442,10 @@ spec:
                       nullable: true
                       properties:
                         enabled:
-                          default: false
+                          description: |-
+                            Whether the gateway is enabled. When omitted, inherits from StackDefaults;
+                            if no defaults are set, defaults to false for standalone ServarrApps.
+                          nullable: true
                           type: boolean
                         hosts:
                           default: []
@@ -949,7 +952,10 @@ spec:
                           nullable: true
                           properties:
                             enabled:
-                              default: false
+                              description: |-
+                                Whether the gateway is enabled. When omitted, inherits from StackDefaults;
+                                if no defaults are set, defaults to false for standalone ServarrApps.
+                              nullable: true
                               type: boolean
                             hosts:
                               default: []
@@ -1197,7 +1203,10 @@ spec:
                     nullable: true
                     properties:
                       enabled:
-                        default: false
+                        description: |-
+                          Whether the gateway is enabled. When omitted, inherits from StackDefaults;
+                          if no defaults are set, defaults to false for standalone ServarrApps.
+                        nullable: true
                         type: boolean
                       hosts:
                         default: []
