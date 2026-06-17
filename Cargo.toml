@@ -8,9 +8,10 @@ members = [
 ]
 
 [workspace.package]
+version = "0.1.0"
 edition = "2024"
 license = "MIT"
-repository = "https://github.com/servarr/servarr-operator"
+repository = "https://github.com/phaedrus1992/servarr-operator"
 
 [workspace.dependencies]
 kube = { version = "3.0.1", default-features = false, features = ["runtime", "derive", "client", "rustls-tls", "config"] }
