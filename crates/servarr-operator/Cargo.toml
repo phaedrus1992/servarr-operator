@@ -7,6 +7,25 @@ edition.workspace = true
 name = "servarr-operator"
 path = "src/main.rs"
 
+# Workspace-level release replacements are anchored here (single crate) so they
+# run exactly once. Paths are relative to this crate's manifest dir; ../../
+# reaches the workspace root. Shared policy lives in /release.toml.
+[package.metadata.release]
+pre-release-replacements = [
+  # Keep a Changelog rollover (cargo-release FAQ pattern).
+  { file = "../../CHANGELOG.md", search = "Unreleased", replace = "{{version}}", min = 1 },
+  { file = "../../CHANGELOG.md", search = "\\.\\.\\.HEAD", replace = "...v{{version}}", exactly = 1 },
+  { file = "../../CHANGELOG.md", search = "ReleaseDate", replace = "{{date}}", exactly = 1 },
+  { file = "../../CHANGELOG.md", search = "<!-- next-header -->", replace = "<!-- next-header -->\n\n## [Unreleased] - ReleaseDate", exactly = 1 },
+  { file = "../../CHANGELOG.md", search = "<!-- next-url -->", replace = "<!-- next-url -->\n[Unreleased]: https://github.com/phaedrus1992/servarr-operator/compare/v{{version}}...HEAD", exactly = 1 },
+
+  # Keep both Helm charts honest in-repo (CI still passes versions at package time).
+  { file = "../../charts/servarr-crds/Chart.yaml", search = "^version: .*$", replace = "version: {{version}}", exactly = 1 },
+  { file = "../../charts/servarr-crds/Chart.yaml", search = "^appVersion: .*$", replace = "appVersion: \"{{version}}\"", exactly = 1 },
+  { file = "../../charts/servarr-operator/Chart.yaml", search = "^version: .*$", replace = "version: {{version}}", exactly = 1 },
+  { file = "../../charts/servarr-operator/Chart.yaml", search = "^appVersion: .*$", replace = "appVersion: \"{{version}}\"", exactly = 1 },
+]
+
 [dependencies]
 kube.workspace = true
 k8s-openapi.workspace = true
