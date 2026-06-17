@@ -1,12 +1,20 @@
 use kube::api::DynamicObject;
 use serde_json::json;
-use servarr_crds::{AppDefaults, ServarrApp};
+use servarr_crds::{AppDefaults, RouteType, ServarrApp};
 
 use crate::common;
 
 pub fn build(app: &ServarrApp) -> Option<DynamicObject> {
     let gateway = app.spec.gateway.as_ref()?;
     if !gateway.is_enabled() {
+        return None;
+    }
+
+    // Only build HTTPRoute when route_type is Http (don't build for apps like SshBastion
+    // that default to Tcp). TLS also forces TCP routes, so skip HTTPRoute then too.
+    if matches!(gateway.effective_route_type(&app.spec.app), RouteType::Tcp)
+        || gateway.tls.as_ref().is_some_and(|t| t.enabled)
+    {
         return None;
     }
 

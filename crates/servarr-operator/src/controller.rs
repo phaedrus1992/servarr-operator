@@ -1853,13 +1853,20 @@ async fn try_restore(
 pub(crate) struct DiscoveredApp {
     pub(crate) name: String,
     pub(crate) app_type: AppType,
-    pub(crate) base_url: String,
-    /// Hostname component of `base_url` (e.g. `"sonarr.default.svc"`).
+    /// Hostname component (e.g. `"sonarr.default.svc"`).
     pub(crate) host: String,
-    /// Port component of `base_url`, matching the `i32` type used by `ServicePort.port`.
+    /// Port component, matching the `i32` type used by `ServicePort.port`.
     pub(crate) port: i32,
     pub(crate) api_key: String,
     pub(crate) instance: Option<String>,
+}
+
+impl DiscoveredApp {
+    /// Compute the base URL from host and port components.
+    /// Issue #14: Compute on demand instead of storing redundantly.
+    pub(crate) fn base_url(&self) -> String {
+        format!("http://{}:{}", self.host, self.port)
+    }
 }
 
 /// Discover all Servarr v3 apps (Sonarr/Radarr/Lidarr) in a namespace
@@ -1907,12 +1914,10 @@ pub(crate) async fn discover_namespace_apps(
         let svc_spec = app.spec.service.as_ref().unwrap_or(&defaults.service);
         let port = svc_spec.ports.first().map(|p| p.port).unwrap_or(80);
         let host = format!("{app_name}.{namespace}.svc");
-        let base_url = format!("http://{host}:{port}");
 
         discovered.push(DiscoveredApp {
             name: app.name_any(),
             app_type: app.spec.app.clone(),
-            base_url,
             host,
             port,
             api_key,
@@ -1980,7 +1985,7 @@ async fn sync_prowlarr_apps(
     // Add or update discovered apps
     let mut synced_urls = std::collections::HashSet::new();
     for app in &discovered {
-        synced_urls.insert(app.base_url.clone());
+        synced_urls.insert(app.base_url());
 
         let implementation = match app.app_type {
             AppType::Sonarr => "Sonarr",
@@ -2005,7 +2010,7 @@ async fn sync_prowlarr_apps(
             fields: vec![
                 servarr_api::prowlarr::ProwlarrAppField {
                     name: "baseUrl".into(),
-                    value: serde_json::Value::String(app.base_url.clone()),
+                    value: serde_json::Value::String(app.base_url()),
                 },
                 servarr_api::prowlarr::ProwlarrAppField {
                     name: "apiKey".into(),
@@ -2015,7 +2020,7 @@ async fn sync_prowlarr_apps(
             tags: Vec::new(),
         };
 
-        if let Some(existing_app) = existing_by_url.get(&app.base_url) {
+        if let Some(existing_app) = existing_by_url.get(&app.base_url()) {
             // Update if name changed
             if existing_app.name != app.name {
                 info!(prowlarr = %prowlarr_name, app = %app.name, "updating Prowlarr application");

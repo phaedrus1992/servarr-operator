@@ -3630,3 +3630,46 @@ fn test_httproute_ssa_body_has_type_meta() {
         "SSA body must contain kind"
     );
 }
+
+/// Issue #49: SshBastion should default to Tcp routeType for gateway.
+/// SSH is a raw TCP protocol, so HTTPRoute doesn't work. When gateway is
+/// enabled on SshBastion without explicit routeType, it should default to Tcp.
+#[test]
+fn test_sshbastion_gateway_defaults_to_tcp() {
+    let app = ServarrApp {
+        metadata: ObjectMeta {
+            name: Some("bastion".into()),
+            namespace: Some("media".into()),
+            uid: Some("test-uid-bastion".into()),
+            ..Default::default()
+        },
+        spec: ServarrAppSpec {
+            app: AppType::SshBastion,
+            // Gateway enabled, but routeType NOT explicitly set
+            gateway: Some(GatewaySpec {
+                enabled: Some(true),
+                // routeType defaults to Http, but for SshBastion it should be Tcp
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+        status: None,
+    };
+
+    // TCPRoute should be built for SshBastion with gateway enabled,
+    // even if routeType is not explicitly set, because SshBastion
+    // needs TCP not HTTP.
+    let route = servarr_resources::tcproute::build(&app);
+    assert!(
+        route.is_some(),
+        "SshBastion with enabled gateway should build TCPRoute (routeType should default to Tcp)"
+    );
+
+    // The actual #49 bug: HTTPRoute must NOT be built for SshBastion.
+    // SSH is TCP-only, so an HTTPRoute would silently fail to expose it.
+    let http_route = servarr_resources::httproute::build(&app);
+    assert!(
+        http_route.is_none(),
+        "HTTPRoute must not be built for SshBastion — SSH is TCP only"
+    );
+}

@@ -14,8 +14,9 @@ pub fn build(app: &ServarrApp) -> Option<DynamicObject> {
         return None;
     }
 
-    // Only build a TCPRoute when route_type is Tcp or TLS is enabled
-    let use_tcp = matches!(gateway.route_type, RouteType::Tcp)
+    // Only build a TCPRoute when route_type is Tcp or TLS is enabled.
+    // Use effective_route_type to get app-specific defaults (e.g., Tcp for SshBastion).
+    let use_tcp = matches!(gateway.effective_route_type(&app.spec.app), RouteType::Tcp)
         || gateway.tls.as_ref().is_some_and(|t| t.enabled);
 
     if !use_tcp {

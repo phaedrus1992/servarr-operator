@@ -118,6 +118,17 @@ impl GatewaySpec {
         self.enabled.unwrap_or(false)
     }
 
+    /// Returns the effective route_type for the given app type. SshBastion is
+    /// always Tcp — SSH is a raw TCP protocol, so HTTPRoute can never carry it.
+    /// All other app types use the configured `route_type`.
+    /// Issue #49: prevent HTTPRoute from being silently built for a bastion.
+    pub fn effective_route_type(&self, app: &super::AppType) -> RouteType {
+        match app {
+            super::AppType::SshBastion => RouteType::Tcp,
+            _ => self.route_type.clone(),
+        }
+    }
+
     /// Merge per-app gateway spec with stack defaults. Per-app fields win when
     /// explicitly set; absent fields fall back to the defaults.
     pub fn merge_with(self, defaults: &GatewaySpec) -> GatewaySpec {
