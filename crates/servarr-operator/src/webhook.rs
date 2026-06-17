@@ -403,7 +403,7 @@ fn validate_resource_bounds(spec: &ServarrAppSpec, errors: &mut Vec<String>) {
 
 fn validate_gateway_hosts(spec: &ServarrAppSpec, errors: &mut Vec<String>) {
     if let Some(ref gw) = spec.gateway
-        && gw.enabled
+        && gw.is_enabled()
         && gw.hosts.is_empty()
     {
         errors.push("gateway.hosts must be non-empty when gateway is enabled".into());
@@ -917,7 +917,7 @@ mod tests {
     fn gateway_hosts_disabled() {
         let mut spec = minimal_spec(AppType::Sonarr);
         spec.gateway = Some(GatewaySpec {
-            enabled: false,
+            enabled: Some(false),
             hosts: vec![],
             ..Default::default()
         });
@@ -930,7 +930,7 @@ mod tests {
     fn gateway_hosts_enabled_with_hosts() {
         let mut spec = minimal_spec(AppType::Sonarr);
         spec.gateway = Some(GatewaySpec {
-            enabled: true,
+            enabled: Some(true),
             hosts: vec!["sonarr.example.com".into()],
             ..Default::default()
         });
@@ -943,7 +943,7 @@ mod tests {
     fn gateway_hosts_enabled_empty_hosts() {
         let mut spec = minimal_spec(AppType::Sonarr);
         spec.gateway = Some(GatewaySpec {
-            enabled: true,
+            enabled: Some(true),
             hosts: vec![],
             ..Default::default()
         });

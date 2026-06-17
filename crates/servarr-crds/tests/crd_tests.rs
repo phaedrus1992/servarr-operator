@@ -66,7 +66,7 @@ fn test_crd_serde_roundtrip_all_fields() {
             }],
         }),
         gateway: Some(GatewaySpec {
-            enabled: true,
+            enabled: Some(true),
             route_type: RouteType::Http,
             parent_refs: vec![GatewayParentRef {
                 name: "my-gateway".into(),

@@ -11,7 +11,7 @@ use crate::common;
 /// in kube-rs / k8s-openapi.
 pub fn build(app: &ServarrApp) -> Option<DynamicObject> {
     let gateway = app.spec.gateway.as_ref()?;
-    if !gateway.enabled {
+    if !gateway.is_enabled() {
         return None;
     }
 

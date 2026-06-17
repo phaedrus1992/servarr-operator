@@ -97,8 +97,10 @@ impl PersistenceSpec {
 #[derive(Serialize, Deserialize, Clone, Debug, Default, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct GatewaySpec {
-    #[serde(default)]
-    pub enabled: bool,
+    /// Whether the gateway is enabled. When omitted, inherits from StackDefaults;
+    /// if no defaults are set, defaults to false for standalone ServarrApps.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
     #[serde(default = "default_route_type")]
     pub route_type: RouteType,
     #[serde(default)]
@@ -109,6 +111,28 @@ pub struct GatewaySpec {
     /// Certificate and uses a TCPRoute instead of an HTTPRoute.
     #[serde(default)]
     pub tls: Option<TlsSpec>,
+}
+
+impl GatewaySpec {
+    pub fn is_enabled(&self) -> bool {
+        self.enabled.unwrap_or(false)
+    }
+
+    /// Merge per-app gateway spec with stack defaults. Per-app fields win when
+    /// explicitly set; absent fields fall back to the defaults.
+    pub fn merge_with(self, defaults: &GatewaySpec) -> GatewaySpec {
+        GatewaySpec {
+            enabled: Some(self.enabled.unwrap_or_else(|| defaults.is_enabled())),
+            route_type: self.route_type,
+            parent_refs: if self.parent_refs.is_empty() {
+                defaults.parent_refs.clone()
+            } else {
+                self.parent_refs
+            },
+            hosts: self.hosts,
+            tls: self.tls.or_else(|| defaults.tls.clone()),
+        }
+    }
 }
 
 /// TLS termination via cert-manager.
