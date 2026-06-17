@@ -16,7 +16,7 @@ TMPFILE=$(mktemp)
 trap 'rm -rf "$TMPFILE" "$TMPDIR_SPLIT"' EXIT
 
 # Generate all CRDs
-cargo run -p servarr-operator -- crd 2>/dev/null > "$TMPFILE"
+cargo run -p servarr-operator -- crd 2>/dev/null >"$TMPFILE"
 
 # The output contains two CRDs concatenated without --- separators.
 # Split on each "apiVersion:" line that starts a new document.
@@ -30,21 +30,21 @@ SERVARRAPP_CRD="$CRD_CHART_DIR/servarrapp-crd.yaml"
 MEDIASTACK_CRD="$CRD_CHART_DIR/mediastack-crd.yaml"
 
 for f in "$TMPDIR_SPLIT"/crd-*.yaml; do
-    [ -s "$f" ] || continue
-    name=$(grep -m1 '^  name:' "$f" | awk '{print $2}')
-    case "$name" in
-        servarrapps.servarr.dev)
-            cp -f "$f" "$SERVARRAPP_CRD"
-            echo "Generated servarrapp-crd.yaml"
-            ;;
-        mediastacks.servarr.dev)
-            cp -f "$f" "$MEDIASTACK_CRD"
-            echo "Generated mediastack-crd.yaml"
-            ;;
-        *)
-            echo "Warning: unknown CRD '$name'" >&2
-            ;;
-    esac
+  [ -s "$f" ] || continue
+  name=$(grep -m1 '^  name:' "$f" | awk '{print $2}')
+  case "$name" in
+  servarrapps.servarr.dev)
+    cp -f "$f" "$SERVARRAPP_CRD"
+    echo "Generated servarrapp-crd.yaml"
+    ;;
+  mediastacks.servarr.dev)
+    cp -f "$f" "$MEDIASTACK_CRD"
+    echo "Generated mediastack-crd.yaml"
+    ;;
+  *)
+    echo "Warning: unknown CRD '$name'" >&2
+    ;;
+  esac
 done
 
 echo "CRD generation complete."
