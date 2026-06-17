@@ -577,6 +577,7 @@ spec:
                           description: Arbitrary additional egress rules (raw NetworkPolicyEgressRule JSON).
                           items:
                             type: object
+                            x-kubernetes-preserve-unknown-fields: true
                           type: array
                         deniedCidrBlocks:
                           default: []
@@ -814,6 +815,7 @@ spec:
                       properties:
                         affinity:
                           type: object
+                          x-kubernetes-preserve-unknown-fields: true
                         nodeSelector:
                           additionalProperties:
                             type: string
@@ -823,6 +825,7 @@ spec:
                           default: []
                           items:
                             type: object
+                            x-kubernetes-preserve-unknown-fields: true
                           type: array
                       type: object
                     security:
@@ -1303,6 +1306,7 @@ spec:
                         description: Arbitrary additional egress rules (raw NetworkPolicyEgressRule JSON).
                         items:
                           type: object
+                          x-kubernetes-preserve-unknown-fields: true
                         type: array
                       deniedCidrBlocks:
                         default: []
@@ -1406,6 +1410,7 @@ spec:
                     properties:
                       affinity:
                         type: object
+                        x-kubernetes-preserve-unknown-fields: true
                       nodeSelector:
                         additionalProperties:
                           type: string
@@ -1415,6 +1420,7 @@ spec:
                         default: []
                         items:
                           type: object
+                          x-kubernetes-preserve-unknown-fields: true
                         type: array
                     type: object
                   security:

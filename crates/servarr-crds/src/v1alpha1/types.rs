@@ -760,12 +760,12 @@ pub struct AdminCredentialsSpec {
 }
 
 fn json_object_schema(_gen: &mut SchemaGenerator) -> Schema {
-    json_schema!({ "type": "object" })
+    json_schema!({ "type": "object", "x-kubernetes-preserve-unknown-fields": true })
 }
 
 fn json_object_array_schema(_gen: &mut SchemaGenerator) -> Schema {
     json_schema!({
         "type": "array",
-        "items": { "type": "object" }
+        "items": { "type": "object", "x-kubernetes-preserve-unknown-fields": true }
     })
 }
