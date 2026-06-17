@@ -53,17 +53,6 @@
       matchUpdateTypes: ['!major'],
       automerge: true,
     },
-    {
-      // matchUpdateTypes added deliberately: without it, automerge here also
-      // applied to MAJOR devDependency bumps (the major-isolation rule strips
-      // groupName but not automerge). Majors now get individual reviewed PRs.
-      groupName: 'auto-merge developer dependencies',
-      groupSlug: 'dev-dependencies',
-      matchDepTypes: ['devDependencies'],
-      matchUpdateTypes: ['minor', 'patch', 'pin', 'digest'],
-      automerge: true,
-    },
-
     // Group non-major GitHub Actions updates
     {
       groupName: 'non-major GitHub Actions',
@@ -122,6 +111,39 @@
       matchManagers: ['cargo'],
       matchPackageNames: ['overseerr', 'sonarr', 'radarr', 'lidarr', 'prowlarr'],
       matchUpdateTypes: ['minor', 'patch', 'pin', 'digest'],
+    },
+    {
+      groupName: 'Rust Time crates',
+      groupSlug: 'rust-time',
+      matchManagers: ['cargo'],
+      matchPackageNames: ['/^chrono/', '/^cron/'],
+      matchUpdateTypes: ['minor', 'patch', 'pin', 'digest'],
+    },
+    {
+      groupName: 'Rust HTTP client crates',
+      groupSlug: 'rust-http',
+      matchManagers: ['cargo'],
+      matchPackageNames: ['reqwest', 'url'],
+      matchUpdateTypes: ['minor', 'patch', 'pin', 'digest'],
+    },
+    {
+      groupName: 'Rust Crypto crates',
+      groupSlug: 'rust-crypto',
+      matchManagers: ['cargo'],
+      matchPackageNames: ['sha2', 'md-5', 'md5'],
+      matchUpdateTypes: ['minor', 'patch', 'pin', 'digest'],
+    },
+    // Dev/test dependencies. Placed AFTER the catch-all "Rust Dependencies"
+    // rule on purpose: later rules win on groupName, so this is what splits
+    // cargo dev crates (proptest, wiremock, http, tower, temp-env) out of the
+    // main Rust PR. matchUpdateTypes keeps MAJOR dev bumps as individual
+    // reviewed PRs (the major-isolation rule strips groupName, not automerge).
+    {
+      groupName: 'auto-merge developer dependencies',
+      groupSlug: 'dev-dependencies',
+      matchDepTypes: ['devDependencies'],
+      matchUpdateTypes: ['minor', 'patch', 'pin', 'digest'],
+      automerge: true,
     },
 
     // Rust toolchain version (from custom regex manager)
