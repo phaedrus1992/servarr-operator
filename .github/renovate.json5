@@ -135,13 +135,17 @@
     },
     // Dev/test dependencies. Placed AFTER the catch-all "Rust Dependencies"
     // rule on purpose: later rules win on groupName, so this is what splits
-    // cargo dev crates (proptest, wiremock, http, tower, temp-env) out of the
-    // main Rust PR. matchUpdateTypes keeps MAJOR dev bumps as individual
-    // reviewed PRs (the major-isolation rule strips groupName, not automerge).
+    // cargo dev crates (proptest, http, tower, temp-env) out of the main Rust
+    // PR. depType is cargo's section name 'dev-dependencies' (hyphenated) — NOT
+    // npm's 'devDependencies', which matches nothing here. matchUpdateTypes
+    // keeps MAJOR dev bumps as individual reviewed PRs (the major-isolation
+    // rule strips groupName, not automerge). NB: wiremock is declared in
+    // [workspace.dependencies], so its depType is workspace.dependencies and
+    // it groups under Rust Dependencies, not here.
     {
       groupName: 'auto-merge developer dependencies',
       groupSlug: 'dev-dependencies',
-      matchDepTypes: ['devDependencies'],
+      matchDepTypes: ['dev-dependencies'],
       matchUpdateTypes: ['minor', 'patch', 'pin', 'digest'],
       automerge: true,
     },
