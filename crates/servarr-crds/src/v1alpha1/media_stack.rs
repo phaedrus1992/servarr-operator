@@ -294,7 +294,11 @@ impl StackApp {
             gid: self.gid.or(d.gid),
             security: self.security.clone().or(d.security),
             service: self.service.clone(),
-            gateway: self.gateway.clone().or(d.gateway),
+            gateway: match (self.gateway.clone(), d.gateway.as_ref()) {
+                (Some(gw), Some(def_gw)) => Some(gw.merge_with(def_gw)),
+                (Some(gw), None) => Some(gw),
+                (None, def_gw) => def_gw.cloned(),
+            },
             resources: self.resources.clone().or(d.resources),
             persistence,
             env,

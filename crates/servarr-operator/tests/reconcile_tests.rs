@@ -1537,7 +1537,7 @@ async fn test_gateway_tls_tcproute_and_certificate() {
     let spec = ServarrAppSpec {
         app: AppType::Sonarr,
         gateway: Some(GatewaySpec {
-            enabled: true,
+            enabled: Some(true),
             hosts: vec!["sonarr.example.com".into()],
             parent_refs: vec![GatewayParentRef {
                 name: "my-gateway".into(),
@@ -1621,7 +1621,7 @@ async fn test_gateway_httproute_only() {
     let spec = ServarrAppSpec {
         app: AppType::Radarr,
         gateway: Some(GatewaySpec {
-            enabled: true,
+            enabled: Some(true),
             hosts: vec!["radarr.example.com".into()],
             parent_refs: vec![GatewayParentRef {
                 name: "my-gateway".into(),
@@ -2198,7 +2198,7 @@ async fn test_gateway_tcp_route_type() {
     let spec = ServarrAppSpec {
         app: AppType::Plex,
         gateway: Some(GatewaySpec {
-            enabled: true,
+            enabled: Some(true),
             route_type: RouteType::Tcp,
             hosts: vec!["plex.example.com".into()],
             parent_refs: vec![GatewayParentRef {

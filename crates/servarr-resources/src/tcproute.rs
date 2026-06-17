@@ -10,7 +10,7 @@ use crate::common;
 /// (or TLS is enabled, which forces TCP mode).
 pub fn build(app: &ServarrApp) -> Option<DynamicObject> {
     let gateway = app.spec.gateway.as_ref()?;
-    if !gateway.enabled {
+    if !gateway.is_enabled() {
         return None;
     }
 

@@ -107,7 +107,7 @@ fn build_ingress_rules(
 
     // Allow from gateway namespace when gateway is enabled
     if let Some(ref gw) = app.spec.gateway
-        && gw.enabled
+        && gw.is_enabled()
     {
         for pr in &gw.parent_refs {
             if !pr.namespace.is_empty() {

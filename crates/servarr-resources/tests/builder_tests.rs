@@ -426,7 +426,7 @@ fn test_httproute_builder_enabled() {
         spec: ServarrAppSpec {
             app: AppType::Sonarr,
             gateway: Some(GatewaySpec {
-                enabled: true,
+                enabled: Some(true),
                 route_type: RouteType::Http,
                 parent_refs: vec![GatewayParentRef {
                     name: "istio-gateway".into(),
@@ -893,7 +893,7 @@ fn test_certificate_gateway_disabled_returns_none() {
         spec: ServarrAppSpec {
             app: AppType::Sonarr,
             gateway: Some(GatewaySpec {
-                enabled: false,
+                enabled: Some(false),
                 ..Default::default()
             }),
             ..Default::default()
@@ -916,7 +916,7 @@ fn test_certificate_gateway_enabled_no_tls_returns_none() {
         spec: ServarrAppSpec {
             app: AppType::Sonarr,
             gateway: Some(GatewaySpec {
-                enabled: true,
+                enabled: Some(true),
                 tls: None,
                 ..Default::default()
             }),
@@ -940,7 +940,7 @@ fn test_certificate_tls_disabled_returns_none() {
         spec: ServarrAppSpec {
             app: AppType::Sonarr,
             gateway: Some(GatewaySpec {
-                enabled: true,
+                enabled: Some(true),
                 tls: Some(TlsSpec {
                     enabled: false,
                     cert_issuer: "letsencrypt".into(),
@@ -968,7 +968,7 @@ fn test_certificate_tls_enabled_empty_issuer_returns_none() {
         spec: ServarrAppSpec {
             app: AppType::Sonarr,
             gateway: Some(GatewaySpec {
-                enabled: true,
+                enabled: Some(true),
                 tls: Some(TlsSpec {
                     enabled: true,
                     cert_issuer: String::new(),
@@ -996,7 +996,7 @@ fn test_certificate_tls_enabled_valid_issuer_returns_certificate() {
         spec: ServarrAppSpec {
             app: AppType::Sonarr,
             gateway: Some(GatewaySpec {
-                enabled: true,
+                enabled: Some(true),
                 hosts: vec!["sonarr.example.com".into(), "sonarr.local".into()],
                 tls: Some(TlsSpec {
                     enabled: true,
@@ -1037,7 +1037,7 @@ fn test_certificate_custom_secret_name() {
         spec: ServarrAppSpec {
             app: AppType::Sonarr,
             gateway: Some(GatewaySpec {
-                enabled: true,
+                enabled: Some(true),
                 hosts: vec!["sonarr.example.com".into()],
                 tls: Some(TlsSpec {
                     enabled: true,
@@ -1078,7 +1078,7 @@ fn test_tcproute_gateway_disabled_returns_none() {
         spec: ServarrAppSpec {
             app: AppType::Sonarr,
             gateway: Some(GatewaySpec {
-                enabled: false,
+                enabled: Some(false),
                 ..Default::default()
             }),
             ..Default::default()
@@ -1101,7 +1101,7 @@ fn test_tcproute_http_route_no_tls_returns_none() {
         spec: ServarrAppSpec {
             app: AppType::Sonarr,
             gateway: Some(GatewaySpec {
-                enabled: true,
+                enabled: Some(true),
                 route_type: RouteType::Http,
                 parent_refs: vec![GatewayParentRef {
                     name: "gw".into(),
@@ -1131,7 +1131,7 @@ fn test_tcproute_tcp_route_type_returns_some() {
         spec: ServarrAppSpec {
             app: AppType::Sonarr,
             gateway: Some(GatewaySpec {
-                enabled: true,
+                enabled: Some(true),
                 route_type: RouteType::Tcp,
                 parent_refs: vec![GatewayParentRef {
                     name: "my-gateway".into(),
@@ -1178,7 +1178,7 @@ fn test_tcproute_http_route_with_tls_enabled_returns_some() {
         spec: ServarrAppSpec {
             app: AppType::Sonarr,
             gateway: Some(GatewaySpec {
-                enabled: true,
+                enabled: Some(true),
                 route_type: RouteType::Http,
                 parent_refs: vec![GatewayParentRef {
                     name: "gw".into(),
@@ -1218,7 +1218,7 @@ fn test_tcproute_parent_refs_with_namespace_and_section_name() {
         spec: ServarrAppSpec {
             app: AppType::Sonarr,
             gateway: Some(GatewaySpec {
-                enabled: true,
+                enabled: Some(true),
                 route_type: RouteType::Tcp,
                 parent_refs: vec![GatewayParentRef {
                     name: "my-gateway".into(),
@@ -2111,7 +2111,7 @@ fn test_networkpolicy_gateway_namespace_ingress() {
         spec: ServarrAppSpec {
             app: AppType::Sonarr,
             gateway: Some(GatewaySpec {
-                enabled: true,
+                enabled: Some(true),
                 route_type: RouteType::Http,
                 parent_refs: vec![GatewayParentRef {
                     name: "my-gateway".into(),
@@ -3563,7 +3563,7 @@ fn test_httproute_ssa_body_has_type_meta() {
         spec: ServarrAppSpec {
             app: AppType::Sonarr,
             gateway: Some(GatewaySpec {
-                enabled: true,
+                enabled: Some(true),
                 route_type: RouteType::Http,
                 parent_refs: vec![GatewayParentRef {
                     name: "test-gw".into(),
