@@ -59,7 +59,7 @@ pub fn build(app: &ServarrApp) -> Option<DynamicObject> {
             "parentRefs": parent_refs,
             "rules": [{
                 "backendRefs": [{
-                    "name": name,
+                    "name": common::service_name(app),
                     "port": first_port,
                 }],
             }],

@@ -41,6 +41,14 @@ pub struct ServarrAppSpec {
     #[serde(default)]
     pub service: Option<ServiceSpec>,
 
+    /// Override the name of the generated Service (and the route backendRef
+    /// that targets it). Defaults to the ServarrApp's own name. Useful for
+    /// preserving in-cluster DNS names from a prior deployment so other apps'
+    /// stored configs keep resolving (e.g. `transmission` instead of
+    /// `media-transmission`). Does not affect the Deployment or pod labels.
+    #[serde(default)]
+    pub service_name: Option<String>,
+
     #[serde(default)]
     pub gateway: Option<GatewaySpec>,
 

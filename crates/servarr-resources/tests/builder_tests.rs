@@ -182,6 +182,44 @@ fn test_service_builder() {
 }
 
 #[test]
+fn test_service_builder_name_override() {
+    let mut app = make_app(AppType::Transmission);
+    app.spec.service_name = Some("transmission".into());
+    let svc = servarr_resources::service::build(&app);
+
+    // Service name uses the override...
+    assert_eq!(svc.metadata.name.as_deref(), Some("transmission"));
+    // ...but the selector still targets the app's own pods.
+    let selector = svc.spec.unwrap().selector.unwrap();
+    assert_eq!(
+        selector
+            .get("app.kubernetes.io/instance")
+            .map(String::as_str),
+        Some("test-app")
+    );
+}
+
+#[test]
+fn test_httproute_backend_uses_service_name_override() {
+    let mut app = make_app(AppType::Sonarr);
+    app.spec.service_name = Some("sonarr".into());
+    app.spec.gateway = Some(GatewaySpec {
+        enabled: Some(true),
+        hosts: vec!["sonarr.example.com".into()],
+        parent_refs: vec![GatewayParentRef {
+            name: "gw".into(),
+            ..Default::default()
+        }],
+        ..Default::default()
+    });
+    let route = servarr_resources::httproute::build(&app).unwrap();
+    let backend = &route.data["spec"]["rules"][0]["backendRefs"][0]["name"];
+    assert_eq!(backend, "sonarr");
+    // Route object itself keeps the app name.
+    assert_eq!(route.metadata.name.as_deref(), Some("test-app"));
+}
+
+#[test]
 fn test_pvc_builder() {
     let app = make_app(AppType::Sonarr);
     let pvcs = servarr_resources::pvc::build_all(&app);

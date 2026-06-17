@@ -911,6 +911,12 @@ spec:
                       required:
                       - ports
                       type: object
+                    serviceName:
+                      description: |-
+                        Override the generated Service name for this app (see
+                        `ServarrAppSpec::service_name`).
+                      nullable: true
+                      type: string
                     split4k:
                       description: |-
                         When true, creates both a standard and a 4K instance of this app.
@@ -1139,6 +1145,10 @@ spec:
                           required:
                           - ports
                           type: object
+                        serviceName:
+                          description: Override the generated Service name for the 4K instance (e.g. `radarr4k`).
+                          nullable: true
+                          type: string
                       type: object
                     subgenSync:
                       description: |-

@@ -1,4 +1,5 @@
 use k8s_openapi::api::core::v1::{Service, ServicePort, ServiceSpec};
+use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 use servarr_crds::{AppConfig, AppDefaults, AppType, ServarrApp};
 
 use crate::common;
@@ -42,7 +43,10 @@ pub fn build(app: &ServarrApp) -> Service {
     }
 
     Service {
-        metadata: common::metadata(app, ""),
+        metadata: ObjectMeta {
+            name: Some(common::service_name(app)),
+            ..common::metadata(app, "")
+        },
         spec: Some(ServiceSpec {
             type_: Some(svc.service_type.clone()),
             selector: Some(common::selector_labels(app)),
