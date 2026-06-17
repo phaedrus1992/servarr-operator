@@ -46,6 +46,7 @@ jobs:
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           persist-credentials: false
+          fetch-depth: 0
 
       - name: Download amd64 binary
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -152,7 +153,11 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_TAG: ${{ inputs.release-tag }}
+          CHART_VERSION: ${{ inputs.chart-version }}
+          IMAGE_VERSION_LABEL: ${{ inputs.image-version-label }}
         run: |
+          set -euo pipefail
+
           cp -f /tmp/bin-amd64/servarr-operator /tmp/servarr-operator-linux-amd64
           cp -f /tmp/bin-arm64/servarr-operator /tmp/servarr-operator-linux-arm64
           cp -f /tmp/bin-darwin-amd64/servarr-operator /tmp/servarr-operator-darwin-amd64
@@ -163,10 +168,70 @@ jobs:
             /tmp/servarr-operator-darwin-amd64 \
             /tmp/servarr-operator-darwin-arm64
 
-          gh release create "${RELEASE_TAG}" \
-            --title "${RELEASE_TAG}" \
-            --generate-notes \
-            /tmp/servarr-operator-linux-amd64 \
-            /tmp/servarr-operator-linux-arm64 \
-            /tmp/servarr-operator-darwin-amd64 \
-            /tmp/servarr-operator-darwin-arm64
+          version="${RELEASE_TAG#v}"
+
+          {
+            # 1. Curated, user-facing changelog for this version.
+            scripts/changelog-extract.sh "${version}" CHANGELOG.md
+
+            # 2. Helm install / upgrade instructions (CRDs first, then operator).
+            echo ""
+            echo "## Installing / Upgrading"
+            echo ""
+            echo '```bash'
+            echo "# 1. Install/upgrade CRDs + webhook (do this first)"
+            echo "helm upgrade --install servarr-crds \\"
+            echo "  oci://ghcr.io/phaedrus1992/servarr/servarr-crds --version ${CHART_VERSION}"
+            echo ""
+            echo "# 2. Install/upgrade the operator"
+            echo "helm upgrade --install servarr-operator \\"
+            echo "  oci://ghcr.io/phaedrus1992/servarr/servarr-operator --version ${CHART_VERSION}"
+            echo '```'
+
+            # 3. Container image reference.
+            echo ""
+            echo "## Container image"
+            echo ""
+            echo '```'
+            echo "ghcr.io/phaedrus1992/servarr-operator:${RELEASE_TAG}"
+            echo '```'
+          } >/tmp/release-body.md
+
+          # 4. Auto-generated commit/PR notes, appended at the very end.
+          prev_tag="$(git describe --tags --abbrev=0 --match 'v*' "${RELEASE_TAG}^" 2>/dev/null || true)"
+          if [ -n "${prev_tag}" ]; then
+            gen="$(gh api "repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
+              -f tag_name="${RELEASE_TAG}" \
+              -f previous_tag_name="${prev_tag}" \
+              --jq .body)"
+          else
+            gen="$(gh api "repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
+              -f tag_name="${RELEASE_TAG}" \
+              --jq .body)"
+          fi
+          {
+            echo ""
+            echo "## Full Changelog"
+            echo ""
+            printf '%s\n' "${gen}"
+          } >>/tmp/release-body.md
+
+          # Idempotent: edit the release in place if the tag was re-pushed.
+          if gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
+            gh release edit "${RELEASE_TAG}" --notes-file /tmp/release-body.md --latest
+            gh release upload "${RELEASE_TAG}" --clobber \
+              /tmp/servarr-operator-linux-amd64 \
+              /tmp/servarr-operator-linux-arm64 \
+              /tmp/servarr-operator-darwin-amd64 \
+              /tmp/servarr-operator-darwin-arm64
+          else
+            gh release create "${RELEASE_TAG}" \
+              --title "${RELEASE_TAG}" \
+              --notes-file /tmp/release-body.md \
+              --verify-tag \
+              --latest \
+              /tmp/servarr-operator-linux-amd64 \
+              /tmp/servarr-operator-linux-arm64 \
+              /tmp/servarr-operator-darwin-amd64 \
+              /tmp/servarr-operator-darwin-arm64
+          fi
