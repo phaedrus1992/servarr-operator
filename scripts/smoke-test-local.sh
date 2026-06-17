@@ -33,9 +33,18 @@ KEEP_NS=false
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --namespace) NAMESPACE="$2"; shift 2 ;;
-    --keep)      KEEP_NS=true; shift ;;
-    *) echo "Unknown argument: $1" >&2; exit 1 ;;
+  --namespace)
+    NAMESPACE="$2"
+    shift 2
+    ;;
+  --keep)
+    KEEP_NS=true
+    shift
+    ;;
+  *)
+    echo "Unknown argument: $1" >&2
+    exit 1
+    ;;
   esac
 done
 
@@ -57,20 +66,20 @@ detect_cluster_type() {
   local ctx
   ctx=$(kubectl config current-context 2>/dev/null || echo "")
   case "$ctx" in
-    kind-*)               echo "kind" ;;
-    k3d-*)                echo "k3d" ;;
-    rancher-desktop)      echo "rancher-desktop" ;;
-    docker-desktop)       echo "docker-desktop" ;;
-    *)
-      # Fallback: check if kind/k3d binaries exist and have matching clusters
-      if command -v kind &>/dev/null && kind get clusters 2>/dev/null | grep -q .; then
-        echo "kind"
-      elif command -v k3d &>/dev/null && k3d cluster list 2>/dev/null | grep -q .; then
-        echo "k3d"
-      else
-        echo "unknown"
-      fi
-      ;;
+  kind-*) echo "kind" ;;
+  k3d-*) echo "k3d" ;;
+  rancher-desktop) echo "rancher-desktop" ;;
+  docker-desktop) echo "docker-desktop" ;;
+  *)
+    # Fallback: check if kind/k3d binaries exist and have matching clusters
+    if command -v kind &>/dev/null && kind get clusters 2>/dev/null | grep -q .; then
+      echo "kind"
+    elif command -v k3d &>/dev/null && k3d cluster list 2>/dev/null | grep -q .; then
+      echo "k3d"
+    else
+      echo "unknown"
+    fi
+    ;;
   esac
 }
 
@@ -84,7 +93,6 @@ echo ""
 echo "Building operator binary..."
 cd "$REPO_ROOT"
 cargo build --release --bin servarr-operator
-BINARY="$REPO_ROOT/target/release/servarr-operator"
 
 # ---------------------------------------------------------------------------
 # Build Docker image
@@ -108,19 +116,19 @@ DOCKERFILE
 echo ""
 echo "Loading image into cluster (${CLUSTER_TYPE})..."
 case "$CLUSTER_TYPE" in
-  kind)
-    CLUSTER_NAME=$(kubectl config current-context | sed 's/^kind-//')
-    kind load docker-image "${IMAGE_NAME}:${IMAGE_TAG}" --name "$CLUSTER_NAME"
-    ;;
-  k3d)
-    CLUSTER_NAME=$(kubectl config current-context | sed 's/^k3d-//')
-    k3d image import "${IMAGE_NAME}:${IMAGE_TAG}" --cluster "$CLUSTER_NAME"
-    ;;
-  docker-desktop|rancher-desktop|unknown)
-    # Docker Desktop and Rancher Desktop share the daemon with the cluster —
-    # the image is already visible. For unknown types, assume the same.
-    echo "  Assuming image is visible to cluster via shared container daemon."
-    ;;
+kind)
+  CLUSTER_NAME=$(kubectl config current-context | sed 's/^kind-//')
+  kind load docker-image "${IMAGE_NAME}:${IMAGE_TAG}" --name "$CLUSTER_NAME"
+  ;;
+k3d)
+  CLUSTER_NAME=$(kubectl config current-context | sed 's/^k3d-//')
+  k3d image import "${IMAGE_NAME}:${IMAGE_TAG}" --cluster "$CLUSTER_NAME"
+  ;;
+docker-desktop | rancher-desktop | unknown)
+  # Docker Desktop and Rancher Desktop share the daemon with the cluster —
+  # the image is already visible. For unknown types, assume the same.
+  echo "  Assuming image is visible to cluster via shared container daemon."
+  ;;
 esac
 
 # ---------------------------------------------------------------------------
@@ -149,8 +157,8 @@ kubectl config set-context --current --namespace="$NAMESPACE"
 echo ""
 echo "Installing CRDs..."
 helm template smoke-crds "$REPO_ROOT/charts/servarr-crds/" \
-  --set webhook.enabled=false \
-  | kubectl apply -f -
+  --set webhook.enabled=false |
+  kubectl apply -f -
 
 # ---------------------------------------------------------------------------
 # Install operator
@@ -164,8 +172,8 @@ helm template smoke "$REPO_ROOT/charts/servarr-operator/" \
   --set image.pullPolicy=Never \
   --set webhook.enabled=false \
   --set watchAllNamespaces=false \
-  --namespace "$NAMESPACE" \
-  | kubectl apply -f -
+  --namespace "$NAMESPACE" |
+  kubectl apply -f -
 
 echo "Waiting for operator rollout..."
 kubectl rollout status deployment/servarr-operator --timeout=120s

@@ -1,0 +1,25 @@
+# cargo-release configuration.
+# Releases are TAG-TRIGGERED: pushing a `v*` tag fires
+# .github/workflows/release.yaml, which builds binaries and publishes the
+# multi-arch image + Helm charts + GitHub Release.
+#
+# cargo-release owns only the local prep: bump the shared version, roll the
+# CHANGELOG, and bump both Chart.yaml versions, in one commit. It does NOT
+# publish, tag, or push:
+#   - publish: there is no crates.io publish for this repo.
+#   - tag/push: `main` is protected; the prep commit lands via PR and the `v*`
+#     tag is cut on the merged commit. See RELEASING.md.
+
+allow-branch = ["main", "release/*"]
+publish = false
+tag = false
+push = false
+shared-version = true
+tag-name = "v{{version}}"
+pre-release-commit-message = "chore(release): {{version}}"
+
+# pre-release-replacements (CHANGELOG rollover + Chart.yaml bumps) live on the
+# servarr-operator crate's [package.metadata.release], because this is a virtual
+# workspace: cargo-release runs replacements once per crate with paths relative
+# to that crate's manifest. Anchoring them to a single crate (with ../../ paths)
+# runs them exactly once against the workspace-root files.
