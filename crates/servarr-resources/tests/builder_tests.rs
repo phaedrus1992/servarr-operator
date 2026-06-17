@@ -3636,7 +3636,6 @@ fn test_httproute_ssa_body_has_type_meta() {
 /// enabled on SshBastion without explicit routeType, it should default to Tcp.
 #[test]
 fn test_sshbastion_gateway_defaults_to_tcp() {
-    use servarr_crds::GatewayParentRef;
     let app = ServarrApp {
         metadata: ObjectMeta {
             name: Some("bastion".into()),
