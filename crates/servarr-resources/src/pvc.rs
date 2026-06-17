@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use crate::common;
 
 pub fn build_all(app: &ServarrApp) -> Vec<PersistentVolumeClaim> {
-    let defaults = AppDefaults::for_app(&app.spec.app);
+    let defaults = AppDefaults::for_app(&app.spec.app).expect("missing app defaults");
     let merged: PersistenceSpec;
     let persistence = match &app.spec.persistence {
         None => &defaults.persistence,

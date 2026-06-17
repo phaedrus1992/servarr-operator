@@ -6,7 +6,7 @@ use servarr_crds::*;
 
 #[test]
 fn ssh_bastion_uses_custom_security_profile() {
-    let defaults = AppDefaults::for_app(&AppType::SshBastion);
+    let defaults = AppDefaults::for_app(&AppType::SshBastion).unwrap();
     assert!(matches!(
         defaults.security.profile_type,
         SecurityProfileType::Custom
@@ -15,7 +15,7 @@ fn ssh_bastion_uses_custom_security_profile() {
 
 #[test]
 fn ssh_bastion_runs_as_root() {
-    let defaults = AppDefaults::for_app(&AppType::SshBastion);
+    let defaults = AppDefaults::for_app(&AppType::SshBastion).unwrap();
     assert_eq!(defaults.security.user, 0);
     assert_eq!(defaults.security.group, 0);
     assert_eq!(defaults.uid, 0);
@@ -24,7 +24,7 @@ fn ssh_bastion_runs_as_root() {
 
 #[test]
 fn ssh_bastion_has_required_capabilities() {
-    let defaults = AppDefaults::for_app(&AppType::SshBastion);
+    let defaults = AppDefaults::for_app(&AppType::SshBastion).unwrap();
     let caps = &defaults.security.capabilities_add;
 
     let required = [
@@ -42,13 +42,13 @@ fn ssh_bastion_has_required_capabilities() {
 
 #[test]
 fn ssh_bastion_drops_all_capabilities() {
-    let defaults = AppDefaults::for_app(&AppType::SshBastion);
+    let defaults = AppDefaults::for_app(&AppType::SshBastion).unwrap();
     assert_eq!(defaults.security.capabilities_drop, vec!["ALL".to_string()]);
 }
 
 #[test]
 fn ssh_bastion_security_flags() {
-    let defaults = AppDefaults::for_app(&AppType::SshBastion);
+    let defaults = AppDefaults::for_app(&AppType::SshBastion).unwrap();
     assert_eq!(defaults.security.run_as_non_root, Some(false));
     assert_eq!(defaults.security.read_only_root_filesystem, Some(false));
     assert_eq!(defaults.security.allow_privilege_escalation, Some(false));
@@ -56,7 +56,7 @@ fn ssh_bastion_security_flags() {
 
 #[test]
 fn ssh_bastion_service_port_is_ssh() {
-    let defaults = AppDefaults::for_app(&AppType::SshBastion);
+    let defaults = AppDefaults::for_app(&AppType::SshBastion).unwrap();
     assert_eq!(defaults.service.ports.len(), 1);
     assert_eq!(defaults.service.ports[0].name, "ssh");
     assert_eq!(defaults.service.ports[0].protocol, "TCP");
@@ -65,7 +65,7 @@ fn ssh_bastion_service_port_is_ssh() {
 
 #[test]
 fn ssh_bastion_has_host_keys_volume() {
-    let defaults = AppDefaults::for_app(&AppType::SshBastion);
+    let defaults = AppDefaults::for_app(&AppType::SshBastion).unwrap();
     assert_eq!(defaults.persistence.volumes.len(), 1);
     let vol = &defaults.persistence.volumes[0];
     assert_eq!(vol.name, "host-keys");
@@ -76,13 +76,13 @@ fn ssh_bastion_has_host_keys_volume() {
 
 #[test]
 fn ssh_bastion_has_no_nfs_mounts() {
-    let defaults = AppDefaults::for_app(&AppType::SshBastion);
+    let defaults = AppDefaults::for_app(&AppType::SshBastion).unwrap();
     assert!(defaults.persistence.nfs_mounts.is_empty());
 }
 
 #[test]
 fn ssh_bastion_resources() {
-    let defaults = AppDefaults::for_app(&AppType::SshBastion);
+    let defaults = AppDefaults::for_app(&AppType::SshBastion).unwrap();
     assert_eq!(defaults.resources.limits.cpu, "500m");
     assert_eq!(defaults.resources.limits.memory, "256Mi");
     assert_eq!(defaults.resources.requests.cpu, "100m");
@@ -91,7 +91,7 @@ fn ssh_bastion_resources() {
 
 #[test]
 fn ssh_bastion_has_tz_env() {
-    let defaults = AppDefaults::for_app(&AppType::SshBastion);
+    let defaults = AppDefaults::for_app(&AppType::SshBastion).unwrap();
     assert_eq!(defaults.env.len(), 1);
     assert_eq!(defaults.env[0].name, "TZ");
     assert_eq!(defaults.env[0].value, "UTC");
@@ -99,7 +99,7 @@ fn ssh_bastion_has_tz_env() {
 
 #[test]
 fn ssh_bastion_has_no_app_config() {
-    let defaults = AppDefaults::for_app(&AppType::SshBastion);
+    let defaults = AppDefaults::for_app(&AppType::SshBastion).unwrap();
     assert!(defaults.app_config.is_none());
 }
 
@@ -109,7 +109,7 @@ fn ssh_bastion_has_no_app_config() {
 
 #[test]
 fn ssh_bastion_uses_tcp_probes() {
-    let defaults = AppDefaults::for_app(&AppType::SshBastion);
+    let defaults = AppDefaults::for_app(&AppType::SshBastion).unwrap();
 
     assert!(matches!(
         defaults.probes.liveness.probe_type,
@@ -123,7 +123,7 @@ fn ssh_bastion_uses_tcp_probes() {
 
 #[test]
 fn tcp_probe_liveness_parameters() {
-    let defaults = AppDefaults::for_app(&AppType::SshBastion);
+    let defaults = AppDefaults::for_app(&AppType::SshBastion).unwrap();
     let liveness = &defaults.probes.liveness;
 
     assert_eq!(liveness.initial_delay_seconds, 30);
@@ -136,7 +136,7 @@ fn tcp_probe_liveness_parameters() {
 
 #[test]
 fn tcp_probe_readiness_parameters() {
-    let defaults = AppDefaults::for_app(&AppType::SshBastion);
+    let defaults = AppDefaults::for_app(&AppType::SshBastion).unwrap();
     let readiness = &defaults.probes.readiness;
 
     assert_eq!(readiness.initial_delay_seconds, 10);
@@ -147,7 +147,7 @@ fn tcp_probe_readiness_parameters() {
 
 #[test]
 fn tcp_probes_have_empty_command() {
-    let defaults = AppDefaults::for_app(&AppType::SshBastion);
+    let defaults = AppDefaults::for_app(&AppType::SshBastion).unwrap();
     assert!(defaults.probes.liveness.command.is_empty());
     assert!(defaults.probes.readiness.command.is_empty());
 }
@@ -166,7 +166,7 @@ fn http_apps_use_http_probes_not_tcp() {
     ];
 
     for app_type in &http_apps {
-        let defaults = AppDefaults::for_app(app_type);
+        let defaults = AppDefaults::for_app(app_type).unwrap();
         assert!(
             matches!(defaults.probes.liveness.probe_type, ProbeType::Http),
             "{app_type} should use Http liveness probe"
@@ -292,7 +292,7 @@ fn subgen_sync_spec_default_values() {
 
 #[test]
 fn subgen_has_models_pvc() {
-    let defaults = AppDefaults::for_app(&AppType::Subgen);
+    let defaults = AppDefaults::for_app(&AppType::Subgen).unwrap();
     let has_models = defaults
         .persistence
         .volumes
@@ -306,7 +306,7 @@ fn subgen_has_models_pvc() {
 
 #[test]
 fn subgen_default_env_includes_transcribe_device() {
-    let defaults = AppDefaults::for_app(&AppType::Subgen);
+    let defaults = AppDefaults::for_app(&AppType::Subgen).unwrap();
     let has_device = defaults
         .env
         .iter()
@@ -316,7 +316,7 @@ fn subgen_default_env_includes_transcribe_device() {
 
 #[test]
 fn subgen_default_env_includes_whisper_model() {
-    let defaults = AppDefaults::for_app(&AppType::Subgen);
+    let defaults = AppDefaults::for_app(&AppType::Subgen).unwrap();
     let has_model = defaults
         .env
         .iter()
@@ -326,7 +326,7 @@ fn subgen_default_env_includes_whisper_model() {
 
 #[test]
 fn bazarr_defaults_are_linuxserver_profile() {
-    let defaults = AppDefaults::for_app(&AppType::Bazarr);
+    let defaults = AppDefaults::for_app(&AppType::Bazarr).unwrap();
     // Bazarr uses linuxserver security profile — verify it builds without panicking
     // (build.rs codegen would have panicked at compile time if image-defaults.toml was
     // wrong)

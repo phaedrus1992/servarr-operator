@@ -43,7 +43,7 @@ pub fn config_checksum(app: &ServarrApp) -> Option<String> {
 }
 
 pub fn build(app: &ServarrApp, image_overrides: &HashMap<String, ImageSpec>) -> Deployment {
-    let mut defaults = AppDefaults::for_app(&app.spec.app);
+    let mut defaults = AppDefaults::for_app(&app.spec.app).expect("missing app defaults");
 
     // Apply image override from operator config (env vars / Helm values)
     let app_key = app.spec.app.to_string();

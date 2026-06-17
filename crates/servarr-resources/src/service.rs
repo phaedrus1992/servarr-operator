@@ -5,7 +5,7 @@ use servarr_crds::{AppConfig, AppDefaults, AppType, ServarrApp};
 use crate::common;
 
 pub fn build(app: &ServarrApp) -> Service {
-    let defaults = AppDefaults::for_app(&app.spec.app);
+    let defaults = AppDefaults::for_app(&app.spec.app).expect("missing app defaults");
     let svc = app.spec.service.as_ref().unwrap_or(&defaults.service);
     let app_config = app
         .spec

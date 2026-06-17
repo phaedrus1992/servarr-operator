@@ -108,16 +108,20 @@ impl AppDefaults {
         }
     }
 
-    pub fn for_app(app: &super::AppType) -> Self {
+    pub fn for_app(app: &super::AppType) -> Result<Self, String> {
         let app_name = app.to_string();
         let img = image_defaults(&app_name)
-            .unwrap_or_else(|| panic!("no image defaults for app: {app_name}"));
+            .ok_or_else(|| format!("no image defaults for app: {app_name}"))?;
 
         let mut defaults = match img.security {
             "linuxserver" => Self::linuxserver_base(img.port, img.downloads, img.probe_path),
             "nonroot" => Self::nonroot_base(img.port, img.probe_path),
             "sshd" => Self::sshd_base(img.port),
-            other => panic!("unknown security profile in image-defaults.toml: {other}"),
+            other => {
+                return Err(format!(
+                    "unknown security profile in image-defaults.toml: {other}"
+                ));
+            }
         };
 
         // Override probes for TCP probe type
@@ -150,7 +154,7 @@ impl AppDefaults {
             ]);
         }
 
-        defaults
+        Ok(defaults)
     }
 
     fn linuxserver_base(port: i32, downloads: bool, probe_path: &str) -> Self {
