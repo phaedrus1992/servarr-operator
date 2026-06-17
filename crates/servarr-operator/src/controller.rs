@@ -878,7 +878,19 @@ async fn sync_admin_credentials(client: &Client, app: &ServarrApp, ns: &str) -> 
     };
 
     let app_name = servarr_resources::common::service_name(app);
-    let defaults = servarr_crds::AppDefaults::for_app(&app.spec.app);
+    let defaults = match servarr_crds::AppDefaults::for_app(&app.spec.app) {
+        Ok(d) => d,
+        Err(e) => {
+            warn!(app = %app.name_any(), error = %e, "sync_admin_credentials: failed to load app defaults");
+            return Some(Condition {
+                condition_type: condition_types::ADMIN_CREDENTIALS_CONFIGURED.to_string(),
+                status: "Unknown".to_string(),
+                reason: "DefaultsLoadError".to_string(),
+                message: e.to_string(),
+                last_transition_time: now,
+            });
+        }
+    };
     let svc_spec = app.spec.service.as_ref().unwrap_or(&defaults.service);
     let port = svc_spec.ports.first().map(|p| p.port).unwrap_or(80);
     let base_url = format!("http://{app_name}.{ns}.svc:{port}");
@@ -1110,7 +1122,20 @@ pub(crate) async fn check_api_health(
     };
 
     let app_name = servarr_resources::common::service_name(app);
-    let defaults = servarr_crds::AppDefaults::for_app(&app.spec.app);
+    let defaults = match servarr_crds::AppDefaults::for_app(&app.spec.app) {
+        Ok(d) => d,
+        Err(e) => {
+            warn!(error = %e, "check_api_health: failed to load app defaults");
+            let cond = Condition {
+                condition_type: condition_types::APP_HEALTHY.to_string(),
+                status: "Unknown".to_string(),
+                reason: "DefaultsLoadError".to_string(),
+                message: e.to_string(),
+                last_transition_time: now,
+            };
+            return (Some(cond), None);
+        }
+    };
     let svc_spec = app.spec.service.as_ref().unwrap_or(&defaults.service);
     let port = svc_spec.ports.first().map(|p| p.port).unwrap_or(80);
     let base_url = format!("http://{app_name}.{ns}.svc:{port}");
@@ -1519,7 +1544,7 @@ async fn maybe_run_backup(
     }
 
     let app_name = servarr_resources::common::service_name(app);
-    let defaults = servarr_crds::AppDefaults::for_app(&app.spec.app);
+    let defaults = servarr_crds::AppDefaults::for_app(&app.spec.app).ok()?;
     let svc_spec = app.spec.service.as_ref().unwrap_or(&defaults.service);
     let port = svc_spec.ports.first().map(|p| p.port).unwrap_or(80);
     let base_url = format!("http://{app_name}.{ns}.svc:{port}");
@@ -1769,7 +1794,8 @@ async fn try_restore(
         .map_err(|e| anyhow::anyhow!("failed to read API key for restore: {e}"))?;
 
     let app_name = servarr_resources::common::service_name(app);
-    let defaults = servarr_crds::AppDefaults::for_app(&app.spec.app);
+    let defaults = servarr_crds::AppDefaults::for_app(&app.spec.app)
+        .map_err(|e| anyhow::anyhow!("failed to load app defaults: {e}"))?;
     let svc_spec = app.spec.service.as_ref().unwrap_or(&defaults.service);
     let port = svc_spec.ports.first().map(|p| p.port).unwrap_or(80);
     let base_url = format!("http://{app_name}.{ns}.svc:{port}");
@@ -1876,7 +1902,8 @@ pub(crate) async fn discover_namespace_apps(
         };
 
         let app_name = servarr_resources::common::service_name(app);
-        let defaults = servarr_crds::AppDefaults::for_app(&app.spec.app);
+        let defaults = servarr_crds::AppDefaults::for_app(&app.spec.app)
+            .map_err(|e| anyhow::anyhow!("failed to load app defaults: {e}"))?;
         let svc_spec = app.spec.service.as_ref().unwrap_or(&defaults.service);
         let port = svc_spec.ports.first().map(|p| p.port).unwrap_or(80);
         let host = format!("{app_name}.{namespace}.svc");
@@ -1916,7 +1943,8 @@ async fn sync_prowlarr_apps(
     let prowlarr_key = servarr_api::read_secret_key(client, &ns, secret_name, "api-key").await?;
 
     let prowlarr_app_name = servarr_resources::common::service_name(prowlarr);
-    let defaults = servarr_crds::AppDefaults::for_app(&prowlarr.spec.app);
+    let defaults = servarr_crds::AppDefaults::for_app(&prowlarr.spec.app)
+        .map_err(|e| anyhow::anyhow!("failed to load app defaults: {e}"))?;
     let svc_spec = prowlarr.spec.service.as_ref().unwrap_or(&defaults.service);
     let port = svc_spec.ports.first().map(|p| p.port).unwrap_or(80);
     let prowlarr_url = format!("http://{prowlarr_app_name}.{ns}.svc:{port}");
@@ -2070,7 +2098,8 @@ async fn cleanup_prowlarr_registration(
     use kube::api::ListParams;
 
     let app_name_str = servarr_resources::common::service_name(app);
-    let defaults = servarr_crds::AppDefaults::for_app(&app.spec.app);
+    let defaults = servarr_crds::AppDefaults::for_app(&app.spec.app)
+        .map_err(|e| anyhow::anyhow!("failed to load app defaults: {e}"))?;
     let svc_spec = app.spec.service.as_ref().unwrap_or(&defaults.service);
     let port = svc_spec.ports.first().map(|p| p.port).unwrap_or(80);
     let app_url = format!("http://{app_name_str}.{namespace}.svc:{port}");
@@ -2096,7 +2125,8 @@ async fn cleanup_prowlarr_registration(
         servarr_api::read_secret_key(client, namespace, secret_name, "api-key").await?;
 
     let prowlarr_app_name = servarr_resources::common::service_name(prowlarr);
-    let prowlarr_defaults = servarr_crds::AppDefaults::for_app(&prowlarr.spec.app);
+    let prowlarr_defaults = servarr_crds::AppDefaults::for_app(&prowlarr.spec.app)
+        .map_err(|e| anyhow::anyhow!("failed to load app defaults: {e}"))?;
     let prowlarr_svc = prowlarr
         .spec
         .service
@@ -2158,7 +2188,8 @@ async fn sync_overseerr_servers(
     let overseerr_key = servarr_api::read_secret_key(client, &ns, secret_name, "api-key").await?;
 
     let overseerr_app_name = servarr_resources::common::service_name(overseerr);
-    let defaults = servarr_crds::AppDefaults::for_app(&overseerr.spec.app);
+    let defaults = servarr_crds::AppDefaults::for_app(&overseerr.spec.app)
+        .map_err(|e| anyhow::anyhow!("failed to load app defaults: {e}"))?;
     let svc_spec = overseerr.spec.service.as_ref().unwrap_or(&defaults.service);
     let port = svc_spec.ports.first().map(|p| p.port).unwrap_or(80);
     let overseerr_url = format!("http://{overseerr_app_name}.{ns}.svc:{port}");
@@ -2389,7 +2420,8 @@ async fn sync_bazarr_apps(
     let bazarr_key = servarr_api::read_secret_key(client, &ns, &api_key_secret, "api-key").await?;
 
     let bazarr_app_name = servarr_resources::common::service_name(bazarr);
-    let defaults = servarr_crds::AppDefaults::for_app(&bazarr.spec.app);
+    let defaults = servarr_crds::AppDefaults::for_app(&bazarr.spec.app)
+        .map_err(|e| anyhow::anyhow!("failed to load app defaults: {e}"))?;
     let svc_spec = bazarr.spec.service.as_ref().unwrap_or(&defaults.service);
     let port = svc_spec.ports.first().map(|p| p.port).unwrap_or(80);
     let bazarr_url = format!("http://{bazarr_app_name}.{ns}.svc:{port}");
@@ -2511,7 +2543,8 @@ async fn sync_subgen_jellyfin(
         .map_err(|e| anyhow::anyhow!("Jellyfin API key secret {jf_secret_name} unreadable: {e}"))?;
 
     let jf_app_name = servarr_resources::common::service_name(jellyfin);
-    let jf_defaults = servarr_crds::AppDefaults::for_app(&jellyfin.spec.app);
+    let jf_defaults = servarr_crds::AppDefaults::for_app(&jellyfin.spec.app)
+        .map_err(|e| anyhow::anyhow!("failed to load app defaults: {e}"))?;
     let jf_svc_spec = jellyfin
         .spec
         .service
@@ -2587,7 +2620,8 @@ async fn cleanup_overseerr_registration(
     use kube::api::ListParams;
 
     let app_name_str = servarr_resources::common::service_name(app);
-    let defaults_for_app = servarr_crds::AppDefaults::for_app(&app.spec.app);
+    let defaults_for_app = servarr_crds::AppDefaults::for_app(&app.spec.app)
+        .map_err(|e| anyhow::anyhow!("failed to load app defaults: {e}"))?;
     let svc_spec = app
         .spec
         .service
@@ -2619,7 +2653,8 @@ async fn cleanup_overseerr_registration(
         servarr_api::read_secret_key(client, &overseerr_ns, secret_name, "api-key").await?;
 
     let overseerr_app_name = servarr_resources::common::service_name(overseerr);
-    let overseerr_defaults = servarr_crds::AppDefaults::for_app(&overseerr.spec.app);
+    let overseerr_defaults = servarr_crds::AppDefaults::for_app(&overseerr.spec.app)
+        .map_err(|e| anyhow::anyhow!("failed to load app defaults: {e}"))?;
     let overseerr_svc = overseerr
         .spec
         .service

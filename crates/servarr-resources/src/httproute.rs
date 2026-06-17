@@ -10,7 +10,7 @@ pub fn build(app: &ServarrApp) -> Option<DynamicObject> {
         return None;
     }
 
-    let defaults = AppDefaults::for_app(&app.spec.app);
+    let defaults = AppDefaults::for_app(&app.spec.app).expect("missing app defaults");
     let svc_spec = app.spec.service.as_ref().unwrap_or(&defaults.service);
     let first_port = svc_spec.ports.first().map(|p| p.port).unwrap_or(80);
 
