@@ -387,13 +387,17 @@ fi
 # different uid, then copy back to settings.json (owner-writable).
 echo "Applying settings overrides..."
 TMP=$(mktemp)
-jq -s '.[0] * .[1] * .[2]' "$SETTINGS_FILE" "$OVERRIDE_FILE" "$AUTH_FILE" > "$TMP"
-cp "$TMP" "$SETTINGS_FILE"
+if jq -s '.[0] * .[1] * .[2]' "$SETTINGS_FILE" "$OVERRIDE_FILE" "$AUTH_FILE" > "$TMP" 2>/dev/null; then
+    cp "$TMP" "$SETTINGS_FILE" 2>/dev/null \
+        || echo "Warning: could not write settings.json (check file ownership on adopted PVC)"
+else
+    echo "Warning: could not read settings.json (check file ownership on adopted PVC), skipping merge"
+fi
 rm -f "$TMP" "$AUTH_FILE"
 
-# Fix ownership
-chown {uid}:{gid} "$SETTINGS_FILE"
-chmod 600 "$SETTINGS_FILE"
+# Fix ownership (best-effort: may not be possible on adopted PVCs owned by a different uid)
+chown {uid}:{gid} "$SETTINGS_FILE" 2>/dev/null || true
+chmod 600 "$SETTINGS_FILE" 2>/dev/null || true
 
 echo "Settings applied successfully."
 "#

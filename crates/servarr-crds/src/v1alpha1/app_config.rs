@@ -56,7 +56,7 @@ pub struct SabnzbdConfig {
 #[derive(Serialize, Deserialize, Clone, Debug, Default, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct TransmissionConfig {
-    #[serde(default)]
+    #[serde(default = "default_settings")]
     #[schemars(schema_with = "json_object_schema")]
     pub settings: serde_json::Value,
     #[serde(default)]
@@ -94,6 +94,10 @@ pub struct TransmissionAuth {
 
 fn json_object_schema(_gen: &mut SchemaGenerator) -> Schema {
     json_schema!({ "type": "object", "x-kubernetes-preserve-unknown-fields": true })
+}
+
+fn default_settings() -> serde_json::Value {
+    serde_json::Value::Object(Default::default())
 }
 
 // --- SSH Bastion ---
