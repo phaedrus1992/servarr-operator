@@ -3664,4 +3664,12 @@ fn test_sshbastion_gateway_defaults_to_tcp() {
         route.is_some(),
         "SshBastion with enabled gateway should build TCPRoute (routeType should default to Tcp)"
     );
+
+    // The actual #49 bug: HTTPRoute must NOT be built for SshBastion.
+    // SSH is TCP-only, so an HTTPRoute would silently fail to expose it.
+    let http_route = servarr_resources::httproute::build(&app);
+    assert!(
+        http_route.is_none(),
+        "HTTPRoute must not be built for SshBastion — SSH is TCP only"
+    );
 }

@@ -11,7 +11,6 @@ pub struct AppDefaults {
     pub persistence: PersistenceSpec,
     pub probes: ProbeSpec,
     pub resources: ResourceRequirements,
-    pub gateway: GatewaySpec,
     pub uid: i64,
     pub gid: i64,
     pub env: Vec<EnvVar>,
@@ -173,10 +172,6 @@ impl AppDefaults {
             },
             probes: http_probes(probe_path, 30, 10),
             resources: std_resources("1", "512Mi", "100m", "128Mi"),
-            gateway: GatewaySpec {
-                route_type: RouteType::Http,
-                ..Default::default()
-            },
             uid: 65534,
             gid: 65534,
             env: vec![tz_env()],
@@ -195,10 +190,6 @@ impl AppDefaults {
             },
             probes: http_probes(probe_path, 30, 10),
             resources: std_resources("1", "512Mi", "100m", "128Mi"),
-            gateway: GatewaySpec {
-                route_type: RouteType::Http,
-                ..Default::default()
-            },
             uid: 65534,
             gid: 65534,
             env: vec![tz_env()],
@@ -208,7 +199,6 @@ impl AppDefaults {
 
     /// SSH bastion: needs CHOWN/SETGID/SETUID/NET_BIND_SERVICE/SYS_CHROOT,
     /// runs as root for user management, uses TCP probes on SSH port.
-    /// Defaults to Tcp routeType (not Http) since SSH is a raw TCP protocol.
     fn sshd_base(port: i32) -> Self {
         Self {
             image: ImageSpec::default(),
@@ -235,10 +225,6 @@ impl AppDefaults {
             },
             probes: tcp_probes(30, 10),
             resources: std_resources("500m", "256Mi", "100m", "128Mi"),
-            gateway: GatewaySpec {
-                route_type: RouteType::Tcp,
-                ..Default::default()
-            },
             uid: 0,
             gid: 0,
             env: vec![tz_env()],
