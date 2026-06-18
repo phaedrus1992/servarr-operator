@@ -349,7 +349,7 @@ spec:
 
 **App API not reachable:** Backups call the app via its in-cluster Service at `http://<name>.<namespace>.svc:<port>`. Verify the Service exists and the pod is running. DNS resolution issues can occur if CoreDNS is unhealthy or the NetworkPolicy blocks egress from the operator.
 
-**App not a Servarr v3 type:** Only Sonarr, Radarr, Lidarr, and Prowlarr support the backup API (Servarr v3 `/api/v3/system/backup`). Apps like Transmission, Sabnzbd, Tautulli, Overseerr, Maintainerr, Jackett, and Jellyfin do not support operator-managed backups. The operator silently ignores backup config for non-v3 app types.
+**App not a Servarr v3 type:** Only Sonarr, Radarr, Lidarr, and Prowlarr support the backup API (Servarr v3 `/api/v3/system/backup`). All other app types (Transmission, Sabnzbd, Tautulli, Overseerr, Maintainerr, Jackett, Jellyfin, Plex, SshBastion, Bazarr, Subgen) do not support operator-managed backups. The operator silently ignores backup config for non-v3 app types.
 
 ---
 

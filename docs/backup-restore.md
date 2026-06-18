@@ -280,6 +280,10 @@ The app will restart automatically as part of its internal restore process.
   - Maintainerr
   - Jackett
   - Jellyfin
+  - Plex
+  - SshBastion
+  - Bazarr
+  - Subgen
 
   If `spec.backup.enabled` is set to `true` on a non-Servarr-v3 app, the
   operator will log a warning and skip backup operations.

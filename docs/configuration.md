@@ -19,6 +19,7 @@
 | `gid` | `int64` | No | `65534` |
 | `security` | `SecurityProfile` | No | Per-app defaults |
 | `service` | `ServiceSpec` | No | Per-app defaults |
+| `serviceName` | `string` | No | -- |
 | `gateway` | `GatewaySpec` | No | -- |
 | `resources` | `ResourceRequirements` | No | limits: 1 cpu / 512Mi, requests: 100m / 128Mi |
 | `persistence` | `PersistenceSpec` | No | Per-app defaults |
@@ -29,6 +30,7 @@
 | `networkPolicyConfig` | `NetworkPolicyConfig` | No | -- |
 | `appConfig` | `AppConfig` | No | -- |
 | `apiKeySecret` | `string` | No | -- |
+| `adminCredentials` | `AdminCredentialsSpec` | No | -- |
 | `apiHealthCheck` | `ApiHealthCheckSpec` | No | -- |
 | `backup` | `BackupSpec` | No | -- |
 | `imagePullSecrets` | `[]string` | No | -- |
@@ -36,6 +38,8 @@
 | `gpu` | `GpuSpec` | No | -- |
 | `prowlarrSync` | `ProwlarrSyncSpec` | No | -- |
 | `overseerrSync` | `OverseerrSyncSpec` | No | -- |
+| `bazarrSync` | `BazarrSyncSpec` | No | -- |
+| `subgenSync` | `SubgenSyncSpec` | No | -- |
 
 ---
 
@@ -47,7 +51,7 @@
 
 Selects which application this resource manages. The operator uses this to determine default images, ports, security profiles, and volume layouts.
 
-Valid values: `Plex`, `Jellyfin`, `SshBastion`, `Sabnzbd`, `Transmission`, `Sonarr`, `Radarr`, `Lidarr`, `Tautulli`, `Overseerr`, `Maintainerr`, `Prowlarr`, `Jackett`
+Valid values: `Plex`, `Jellyfin`, `SshBastion`, `Sabnzbd`, `Transmission`, `Sonarr`, `Radarr`, `Lidarr`, `Tautulli`, `Overseerr`, `Maintainerr`, `Prowlarr`, `Jackett`, `Bazarr`, `Subgen`
 
 ```yaml
 spec:
@@ -192,6 +196,22 @@ spec:
 
 ---
 
+### `serviceName`
+
+**Type:** `string` -- **Optional**
+
+Overrides the name of the generated Service (and the `backendRef` used by any
+Gateway route). By default the Service is named after the resource; set this to
+preserve a stable DNS name when renaming a ServarrApp or matching an existing
+in-cluster hostname.
+
+```yaml
+spec:
+  serviceName: sonarr
+```
+
+---
+
 ### `gateway`
 
 **Type:** `GatewaySpec` -- **Optional**
@@ -287,6 +307,10 @@ Configures persistent storage. Supports PVC-backed volumes and NFS mounts.
 | `accessMode` | `string` | `"ReadWriteOnce"` |
 | `size` | `string` | `"1Gi"` |
 | `storageClass` | `string` | `""` (cluster default) |
+| `existingClaimName` | `string` | -- |
+
+When `existingClaimName` is set, the operator mounts that pre-existing PVC
+instead of creating a new one (it does not own or delete the claim).
 
 **NfsMount fields:**
 
@@ -405,7 +429,7 @@ spec:
 
 **Type:** `bool` -- **Optional**
 
-Simple toggle to create a NetworkPolicy for the app. When `true`, the operator generates a basic ingress-only policy on the app's service ports.
+Simple toggle to create a NetworkPolicy for the app. When `true`, the operator generates a policy with both Ingress and Egress rules: ingress on the app's service ports from the same namespace, plus egress for same-namespace pod-to-pod traffic and DNS resolution.
 
 For fine-grained control, use `networkPolicyConfig` instead (it takes precedence over this field).
 
@@ -581,6 +605,57 @@ spec:
           minimumAvailability: "released"
 ```
 
+#### Variant: `SshBastion`
+
+| Sub-field | Type | Default |
+|---|---|---|
+| `users` | `[]SshUser` | `[]` |
+| `enablePasswordAuth` | `bool` | `false` |
+| `tcpForwarding` | `bool` | `false` |
+| `gatewayPorts` | `bool` | `false` |
+| `motd` | `string` | `""` |
+| `disableSftp` | `bool` | `false` |
+| `sftpChroot` | `string` | `"%h"` (user home) |
+
+**SshUser fields:**
+
+| Field | Type | Default |
+|---|---|---|
+| `name` | `string` | -- |
+| `uid` | `int64` | -- |
+| `gid` | `int64` | -- |
+| `mode` | `SshMode` | `shell` |
+| `restrictedRsync` | `RestrictedRsyncConfig` | -- (only for `restricted-rsync`) |
+| `shell` | `string` | `/bin/sh` (only for `shell` mode) |
+| `publicKeys` | `string` | `""` (one key per line) |
+
+Valid `mode` values: `shell`, `sftp`, `scp`, `rsync`, `restricted-rsync`. The
+`restrictedRsync.allowedPaths` list restricts a `restricted-rsync` user to
+read-only transfers from the listed paths.
+
+```yaml
+spec:
+  app: SshBastion
+  appConfig:
+    sshBastion:
+      users:
+        - name: admin
+          uid: 1000
+          gid: 1000
+          mode: shell
+          publicKeys: |
+            ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA... admin@example.com
+        - name: backup
+          uid: 1001
+          gid: 1001
+          mode: restricted-rsync
+          restrictedRsync:
+            allowedPaths:
+              - /mnt/media
+          publicKeys: |
+            ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA... backup@example.com
+```
+
 ---
 
 ### `apiKeySecret`
@@ -604,6 +679,27 @@ metadata:
 type: Opaque
 stringData:
   api-key: "your-api-key-here"
+```
+
+---
+
+### `adminCredentials`
+
+**Type:** `AdminCredentialsSpec` -- **Optional**
+
+References a Secret holding the desired admin `username` and `password`. The
+operator applies them declaratively (env-var injection for Servarr v3 apps, live
+API calls for others) and re-applies on Secret rotation. See
+[Admin Credentials](admin-credentials.md) for the full per-app mechanism.
+
+| Sub-field | Type | Default |
+|---|---|---|
+| `secretName` | `string` | -- |
+
+```yaml
+spec:
+  adminCredentials:
+    secretName: media-admin
 ```
 
 ---
@@ -758,6 +854,50 @@ spec:
   overseerrSync:
     enabled: true
     autoRemove: true
+```
+
+---
+
+### `bazarrSync`
+
+**Type:** `BazarrSyncSpec` -- **Optional**
+
+Configures Bazarr cross-app synchronization. Only applies to `Bazarr`-type apps. When enabled, the operator discovers Sonarr and Radarr instances in the target namespace and registers them in Bazarr for subtitle management. The operator manages Bazarr's API key automatically -- no `apiKeySecret` is required.
+
+| Sub-field | Type | Default |
+|---|---|---|
+| `enabled` | `bool` | `false` |
+| `namespaceScope` | `string` | Same namespace as the Bazarr CR |
+| `autoRemove` | `bool` | `true` |
+
+When `autoRemove` is true, Sonarr/Radarr are disabled in Bazarr when their corresponding ServarrApp CRs are deleted.
+
+```yaml
+spec:
+  app: Bazarr
+  bazarrSync:
+    enabled: true
+    autoRemove: true
+```
+
+---
+
+### `subgenSync`
+
+**Type:** `SubgenSyncSpec` -- **Optional**
+
+Configures Subgen-to-Jellyfin synchronization. Only applies to `Subgen`-type apps. When enabled, the operator discovers a Jellyfin instance in the target namespace and injects its connection details (URL and API key) as environment variables into the Subgen Deployment for Whisper AI subtitle generation.
+
+| Sub-field | Type | Default |
+|---|---|---|
+| `enabled` | `bool` | `false` |
+| `namespaceScope` | `string` | Same namespace as the Subgen CR |
+
+```yaml
+spec:
+  app: Subgen
+  subgenSync:
+    enabled: true
 ```
 
 ---

@@ -85,8 +85,8 @@ spec:
     adminCredentials:
       secretName: media-admin
   apps:
-    sonarr: {}    # inherits from defaults
-    radarr: {}    # inherits from defaults
+    - app: Sonarr    # inherits from defaults
+    - app: Radarr    # inherits from defaults
 ```
 
 ### MediaStack — per-app override
@@ -97,24 +97,14 @@ spec:
     adminCredentials:
       secretName: media-admin
   apps:
-    sonarr: {}
-    radarr:
+    - app: Sonarr
+    - app: Radarr
       adminCredentials:
         secretName: radarr-admin   # overrides defaults for Radarr only
 ```
 
-### Split-4K override
-
-```yaml
-spec:
-  apps:
-    sonarr:
-      adminCredentials:
-        secretName: media-admin
-      split4k:
-        adminCredentials:
-          secretName: sonarr-4k-admin  # 4K instance uses a different secret
-```
+When `split4k: true` is set on a Sonarr or Radarr app, both the standard and the
+4K child instances inherit the same `adminCredentials` from the StackApp entry.
 
 ---
 
@@ -151,6 +141,7 @@ healthy, and re-applied on every reconcile.
 | Jellyfin | Startup wizard (`POST /Startup/User`) on first run; `POST /Users/{id}/Password` thereafter |
 | Tautulli | `POST /api/v2?cmd=set_credentials` |
 | Overseerr | `PUT /api/v1/auth/local` |
+| Bazarr | Direct API call; password is MD5-hashed before submission (Bazarr API contract) |
 
 ### Unsupported apps
 

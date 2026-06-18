@@ -1,0 +1,20 @@
+# Subgen — Whisper AI subtitle generation.
+# With subgenSync enabled, the operator discovers a Jellyfin instance in the
+# namespace and injects its URL and API key into the Subgen Deployment.
+apiVersion: servarr.dev/v1alpha1
+kind: ServarrApp
+metadata:
+  name: subgen
+spec:
+  app: Subgen
+  subgenSync:
+    enabled: true
+  # The operator defaults TRANSCRIBE_DEVICE=cpu and WHISPER_MODEL=medium.
+  # Override them to use a larger model or GPU transcription:
+  # env:
+  #   - name: TRANSCRIBE_DEVICE
+  #     value: cuda
+  #   - name: WHISPER_MODEL
+  #     value: large-v3
+  # gpu:
+  #   nvidia: 1

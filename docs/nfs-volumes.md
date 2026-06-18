@@ -12,7 +12,7 @@ When a `MediaStack` has an `nfs:` spec (or when the field is omitted and the
 cluster default is used), the operator:
 
 1. **Deploys an NFS server** — a single-replica StatefulSet backed by a PVC,
-   running [itsthenetwork/nfs-server-alpine](https://github.com/sjiveson/nfs-server-alpine).
+   running [erichough/nfs-server](https://github.com/ehough/docker-nfs-server).
    The server exports `/nfsshare` over port 2049 and is reachable at
    `<stack-name>-nfs-server.<namespace>.svc.cluster.local`.
 

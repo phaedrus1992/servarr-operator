@@ -336,8 +336,9 @@ from the app's pods.
 
 ### Simple Mode
 
-Set `spec.networkPolicy: true` to create a basic ingress-only policy that
-allows traffic on the app's service ports from pods in the same namespace:
+Set `spec.networkPolicy: true` to create a basic policy that allows ingress on
+the app's service ports from pods in the same namespace, plus egress for
+same-namespace pod-to-pod traffic and DNS resolution:
 
 ```yaml
 apiVersion: servarr.dev/v1alpha1

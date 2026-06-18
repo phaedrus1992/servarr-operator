@@ -40,6 +40,8 @@ in a MediaStack).
 | Maintainerr | [`maintainerr.yaml`](examples/maintainerr.yaml) | Nonroot security profile |
 | Prowlarr | [`prowlarr.yaml`](examples/prowlarr.yaml) | Cross-app sync, custom indexers |
 | Jackett | [`jackett.yaml`](examples/jackett.yaml) | |
+| Bazarr | [`bazarr.yaml`](examples/bazarr.yaml) | Subtitle management, Sonarr/Radarr sync |
+| Subgen | [`subgen.yaml`](examples/subgen.yaml) | Whisper AI subtitles, Jellyfin sync |
 
 ## Backup Configuration
 
