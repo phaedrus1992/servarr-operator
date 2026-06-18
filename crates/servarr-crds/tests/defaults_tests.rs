@@ -332,3 +332,50 @@ fn bazarr_defaults_are_linuxserver_profile() {
     // wrong)
     assert!(!defaults.persistence.volumes.is_empty());
 }
+
+// ---------------------------------------------------------------------------
+// Download client memory defaults (issue #82)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn sabnzbd_gets_higher_memory_default() {
+    let defaults = AppDefaults::for_app(&AppType::Sabnzbd).unwrap();
+    assert_eq!(defaults.resources.limits.memory, "1Gi");
+    assert_eq!(defaults.resources.requests.memory, "256Mi");
+}
+
+#[test]
+fn transmission_gets_higher_memory_default() {
+    let defaults = AppDefaults::for_app(&AppType::Transmission).unwrap();
+    assert_eq!(defaults.resources.limits.memory, "1Gi");
+    assert_eq!(defaults.resources.requests.memory, "256Mi");
+}
+
+#[test]
+fn sonarr_gets_higher_memory_default() {
+    let defaults = AppDefaults::for_app(&AppType::Sonarr).unwrap();
+    assert_eq!(defaults.resources.limits.memory, "1Gi");
+    assert_eq!(defaults.resources.requests.memory, "256Mi");
+}
+
+#[test]
+fn radarr_gets_higher_memory_default() {
+    let defaults = AppDefaults::for_app(&AppType::Radarr).unwrap();
+    assert_eq!(defaults.resources.limits.memory, "1Gi");
+    assert_eq!(defaults.resources.requests.memory, "256Mi");
+}
+
+#[test]
+fn lidarr_gets_higher_memory_default() {
+    let defaults = AppDefaults::for_app(&AppType::Lidarr).unwrap();
+    assert_eq!(defaults.resources.limits.memory, "1Gi");
+    assert_eq!(defaults.resources.requests.memory, "256Mi");
+}
+
+#[test]
+fn non_download_apps_keep_lower_memory_default() {
+    // Prowlarr is an indexer, not a download client
+    let defaults = AppDefaults::for_app(&AppType::Prowlarr).unwrap();
+    assert_eq!(defaults.resources.limits.memory, "512Mi");
+    assert_eq!(defaults.resources.requests.memory, "128Mi");
+}

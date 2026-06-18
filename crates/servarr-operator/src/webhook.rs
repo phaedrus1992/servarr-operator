@@ -13,7 +13,7 @@ use axum_server::tls_rustls::RustlsConfig;
 use kube::Client;
 use kube::api::{Api, ListParams};
 use serde::{Deserialize, Serialize};
-use servarr_crds::{AppConfig, AppType, ServarrApp, ServarrAppSpec, SshMode};
+use servarr_crds::{AppConfig, AppType, RouteType, ServarrApp, ServarrAppSpec, SshMode};
 use tracing::{debug, info, warn};
 
 use crate::controller::normalize_backup_schedule;
@@ -428,9 +428,10 @@ fn validate_resource_bounds(spec: &ServarrAppSpec, errors: &mut Vec<String>) {
 fn validate_gateway_hosts(spec: &ServarrAppSpec, errors: &mut Vec<String>) {
     if let Some(ref gw) = spec.gateway
         && gw.is_enabled()
+        && matches!(gw.effective_route_type(&spec.app), RouteType::Http)
         && gw.hosts.is_empty()
     {
-        errors.push("gateway.hosts must be non-empty when gateway is enabled".into());
+        errors.push("gateway.hosts must be non-empty when an HTTP gateway is enabled".into());
     }
 }
 

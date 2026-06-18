@@ -162,6 +162,11 @@ impl AppDefaults {
         if downloads {
             volumes.push(pvc("downloads", "/downloads", "100Gi"));
         }
+        let (mem_limit, mem_request) = if downloads {
+            ("1Gi", "256Mi")
+        } else {
+            ("512Mi", "128Mi")
+        };
         Self {
             image: ImageSpec::default(),
             service: single_port_service("http", port),
@@ -171,7 +176,7 @@ impl AppDefaults {
                 nfs_mounts: vec![],
             },
             probes: http_probes(probe_path, 30, 10),
-            resources: std_resources("1", "512Mi", "100m", "128Mi"),
+            resources: std_resources("1", mem_limit, "100m", mem_request),
             uid: 65534,
             gid: 65534,
             env: vec![tz_env()],
