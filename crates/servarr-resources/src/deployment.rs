@@ -1275,40 +1275,40 @@ echo "Host keys ready."
         ..Default::default()
     });
 
-    // Copy authorized_keys from Secret staging path to emptyDir with proper permissions.
-    // sshd StrictModes requires non-world-writable directory (0755 root:root).
-    let copy_keys_script = r#"#!/bin/sh
+    if ssh_config.users.iter().any(|u| !u.public_keys.is_empty()) {
+        // Copy authorized_keys from Secret staging path to emptyDir with proper permissions.
+        // sshd StrictModes requires non-world-writable directory; 700 satisfies it.
+        let copy_keys_script = r#"#!/bin/sh
 set -e
-if [ -d /etc/authorized_keys.src ]; then
-  mkdir -p /etc/authorized_keys
-  cp -r /etc/authorized_keys.src/* /etc/authorized_keys/
-  chmod 755 /etc/authorized_keys
-  chmod 644 /etc/authorized_keys/*
-  chown -R root:root /etc/authorized_keys
-  echo "Authorized keys copied and permissions set."
-fi
+mkdir -p /etc/authorized_keys
+cp -r /etc/authorized_keys.src/* /etc/authorized_keys/
+chmod 700 /etc/authorized_keys
+chmod 644 /etc/authorized_keys/*
+chown -R root:root /etc/authorized_keys
+echo "Authorized keys copied and permissions set."
 "#;
 
-    init.push(Container {
-        name: "copy-authorized-keys".into(),
-        image: Some(image.to_string()),
-        command: Some(vec!["/bin/sh".into(), "-c".into(), copy_keys_script.into()]),
-        security_context: Some(security_context.clone()),
-        volume_mounts: Some(vec![
-            VolumeMount {
-                name: "authorized-keys-src".into(),
-                mount_path: "/etc/authorized_keys.src".into(),
-                read_only: Some(true),
-                ..Default::default()
-            },
-            VolumeMount {
-                name: "authorized-keys".into(),
-                mount_path: "/etc/authorized_keys".into(),
-                ..Default::default()
-            },
-        ]),
-        ..Default::default()
-    });
+        init.push(Container {
+            name: "copy-authorized-keys".into(),
+            image: Some(image.to_string()),
+            command: Some(vec!["/bin/sh".into(), "-c".into(), copy_keys_script.into()]),
+            security_context: Some(security_context.clone()),
+            volume_mounts: Some(vec![
+                VolumeMount {
+                    name: "authorized-keys-src".into(),
+                    mount_path: "/etc/authorized_keys.src".into(),
+                    read_only: Some(true),
+                    ..Default::default()
+                },
+                VolumeMount {
+                    name: "authorized-keys".into(),
+                    mount_path: "/etc/authorized_keys".into(),
+                    ..Default::default()
+                },
+            ]),
+            ..Default::default()
+        });
+    }
 
     // Patch entry.sh to no longer skip chown/chmod on authorized_keys
     // (they're now in a writable emptyDir with proper permissions from copy-authorized-keys)
@@ -1316,7 +1316,7 @@ fi
     let mut patch_script = String::from(
         r#"#!/bin/sh
 set -e
-# Patch entry.sh to skip chown/chmod on authorized_keys (they're read-only mounts)
+# Patch entry.sh to skip chown/chmod on authorized_keys (emptyDir, already set by copy-authorized-keys)
 if [ -f /entry.sh ]; then
   sed -i 's/chmod 600 "$f"/true/g' /entry.sh
   sed -i 's/chown "$user:$user" "$f"/true/g' /entry.sh

@@ -1756,7 +1756,11 @@ fn test_deployment_ssh_bastion_init_containers() {
     );
     let src_mount = src_mount.unwrap();
     assert_eq!(src_mount.mount_path, "/etc/authorized_keys.src");
-    assert_eq!(src_mount.read_only, Some(true), "Secret staging mount must be read-only");
+    assert_eq!(
+        src_mount.read_only,
+        Some(true),
+        "Secret staging mount must be read-only"
+    );
 
     // authorized-keys: emptyDir populated by copy-authorized-keys init container, writable
     let ak_mount = mounts.iter().find(|m| m.name == "authorized-keys");
