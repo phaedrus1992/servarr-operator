@@ -1774,7 +1774,7 @@ fn test_deployment_ssh_bastion_init_containers() {
         "authorized-keys should mount at /etc/authorized_keys"
     );
     assert!(
-        ak_mount.read_only.unwrap_or(false) == false,
+        !ak_mount.read_only.unwrap_or(false),
         "authorized-keys emptyDir must be writable so init container can populate it"
     );
     assert!(
