@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 use std::sync::Arc;
 
 use axum::extract::State;
@@ -257,6 +258,9 @@ async fn validate_spec(
     // Rule 11: adminCredentials.secretName must be non-empty when set
     validate_admin_credentials(&parsed, &mut errors);
 
+    // Rule 12: backup.schedule must be a valid cron expression
+    validate_backup_schedule(&parsed, &mut errors);
+
     if errors.is_empty() {
         Ok(())
     } else {
@@ -307,6 +311,29 @@ fn validate_admin_credentials(spec: &ServarrAppSpec, errors: &mut Vec<String>) {
             "adminCredentials.secretName must be non-empty when adminCredentials is set"
                 .to_string(),
         );
+    }
+}
+
+fn validate_backup_schedule(spec: &ServarrAppSpec, errors: &mut Vec<String>) {
+    if let Some(ref backup) = spec.backup
+        && !backup.schedule.trim().is_empty()
+    {
+        let normalized = normalize_backup_schedule(&backup.schedule);
+        if cron::Schedule::from_str(&normalized).is_err() {
+            errors.push(format!(
+                "backup.schedule must be a valid cron expression (got '{}')",
+                backup.schedule.trim()
+            ));
+        }
+    }
+}
+
+fn normalize_backup_schedule(expr: &str) -> String {
+    let expr = expr.trim();
+    if expr.split_whitespace().count() == 5 {
+        format!("0 {expr}")
+    } else {
+        expr.to_string()
     }
 }
 
@@ -1256,5 +1283,96 @@ mod tests {
         assert_eq!(errors.len(), 1);
         assert!(errors[0].contains("immutable"));
         assert!(errors[0].contains("instance"));
+    }
+
+    // ── validate_backup_schedule ──
+
+    #[test]
+    fn backup_schedule_no_backup_config() {
+        let spec = minimal_spec(AppType::Sonarr);
+        let mut errors = Vec::new();
+        validate_backup_schedule(&spec, &mut errors);
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn backup_schedule_empty_string() {
+        let mut spec = minimal_spec(AppType::Sonarr);
+        spec.backup = Some(BackupSpec {
+            enabled: true,
+            schedule: "".into(),
+            retention_count: 5,
+        });
+        let mut errors = Vec::new();
+        validate_backup_schedule(&spec, &mut errors);
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn backup_schedule_whitespace_only() {
+        let mut spec = minimal_spec(AppType::Sonarr);
+        spec.backup = Some(BackupSpec {
+            enabled: true,
+            schedule: "   ".into(),
+            retention_count: 5,
+        });
+        let mut errors = Vec::new();
+        validate_backup_schedule(&spec, &mut errors);
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn backup_schedule_valid_six_field_cron() {
+        let mut spec = minimal_spec(AppType::Sonarr);
+        spec.backup = Some(BackupSpec {
+            enabled: true,
+            schedule: "0 3 * * * *".into(),
+            retention_count: 5,
+        });
+        let mut errors = Vec::new();
+        validate_backup_schedule(&spec, &mut errors);
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn backup_schedule_valid_five_field_cron() {
+        let mut spec = minimal_spec(AppType::Sonarr);
+        spec.backup = Some(BackupSpec {
+            enabled: true,
+            schedule: "0 3 * * *".into(),
+            retention_count: 5,
+        });
+        let mut errors = Vec::new();
+        validate_backup_schedule(&spec, &mut errors);
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn backup_schedule_invalid_cron() {
+        let mut spec = minimal_spec(AppType::Sonarr);
+        spec.backup = Some(BackupSpec {
+            enabled: true,
+            schedule: "not a cron expression".into(),
+            retention_count: 5,
+        });
+        let mut errors = Vec::new();
+        validate_backup_schedule(&spec, &mut errors);
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("valid cron"));
+        assert!(errors[0].contains("not a cron expression"));
+    }
+
+    #[test]
+    fn backup_schedule_invalid_numeric_cron() {
+        let mut spec = minimal_spec(AppType::Sonarr);
+        spec.backup = Some(BackupSpec {
+            enabled: true,
+            schedule: "99 99 99 99 99".into(),
+            retention_count: 5,
+        });
+        let mut errors = Vec::new();
+        validate_backup_schedule(&spec, &mut errors);
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("valid cron"));
     }
 }

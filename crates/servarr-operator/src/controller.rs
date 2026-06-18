@@ -1524,6 +1524,21 @@ async fn maybe_run_backup(
         Ok(s) => s,
         Err(e) => {
             warn!(error = %e, schedule = %backup_spec.schedule, "invalid cron schedule");
+            let _ = recorder
+                .publish(
+                    &Event {
+                        type_: EventType::Warning,
+                        reason: "InvalidBackupSchedule".into(),
+                        note: Some(format!(
+                            "Invalid backup schedule '{}': {}",
+                            backup_spec.schedule, e
+                        )),
+                        action: "Backup".into(),
+                        secondary: None,
+                    },
+                    obj_ref,
+                )
+                .await;
             return Some(servarr_crds::BackupStatus {
                 last_backup_result: Some(format!("invalid schedule: {e}")),
                 ..Default::default()
@@ -1540,7 +1555,13 @@ async fn maybe_run_backup(
         .as_ref()
         .and_then(|s| s.backup_status.as_ref())
         .and_then(|bs| bs.last_backup_time.as_deref())
-        .and_then(|t| t.parse::<chrono::DateTime<Utc>>().ok());
+        .and_then(|t| match t.parse::<chrono::DateTime<Utc>>() {
+            Ok(dt) => Some(dt),
+            Err(e) => {
+                warn!(value = %t, error = %e, "failed to parse last_backup_time");
+                None
+            }
+        });
 
     let is_due = match last_backup {
         Some(last) => schedule.after(&last).take(1).any(|next| next <= now),
