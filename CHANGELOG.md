@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased] - ReleaseDate
 
+## [1.0.1] - 2026-06-18
+
 ### Changed
 
 - Raise default memory for download clients (SABnzbd, Transmission, Sonarr, Radarr, Lidarr)
@@ -91,5 +93,6 @@ lifecycle: deployment, storage, networking, backups, and cross-app integration.
   on each `v*` tag.
 
 <!-- next-url -->
-[Unreleased]: https://github.com/phaedrus1992/servarr-operator/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/phaedrus1992/servarr-operator/compare/v1.0.1...HEAD
+[1.0.1]: https://github.com/phaedrus1992/servarr-operator/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/phaedrus1992/servarr-operator/compare/50a4a1eb98121d552a37ba8dcf6f38043478d8d5...v1.0.0
