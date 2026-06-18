@@ -32,11 +32,11 @@ fn arb_opt_string() -> impl Strategy<Value = Option<String>> {
 }
 
 fn arb_opt_bool() -> impl Strategy<Value = Option<bool>> {
-    prop_oneof![Just(None), any::<bool>().prop_map(Some)]
+    prop::option::of(any::<bool>())
 }
 
 fn arb_opt_i32() -> impl Strategy<Value = Option<i32>> {
-    prop_oneof![Just(None), any::<i32>().prop_map(Some)]
+    prop::option::of(any::<i32>())
 }
 
 /// A small, valid JSON object — used for the opaque `serde_json::Value` fields
@@ -50,15 +50,17 @@ fn arb_json_objects() -> impl Strategy<Value = Vec<serde_json::Value>> {
     prop::collection::vec(arb_json_object(), 0..3)
 }
 
-fn arb_image() -> impl Strategy<Value = ImageSpec> {
-    (arb_string(), arb_string(), arb_string(), arb_string()).prop_map(
-        |(repository, tag, digest, pull_policy)| ImageSpec {
-            repository,
-            tag,
-            digest,
-            pull_policy,
-        },
-    )
+prop_compose! {
+    // Named bindings (vs a 4-tuple of identical `arb_string()`) so a field
+    // can't be silently swapped — this strategy backs the #38 merge tests.
+    fn arb_image()(
+        repository in arb_string(),
+        tag in arb_string(),
+        digest in arb_string(),
+        pull_policy in arb_string(),
+    ) -> ImageSpec {
+        ImageSpec { repository, tag, digest, pull_policy }
+    }
 }
 
 fn arb_pvc() -> impl Strategy<Value = PvcVolume> {
@@ -294,6 +296,45 @@ fn arb_node_scheduling() -> impl Strategy<Value = NodeScheduling> {
         })
 }
 
+fn arb_probe_type() -> impl Strategy<Value = ProbeType> {
+    prop_oneof![
+        Just(ProbeType::Http),
+        Just(ProbeType::Tcp),
+        Just(ProbeType::Exec),
+    ]
+}
+
+prop_compose! {
+    fn arb_probe_config()(
+        probe_type in arb_probe_type(),
+        path in arb_string(),
+        command in prop::collection::vec(arb_string(), 0..3),
+        initial_delay_seconds in any::<i32>(),
+        period_seconds in any::<i32>(),
+        timeout_seconds in any::<i32>(),
+        failure_threshold in any::<i32>(),
+    ) -> ProbeConfig {
+        ProbeConfig {
+            probe_type,
+            path,
+            command,
+            initial_delay_seconds,
+            period_seconds,
+            timeout_seconds,
+            failure_threshold,
+        }
+    }
+}
+
+prop_compose! {
+    fn arb_probe_spec()(
+        liveness in arb_probe_config(),
+        readiness in arb_probe_config(),
+    ) -> ProbeSpec {
+        ProbeSpec { liveness, readiness }
+    }
+}
+
 proptest! {
     #[test]
     fn prop_image_roundtrip(v in arb_image()) { assert_roundtrip(&v); }
@@ -339,6 +380,40 @@ proptest! {
 
     #[test]
     fn prop_node_scheduling_roundtrip(v in arb_node_scheduling()) { assert_roundtrip(&v); }
+
+    #[test]
+    fn prop_probe_config_roundtrip(v in arb_probe_config()) { assert_roundtrip(&v); }
+
+    #[test]
+    fn prop_probe_spec_roundtrip(v in arb_probe_spec()) { assert_roundtrip(&v); }
+
+    // #38: the core merge_with contract — empty user fields inherit the
+    // default, non-empty user fields are never overwritten; digest/pull_policy
+    // always pass through from the user value.
+    #[test]
+    fn prop_image_merge_with(user in arb_image(), default in arb_image()) {
+        let merged = user.clone().merge_with(&default);
+        let expected_repo =
+            if user.repository.is_empty() { &default.repository } else { &user.repository };
+        let expected_tag = if user.tag.is_empty() { &default.tag } else { &user.tag };
+        prop_assert_eq!(&merged.repository, expected_repo);
+        prop_assert_eq!(&merged.tag, expected_tag);
+        prop_assert_eq!(&merged.digest, &user.digest);
+        prop_assert_eq!(&merged.pull_policy, &user.pull_policy);
+    }
+
+    // camelCase stays stable for every generated ProbeConfig.
+    #[test]
+    fn prop_probe_config_camel_case(v in arb_probe_config()) {
+        let obj = serde_json::to_value(&v).unwrap();
+        let obj = obj.as_object().unwrap();
+        prop_assert!(obj.contains_key("probeType"));
+        prop_assert!(obj.contains_key("initialDelaySeconds"));
+        prop_assert!(obj.contains_key("periodSeconds"));
+        prop_assert!(obj.contains_key("timeoutSeconds"));
+        prop_assert!(obj.contains_key("failureThreshold"));
+        prop_assert!(!obj.contains_key("probe_type"));
+    }
 
     // camelCase stays stable for every generated PvcVolume.
     #[test]
