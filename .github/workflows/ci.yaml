@@ -112,6 +112,7 @@ jobs:
 
       - name: Run tests with coverage
         run: |
+          set -o pipefail  # propagate cargo-llvm-cov's exit code through the tee pipe
           threshold=$(cat .coverage-threshold)
           cargo llvm-cov --workspace --fail-under-lines "$threshold" --summary-only 2>&1 | tee /tmp/coverage-summary.txt
 
