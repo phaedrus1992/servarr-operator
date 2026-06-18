@@ -428,7 +428,7 @@ fn inject_nfs_mounts(
     };
     spec.persistence = Some(match spec.persistence.take() {
         None => injected,
-        Some(user) => injected.merge_with(&user),
+        Some(user) => user.merge_with(&injected),
     });
 }
 
