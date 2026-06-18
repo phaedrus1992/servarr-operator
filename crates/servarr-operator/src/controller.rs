@@ -1473,6 +1473,19 @@ pub fn error_policy(app: Arc<ServarrApp>, error: &Error, ctx: Arc<Context>) -> A
     Action::requeue(Duration::from_secs(60))
 }
 
+/// Normalize a backup cron schedule to the 6-field form the `cron` crate
+/// requires. The documented/standard format is 5-field (e.g. `0 3 * * *`), so a
+/// `0` seconds field is prepended when the expression has 5 fields; 6- and
+/// 7-field expressions pass through unchanged.
+fn normalize_backup_schedule(expr: &str) -> String {
+    let expr = expr.trim();
+    if expr.split_whitespace().count() == 5 {
+        format!("0 {expr}")
+    } else {
+        expr.to_string()
+    }
+}
+
 async fn maybe_run_backup(
     client: &Client,
     app: &ServarrApp,
@@ -1481,7 +1494,7 @@ async fn maybe_run_backup(
     obj_ref: &k8s_openapi::api::core::v1::ObjectReference,
 ) -> Option<servarr_crds::BackupStatus> {
     let backup_spec = app.spec.backup.as_ref()?;
-    if !backup_spec.enabled || backup_spec.schedule.is_empty() {
+    if !backup_spec.enabled || backup_spec.schedule.trim().is_empty() {
         return None;
     }
 
@@ -1505,8 +1518,9 @@ async fn maybe_run_backup(
         return None;
     }
 
-    // Check if backup is due based on cron schedule
-    let schedule = match cron::Schedule::from_str(&backup_spec.schedule) {
+    // Check if backup is due based on cron schedule.
+    let schedule_expr = normalize_backup_schedule(&backup_spec.schedule);
+    let schedule = match cron::Schedule::from_str(&schedule_expr) {
         Ok(s) => s,
         Err(e) => {
             warn!(error = %e, schedule = %backup_spec.schedule, "invalid cron schedule");
@@ -3024,6 +3038,30 @@ mod tests {
         let now = chrono_now();
         assert!(now.contains('T'), "should contain T separator: {now}");
         assert!(now.ends_with('Z'), "should end with Z: {now}");
+    }
+
+    // ---- normalize_backup_schedule ----
+
+    #[test]
+    fn normalize_backup_schedule_pads_standard_five_field_cron() {
+        // 5-field standard cron gets a "0" seconds field, then parses under the
+        // `cron` crate (which rejects bare 5-field input).
+        let normalized = normalize_backup_schedule("0 3 * * *");
+        assert_eq!(normalized, "0 0 3 * * *");
+        assert!(cron::Schedule::from_str(&normalized).is_ok());
+        // Surrounding whitespace is trimmed before padding.
+        assert_eq!(normalize_backup_schedule("  0 3 * * *  "), "0 0 3 * * *");
+        // 6- and 7-field expressions pass through unchanged.
+        assert_eq!(normalize_backup_schedule("0 0 3 * * *"), "0 0 3 * * *");
+        assert_eq!(
+            normalize_backup_schedule("0 0 3 * * * 2099"),
+            "0 0 3 * * * 2099"
+        );
+        // Fewer than 5 fields is left as-is and rejected downstream by the parser.
+        assert_eq!(normalize_backup_schedule("0 3 * *"), "0 3 * *");
+        assert!(cron::Schedule::from_str(&normalize_backup_schedule("0 3 * *")).is_err());
+        // Whitespace-only normalizes to empty (caller's guard treats it as unset).
+        assert_eq!(normalize_backup_schedule("   "), "");
     }
 
     // ---- print_crd ----
