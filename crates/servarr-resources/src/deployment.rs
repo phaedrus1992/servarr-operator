@@ -56,8 +56,13 @@ pub fn build(app: &ServarrApp, image_overrides: &HashMap<String, ImageSpec>) -> 
     let labels = common::labels(app);
     let selector_labels = common::selector_labels(app);
 
-    // CR-level image spec takes highest priority, then env override, then compiled default
-    let image_spec = app.spec.image.as_ref().unwrap_or(&defaults.image);
+    // CR-level image spec takes highest priority, then env override, then compiled
+    // default. A partial CR image (e.g. only `tag`) inherits the missing
+    // repository/tag from the default rather than overriding it with "" (#38).
+    let image_spec = match app.spec.image.as_ref() {
+        Some(user) => user.clone().merge_with(&defaults.image),
+        None => defaults.image.clone(),
+    };
     let security = app.spec.security.as_ref().unwrap_or(&defaults.security);
     let svc_spec = app.spec.service.as_ref().unwrap_or(&defaults.service);
     let resources = app.spec.resources.as_ref().unwrap_or(&defaults.resources);
