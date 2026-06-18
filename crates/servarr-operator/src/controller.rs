@@ -240,24 +240,20 @@ pub async fn reconcile(app: Arc<ServarrApp>, ctx: Arc<Context>) -> Result<Action
         .cloned()
     {
         let now = chrono_now();
-        match maybe_restore_backup(client, &app, &ns, &name, &restore_id, &recorder, &obj_ref).await
-        {
-            Ok(()) => Some(Condition::ok(
-                condition_types::RESTORE_READY,
-                "RestoreComplete",
-                &format!("Restored from backup {restore_id}"),
-                &now,
-            )),
-            Err(e) => {
-                warn!(%name, error = %e, "restore-from-backup failed");
-                Some(Condition::fail(
-                    condition_types::RESTORE_READY,
-                    "RestoreFailed",
-                    &e.to_string(),
-                    &now,
-                ))
-            }
-        }
+        let result =
+            maybe_restore_backup(client, &app, &ns, &name, &restore_id, &recorder, &obj_ref).await;
+        Some(result_to_condition(
+            result,
+            ConditionSpec {
+                condition_type: condition_types::RESTORE_READY,
+                ok_reason: "RestoreComplete",
+                ok_message: &format!("Restored from backup {restore_id}"),
+                fail_reason: "RestoreFailed",
+                fail_log: "restore-from-backup failed",
+            },
+            &name,
+            &now,
+        ))
     } else {
         None
     };
@@ -537,23 +533,19 @@ pub async fn reconcile(app: Arc<ServarrApp>, ctx: Arc<Context>) -> Result<Action
     {
         let target_ns = sync_spec.namespace_scope.as_deref().unwrap_or(&ns);
         let now = chrono_now();
-        match sync_prowlarr_apps(client, &app, target_ns, &recorder, &obj_ref).await {
-            Ok(()) => Some(Condition::ok(
-                condition_types::PROWLARR_SYNC_READY,
-                "SyncComplete",
-                "Sonarr, Radarr, and Lidarr synced from Prowlarr",
-                &now,
-            )),
-            Err(e) => {
-                warn!(%name, error = %e, "Prowlarr sync failed");
-                Some(Condition::fail(
-                    condition_types::PROWLARR_SYNC_READY,
-                    "SyncFailed",
-                    &e.to_string(),
-                    &now,
-                ))
-            }
-        }
+        let result = sync_prowlarr_apps(client, &app, target_ns, &recorder, &obj_ref).await;
+        Some(result_to_condition(
+            result,
+            ConditionSpec {
+                condition_type: condition_types::PROWLARR_SYNC_READY,
+                ok_reason: "SyncComplete",
+                ok_message: "Sonarr, Radarr, and Lidarr synced from Prowlarr",
+                fail_reason: "SyncFailed",
+                fail_log: "Prowlarr sync failed",
+            },
+            &name,
+            &now,
+        ))
     } else {
         None
     };
@@ -565,23 +557,19 @@ pub async fn reconcile(app: Arc<ServarrApp>, ctx: Arc<Context>) -> Result<Action
     {
         let target_ns = sync_spec.namespace_scope.as_deref().unwrap_or(&ns);
         let now = chrono_now();
-        match sync_overseerr_servers(client, &app, target_ns, &recorder, &obj_ref).await {
-            Ok(()) => Some(Condition::ok(
-                condition_types::OVERSEERR_SYNC_READY,
-                "SyncComplete",
-                "Sonarr and Radarr servers synced into Overseerr",
-                &now,
-            )),
-            Err(e) => {
-                warn!(%name, error = %e, "Overseerr sync failed");
-                Some(Condition::fail(
-                    condition_types::OVERSEERR_SYNC_READY,
-                    "SyncFailed",
-                    &e.to_string(),
-                    &now,
-                ))
-            }
-        }
+        let result = sync_overseerr_servers(client, &app, target_ns, &recorder, &obj_ref).await;
+        Some(result_to_condition(
+            result,
+            ConditionSpec {
+                condition_type: condition_types::OVERSEERR_SYNC_READY,
+                ok_reason: "SyncComplete",
+                ok_message: "Sonarr and Radarr servers synced into Overseerr",
+                fail_reason: "SyncFailed",
+                fail_log: "Overseerr sync failed",
+            },
+            &name,
+            &now,
+        ))
     } else {
         None
     };
@@ -593,23 +581,19 @@ pub async fn reconcile(app: Arc<ServarrApp>, ctx: Arc<Context>) -> Result<Action
     {
         let target_ns = sync_spec.namespace_scope.as_deref().unwrap_or(&ns);
         let now = chrono_now();
-        match sync_bazarr_apps(client, &app, target_ns).await {
-            Ok(()) => Some(Condition::ok(
-                condition_types::BAZARR_SYNC_READY,
-                "SyncComplete",
-                "Sonarr and Radarr configured in Bazarr",
-                &now,
-            )),
-            Err(e) => {
-                warn!(%name, error = %e, "Bazarr sync failed");
-                Some(Condition::fail(
-                    condition_types::BAZARR_SYNC_READY,
-                    "SyncFailed",
-                    &e.to_string(),
-                    &now,
-                ))
-            }
-        }
+        let result = sync_bazarr_apps(client, &app, target_ns).await;
+        Some(result_to_condition(
+            result,
+            ConditionSpec {
+                condition_type: condition_types::BAZARR_SYNC_READY,
+                ok_reason: "SyncComplete",
+                ok_message: "Sonarr and Radarr configured in Bazarr",
+                fail_reason: "SyncFailed",
+                fail_log: "Bazarr sync failed",
+            },
+            &name,
+            &now,
+        ))
     } else {
         None
     };
@@ -621,23 +605,19 @@ pub async fn reconcile(app: Arc<ServarrApp>, ctx: Arc<Context>) -> Result<Action
     {
         let target_ns = sync_spec.namespace_scope.as_deref().unwrap_or(&ns);
         let now = chrono_now();
-        match sync_subgen_jellyfin(client, &app, target_ns).await {
-            Ok(()) => Some(Condition::ok(
-                condition_types::SUBGEN_SYNC_READY,
-                "SyncComplete",
-                "Jellyfin env vars injected into Subgen Deployment",
-                &now,
-            )),
-            Err(e) => {
-                warn!(%name, error = %e, "Subgen Jellyfin sync failed");
-                Some(Condition::fail(
-                    condition_types::SUBGEN_SYNC_READY,
-                    "SyncFailed",
-                    &e.to_string(),
-                    &now,
-                ))
-            }
-        }
+        let result = sync_subgen_jellyfin(client, &app, target_ns).await;
+        Some(result_to_condition(
+            result,
+            ConditionSpec {
+                condition_type: condition_types::SUBGEN_SYNC_READY,
+                ok_reason: "SyncComplete",
+                ok_message: "Jellyfin env vars injected into Subgen Deployment",
+                fail_reason: "SyncFailed",
+                fail_log: "Subgen Jellyfin sync failed",
+            },
+            &name,
+            &now,
+        ))
     } else {
         None
     };
@@ -1290,6 +1270,35 @@ pub(crate) struct StatusConditions {
     pub restore: Option<Condition>,
 }
 
+/// The condition vocabulary for a reconcile sub-step: the type plus the
+/// reason/message strings for both outcomes and the failure log line. Grouping
+/// them keeps [`result_to_condition`] within the positional-arg budget. (#15)
+struct ConditionSpec<'a> {
+    condition_type: &'a str,
+    ok_reason: &'a str,
+    ok_message: &'a str,
+    fail_reason: &'a str,
+    fail_log: &'a str,
+}
+
+/// Turn a reconcile sub-step `Result` into a status [`Condition`]: success
+/// yields an `ok` condition, failure yields a `fail` condition carrying the
+/// error string and emits a `warn!` keyed on `name`. (#15)
+fn result_to_condition<E: std::fmt::Display>(
+    result: Result<(), E>,
+    spec: ConditionSpec<'_>,
+    name: &str,
+    now: &str,
+) -> Condition {
+    match result {
+        Ok(()) => Condition::ok(spec.condition_type, spec.ok_reason, spec.ok_message, now),
+        Err(e) => {
+            warn!(%name, error = %e, "{}", spec.fail_log);
+            Condition::fail(spec.condition_type, spec.fail_reason, &e.to_string(), now)
+        }
+    }
+}
+
 pub(crate) async fn update_status(
     client: &Client,
     app: &ServarrApp,
@@ -1401,36 +1410,22 @@ pub(crate) async fn update_status(
         ));
     }
 
-    // API health condition
-    if let Some(cond) = health_condition {
-        status.set_condition(cond);
-    }
-    // Update available condition
-    if let Some(cond) = update_condition {
-        status.set_condition(cond);
-    }
-    // Admin credentials condition
-    if let Some(cond) = admin_creds_condition {
-        status.set_condition(cond);
-    }
-    // Bazarr cross-app sync condition
-    if let Some(cond) = bazarr_sync_condition {
-        status.set_condition(cond);
-    }
-    // Subgen → Jellyfin sync condition
-    if let Some(cond) = subgen_sync_condition {
-        status.set_condition(cond);
-    }
-    // Prowlarr cross-app sync condition
-    if let Some(cond) = prowlarr_sync_condition {
-        status.set_condition(cond);
-    }
-    // Overseerr cross-app sync condition
-    if let Some(cond) = overseerr_sync_condition {
-        status.set_condition(cond);
-    }
-    // Backup restore condition
-    if let Some(cond) = restore_condition {
+    // Optional sub-step conditions, applied in a stable order. Each is present
+    // only when its reconcile sub-step ran (API health, update check, admin
+    // creds, cross-app sync, restore). (#15)
+    for cond in [
+        health_condition,
+        update_condition,
+        admin_creds_condition,
+        bazarr_sync_condition,
+        subgen_sync_condition,
+        prowlarr_sync_condition,
+        overseerr_sync_condition,
+        restore_condition,
+    ]
+    .into_iter()
+    .flatten()
+    {
         status.set_condition(cond);
     }
 

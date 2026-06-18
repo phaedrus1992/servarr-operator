@@ -83,7 +83,10 @@ Override the default container image. When omitted, the operator uses a built-in
 | `digest` | `string` | `""` |
 | `pullPolicy` | `string` | `"IfNotPresent"` |
 
-If `digest` is set, it takes precedence over `tag`.
+Every sub-field is optional. Any field you omit (or leave empty) inherits the
+per-`app` default, so you can override just `tag` — e.g. to pin a `develop`
+build — without repeating the default `repository`. If `digest` is set, it
+takes precedence over `tag`.
 
 ```yaml
 spec:
@@ -91,6 +94,13 @@ spec:
     repository: lscr.io/linuxserver/sonarr
     tag: "4.0.2"
     pullPolicy: IfNotPresent
+```
+
+```yaml
+# Pin only the tag; repository inherits the app default.
+spec:
+  image:
+    tag: "develop"
 ```
 
 ---

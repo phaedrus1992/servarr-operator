@@ -45,10 +45,14 @@ pub fn config_checksum(app: &ServarrApp) -> Option<String> {
 pub fn build(app: &ServarrApp, image_overrides: &HashMap<String, ImageSpec>) -> Deployment {
     let mut defaults = AppDefaults::for_app(&app.spec.app).expect("missing app defaults");
 
-    // Apply image override from operator config (env vars / Helm values)
+    // Apply image override from operator config (env vars / Helm values).
+    // Merge rather than replace: a partial override (e.g. only the repository
+    // from DEFAULT_IMAGE_<APP>_REPO without a matching _TAG) inherits the
+    // missing half from the compiled default instead of producing a broken
+    // `repo:` reference (#38).
     let app_key = app.spec.app.to_string();
     if let Some(override_image) = image_overrides.get(&app_key) {
-        defaults.image = override_image.clone();
+        defaults.image = override_image.clone().merge_with(&defaults.image);
     }
 
     let name = common::app_name(app);
@@ -56,8 +60,13 @@ pub fn build(app: &ServarrApp, image_overrides: &HashMap<String, ImageSpec>) -> 
     let labels = common::labels(app);
     let selector_labels = common::selector_labels(app);
 
-    // CR-level image spec takes highest priority, then env override, then compiled default
-    let image_spec = app.spec.image.as_ref().unwrap_or(&defaults.image);
+    // CR-level image spec takes highest priority, then env override, then compiled
+    // default. A partial CR image (e.g. only `tag`) inherits the missing
+    // repository/tag from the default rather than overriding it with "" (#38).
+    let image_spec = match app.spec.image.as_ref() {
+        Some(user) => user.clone().merge_with(&defaults.image),
+        None => defaults.image.clone(),
+    };
     let security = app.spec.security.as_ref().unwrap_or(&defaults.security);
     let svc_spec = app.spec.service.as_ref().unwrap_or(&defaults.service);
     let resources = app.spec.resources.as_ref().unwrap_or(&defaults.resources);

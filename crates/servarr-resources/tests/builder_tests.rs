@@ -556,6 +556,62 @@ fn test_custom_image_override() {
     assert_eq!(container.image_pull_policy.as_deref(), Some("Always"));
 }
 
+// #38: a CR pinning only `tag` inherits the app's default repository instead
+// of producing a broken `:tag` reference with an empty repo.
+#[test]
+fn test_image_tag_only_inherits_default_repository() {
+    let app = ServarrApp {
+        metadata: ObjectMeta {
+            name: Some("test-app".into()),
+            namespace: Some("media".into()),
+            uid: Some("test-uid-tag-only".into()),
+            ..Default::default()
+        },
+        spec: ServarrAppSpec {
+            app: AppType::Sonarr,
+            image: Some(ImageSpec {
+                tag: "develop".into(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+        status: None,
+    };
+
+    let deploy = servarr_resources::deployment::build(&app, &std::collections::HashMap::new());
+    let container = &deploy.spec.unwrap().template.spec.unwrap().containers[0];
+    assert_eq!(
+        container.image.as_deref(),
+        Some("linuxserver/sonarr:develop")
+    );
+}
+
+// #38: a CR pinning only `repository` inherits the app's default tag.
+#[test]
+fn test_image_repository_only_inherits_default_tag() {
+    let app = ServarrApp {
+        metadata: ObjectMeta {
+            name: Some("test-app".into()),
+            namespace: Some("media".into()),
+            uid: Some("test-uid-repo-only".into()),
+            ..Default::default()
+        },
+        spec: ServarrAppSpec {
+            app: AppType::Sonarr,
+            image: Some(ImageSpec {
+                repository: "mirror/sonarr".into(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+        status: None,
+    };
+
+    let deploy = servarr_resources::deployment::build(&app, &std::collections::HashMap::new());
+    let container = &deploy.spec.unwrap().template.spec.unwrap().containers[0];
+    assert_eq!(container.image.as_deref(), Some("mirror/sonarr:4.0.16"));
+}
+
 #[test]
 fn test_image_digest_override() {
     let app = ServarrApp {

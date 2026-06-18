@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Serialize, Deserialize, Clone, Debug, Default, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ImageSpec {
+    #[serde(default)]
     pub repository: String,
     #[serde(default)]
     pub tag: String,
@@ -16,6 +17,31 @@ pub struct ImageSpec {
 
 fn default_pull_policy() -> String {
     "IfNotPresent".to_string()
+}
+
+impl ImageSpec {
+    /// Fill empty fields from `defaults`. A user may pin only `tag` (or only
+    /// `repository`); the unset half then inherits the app's compiled default
+    /// instead of producing a broken `repo:` / `:tag` reference (#38).
+    pub fn merge_with(self, defaults: &ImageSpec) -> ImageSpec {
+        ImageSpec {
+            repository: if self.repository.is_empty() {
+                defaults.repository.clone()
+            } else {
+                self.repository
+            },
+            tag: if self.tag.is_empty() {
+                defaults.tag.clone()
+            } else {
+                self.tag
+            },
+            // `digest` and `pull_policy` pass through unchanged: compiled
+            // defaults always leave `digest` empty (no fallback to inherit) and
+            // `pull_policy` carries its own serde default, so it is never empty.
+            digest: self.digest,
+            pull_policy: self.pull_policy,
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default, JsonSchema)]
