@@ -82,11 +82,13 @@ pub fn build(app: &ServarrApp, image_overrides: &HashMap<String, ImageSpec>) -> 
         }
     };
     // Field-merge probes so partial overrides inherit missing fields from defaults (#59).
+    // ProbeSpec::merge_with treats `self` as the user override (it wins per field),
+    // so the user spec must be the receiver and the app default the argument.
     let merged_probes: ProbeSpec;
     let probes = match &app.spec.probes {
         None => &defaults.probes,
         Some(spec) => {
-            merged_probes = defaults.probes.clone().merge_with(spec);
+            merged_probes = spec.clone().merge_with(&defaults.probes);
             &merged_probes
         }
     };
