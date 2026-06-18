@@ -35,7 +35,7 @@ impl AppDefaults {
             .ok_or_else(|| format!("no image defaults for app: {app_name}"))?;
         let mut defaults = match img.security {
             "linuxserver" => Self::linuxserver_base(img.port, img.downloads, img.probe_path),
-            "nonroot" => Self::nonroot_base(img.port, img.probe_path),
+            "nonroot" => Self::nonroot_base(img.port, img.downloads, img.probe_path),
             "sshd" => Self::sshd_base(img.port),
             other => {
                 return Err(format!(
@@ -115,7 +115,7 @@ impl AppDefaults {
 
         let mut defaults = match img.security {
             "linuxserver" => Self::linuxserver_base(img.port, img.downloads, img.probe_path),
-            "nonroot" => Self::nonroot_base(img.port, img.probe_path),
+            "nonroot" => Self::nonroot_base(img.port, img.downloads, img.probe_path),
             "sshd" => Self::sshd_base(img.port),
             other => {
                 return Err(format!(
@@ -184,17 +184,26 @@ impl AppDefaults {
         }
     }
 
-    fn nonroot_base(port: i32, probe_path: &str) -> Self {
+    fn nonroot_base(port: i32, downloads: bool, probe_path: &str) -> Self {
+        let mut volumes = vec![pvc("config", "/config", "1Gi")];
+        if downloads {
+            volumes.push(pvc("downloads", "/downloads", "100Gi"));
+        }
+        let (mem_limit, mem_request) = if downloads {
+            ("1Gi", "256Mi")
+        } else {
+            ("512Mi", "128Mi")
+        };
         Self {
             image: ImageSpec::default(),
             service: single_port_service("http", port),
             security: SecurityProfile::non_root(65534, 65534),
             persistence: PersistenceSpec {
-                volumes: vec![pvc("config", "/config", "1Gi")],
+                volumes,
                 nfs_mounts: vec![],
             },
             probes: http_probes(probe_path, 30, 10),
-            resources: std_resources("1", "512Mi", "100m", "128Mi"),
+            resources: std_resources("1", mem_limit, "100m", mem_request),
             uid: 65534,
             gid: 65534,
             env: vec![tz_env()],
