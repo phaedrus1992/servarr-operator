@@ -13,7 +13,7 @@ pub fn build_all(app: &ServarrApp) -> Vec<PersistentVolumeClaim> {
     let persistence = match &app.spec.persistence {
         None => &defaults.persistence,
         Some(spec) => {
-            merged = defaults.persistence.merge_with(spec);
+            merged = spec.merge_with(&defaults.persistence);
             &merged
         }
     };

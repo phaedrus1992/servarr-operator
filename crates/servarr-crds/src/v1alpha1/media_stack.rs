@@ -457,7 +457,7 @@ fn merge_persistence(
         (None, None) => None,
         (None, Some(a)) => Some(a.clone()),
         (Some(d), None) => Some(d.clone()),
-        (Some(d), Some(a)) => Some(d.merge_with(a)),
+        (Some(d), Some(a)) => Some(a.merge_with(d)),
     }
 }
 

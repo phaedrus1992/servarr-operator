@@ -77,7 +77,7 @@ pub fn build(app: &ServarrApp, image_overrides: &HashMap<String, ImageSpec>) -> 
     let persistence = match &app.spec.persistence {
         None => &defaults.persistence,
         Some(spec) => {
-            merged_persistence = defaults.persistence.merge_with(spec);
+            merged_persistence = spec.merge_with(&defaults.persistence);
             &merged_persistence
         }
     };

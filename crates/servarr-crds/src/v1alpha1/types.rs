@@ -93,23 +93,24 @@ pub struct PersistenceSpec {
 }
 
 impl PersistenceSpec {
-    /// Merge `self` (base layer) with `over` (higher-priority layer).
+    /// Merge `self` (override/higher-priority) with `base` (fallback layer).
+    /// Unified convention: receiver wins, argument is the fallback.
     ///
-    /// - PVC volumes: `over.volumes` replaces entirely when non-empty; base
-    ///   volumes are used when `over.volumes` is empty.
-    /// - NFS mounts: additive, deduplicated by name (`over` wins on conflict).
-    pub fn merge_with(&self, over: &PersistenceSpec) -> PersistenceSpec {
-        let volumes = if over.volumes.is_empty() {
-            self.volumes.clone()
+    /// - PVC volumes: `self.volumes` replaces entirely when non-empty; base
+    ///   volumes are used when `self.volumes` is empty.
+    /// - NFS mounts: additive, deduplicated by name (`self` wins on conflict).
+    pub fn merge_with(&self, base: &PersistenceSpec) -> PersistenceSpec {
+        let volumes = if self.volumes.is_empty() {
+            base.volumes.clone()
         } else {
-            over.volumes.clone()
+            self.volumes.clone()
         };
 
         let mut nfs_map: IndexMap<String, NfsMount> = IndexMap::new();
-        for m in &self.nfs_mounts {
+        for m in &base.nfs_mounts {
             nfs_map.insert(m.name.clone(), m.clone());
         }
-        for m in &over.nfs_mounts {
+        for m in &self.nfs_mounts {
             nfs_map.insert(m.name.clone(), m.clone());
         }
 
