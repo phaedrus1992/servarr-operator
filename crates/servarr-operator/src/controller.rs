@@ -759,35 +759,37 @@ async fn patch_admin_credentials_checksum(
 ) -> Result<(), Error> {
     use sha2::{Digest, Sha256};
 
-    let username = match servarr_api::read_secret_key(client, ns, secret_name, "username").await {
-        Ok(v) => v,
+    // Fetch Secret metadata to get resourceVersion (changes on every update).
+    // Hash the resourceVersion instead of credentials to avoid leaking
+    // a crackable, offline-attackable fingerprint of the secret value.
+    let secret_api = Api::<Secret>::namespaced(client.clone(), ns);
+    let secret = match secret_api.get(secret_name).await {
+        Ok(s) => s,
         Err(e) => {
             warn!(
                 app = %app.name_any(),
                 secret = %secret_name,
                 error = %e,
-                "admin-credentials: failed to read secret for checksum"
+                "admin-credentials: failed to fetch secret for checksum"
             );
             return Ok(());
         }
     };
-    let password = match servarr_api::read_secret_key(client, ns, secret_name, "password").await {
-        Ok(v) => v,
-        Err(e) => {
+
+    let resource_version = match secret.metadata.resource_version {
+        Some(rv) => rv,
+        None => {
             warn!(
                 app = %app.name_any(),
                 secret = %secret_name,
-                error = %e,
-                "admin-credentials: failed to read secret for checksum"
+                "admin-credentials: Secret missing resourceVersion"
             );
             return Ok(());
         }
     };
 
     let mut hasher = Sha256::new();
-    hasher.update(username.as_bytes());
-    hasher.update(b":");
-    hasher.update(password.as_bytes());
+    hasher.update(resource_version.as_bytes());
     let checksum = hex::encode(hasher.finalize());
 
     let name = app.name_any();

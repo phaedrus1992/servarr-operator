@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased] - ReleaseDate
 
+### Security
+
+- Fix admin-credentials checksum annotation leaking a crackable credential
+  fingerprint. The annotation now hashes the Secret's `resourceVersion` instead
+  of the `username:password` pair, so Deployment readers can no longer
+  brute-force weak credentials offline.
+
+### Fixed
+
+- Fix silent override drops from inconsistent `merge_with` argument order.
+  All spec types now follow one convention (the override wins per field),
+  preventing user-specified persistence config from being silently discarded.
+- Fix NFS mount priority so user-specified mounts win over auto-injected stack
+  mounts on name conflicts.
+
 ## [1.0.0] - 2026-06-18
 
 Initial public release. The operator declaratively manages media automation
