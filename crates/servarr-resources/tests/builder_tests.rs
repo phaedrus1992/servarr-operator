@@ -1749,12 +1749,10 @@ fn test_deployment_ssh_bastion_init_containers() {
     let mounts = container.volume_mounts.as_ref().unwrap();
 
     // authorized-keys-src: Secret staged at a separate path, read-only
-    let src_mount = mounts.iter().find(|m| m.name == "authorized-keys-src");
-    assert!(
-        src_mount.is_some(),
-        "SSH bastion should have authorized-keys-src volume mount"
-    );
-    let src_mount = src_mount.unwrap();
+    let src_mount = mounts
+        .iter()
+        .find(|m| m.name == "authorized-keys-src")
+        .expect("SSH bastion should have authorized-keys-src volume mount");
     assert_eq!(src_mount.mount_path, "/etc/authorized_keys.src");
     assert_eq!(
         src_mount.read_only,
@@ -1763,12 +1761,10 @@ fn test_deployment_ssh_bastion_init_containers() {
     );
 
     // authorized-keys: emptyDir populated by copy-authorized-keys init container, writable
-    let ak_mount = mounts.iter().find(|m| m.name == "authorized-keys");
-    assert!(
-        ak_mount.is_some(),
-        "SSH bastion should have authorized-keys directory volume mount"
-    );
-    let ak_mount = ak_mount.unwrap();
+    let ak_mount = mounts
+        .iter()
+        .find(|m| m.name == "authorized-keys")
+        .expect("SSH bastion should have authorized-keys directory volume mount");
     assert_eq!(
         ak_mount.mount_path, "/etc/authorized_keys",
         "authorized-keys should mount at /etc/authorized_keys"

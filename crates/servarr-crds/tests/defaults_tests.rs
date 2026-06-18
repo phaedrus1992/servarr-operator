@@ -337,39 +337,23 @@ fn bazarr_defaults_are_linuxserver_profile() {
 // Download client memory defaults (issue #82)
 // ---------------------------------------------------------------------------
 
-#[test]
-fn sabnzbd_gets_higher_memory_default() {
-    let defaults = AppDefaults::for_app(&AppType::Sabnzbd).unwrap();
+fn assert_download_memory(app: &AppType) {
+    let defaults = AppDefaults::for_app(app).unwrap();
     assert_eq!(defaults.resources.limits.memory, "1Gi");
     assert_eq!(defaults.resources.requests.memory, "256Mi");
 }
 
 #[test]
-fn transmission_gets_higher_memory_default() {
-    let defaults = AppDefaults::for_app(&AppType::Transmission).unwrap();
-    assert_eq!(defaults.resources.limits.memory, "1Gi");
-    assert_eq!(defaults.resources.requests.memory, "256Mi");
-}
-
-#[test]
-fn sonarr_gets_higher_memory_default() {
-    let defaults = AppDefaults::for_app(&AppType::Sonarr).unwrap();
-    assert_eq!(defaults.resources.limits.memory, "1Gi");
-    assert_eq!(defaults.resources.requests.memory, "256Mi");
-}
-
-#[test]
-fn radarr_gets_higher_memory_default() {
-    let defaults = AppDefaults::for_app(&AppType::Radarr).unwrap();
-    assert_eq!(defaults.resources.limits.memory, "1Gi");
-    assert_eq!(defaults.resources.requests.memory, "256Mi");
-}
-
-#[test]
-fn lidarr_gets_higher_memory_default() {
-    let defaults = AppDefaults::for_app(&AppType::Lidarr).unwrap();
-    assert_eq!(defaults.resources.limits.memory, "1Gi");
-    assert_eq!(defaults.resources.requests.memory, "256Mi");
+fn download_apps_get_higher_memory_default() {
+    for app in [
+        AppType::Sabnzbd,
+        AppType::Transmission,
+        AppType::Sonarr,
+        AppType::Radarr,
+        AppType::Lidarr,
+    ] {
+        assert_download_memory(&app);
+    }
 }
 
 #[test]
