@@ -788,7 +788,7 @@ async fn patch_admin_credentials_checksum(
     hasher.update(username.as_bytes());
     hasher.update(b":");
     hasher.update(password.as_bytes());
-    let checksum = format!("{:x}", hasher.finalize());
+    let checksum = hex::encode(hasher.finalize());
 
     let name = app.name_any();
     let deploy_api = Api::<Deployment>::namespaced(client.clone(), ns);
