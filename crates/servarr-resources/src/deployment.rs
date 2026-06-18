@@ -39,7 +39,7 @@ pub fn config_checksum(app: &ServarrApp) -> Option<String> {
         }
     }
 
-    has_data.then(|| format!("{:x}", hasher.finalize()))
+    has_data.then(|| hex::encode(hasher.finalize()))
 }
 
 pub fn build(app: &ServarrApp, image_overrides: &HashMap<String, ImageSpec>) -> Deployment {
