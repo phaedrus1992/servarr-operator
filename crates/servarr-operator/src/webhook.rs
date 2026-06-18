@@ -1444,6 +1444,67 @@ mod tests {
         assert!(errors.is_empty());
     }
 
+    #[test]
+    fn ssh_security_context_no_security_field() {
+        let mut spec = minimal_spec(AppType::SshBastion);
+        spec.app_config = Some(AppConfig::SshBastion(SshBastionConfig::default()));
+        spec.security = None;
+        let mut errors = Vec::new();
+        validate_ssh_security_context(&spec, &mut errors);
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn ssh_security_context_both_flags_missing_auth_keys() {
+        let mut spec = minimal_spec(AppType::SshBastion);
+        spec.app_config = Some(AppConfig::SshBastion(SshBastionConfig::default()));
+        spec.security = Some(SecurityProfile {
+            profile_type: SecurityProfileType::Custom,
+            user: 1000,
+            group: 1000,
+            run_as_non_root: Some(true),
+            read_only_root_filesystem: Some(true),
+            allow_privilege_escalation: Some(false),
+            capabilities_add: vec!["CHOWN".into()],
+            capabilities_drop: vec![],
+        });
+        spec.persistence = None;
+        let mut errors = Vec::new();
+        validate_ssh_security_context(&spec, &mut errors);
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("readOnlyRootFilesystem"));
+        assert!(errors[0].contains("authorized-keys"));
+    }
+
+    #[test]
+    fn ssh_security_context_both_flags_missing_chown() {
+        let mut spec = minimal_spec(AppType::SshBastion);
+        spec.app_config = Some(AppConfig::SshBastion(SshBastionConfig::default()));
+        spec.security = Some(SecurityProfile {
+            profile_type: SecurityProfileType::Custom,
+            user: 1000,
+            group: 1000,
+            run_as_non_root: Some(true),
+            read_only_root_filesystem: Some(true),
+            allow_privilege_escalation: Some(false),
+            capabilities_add: vec![],
+            capabilities_drop: vec![],
+        });
+        spec.persistence = Some(PersistenceSpec {
+            volumes: vec![PvcVolume {
+                name: "authorized-keys".into(),
+                mount_path: "/etc/authorized_keys".into(),
+                ..Default::default()
+            }],
+            nfs_mounts: vec![],
+        });
+        let mut errors = Vec::new();
+        validate_ssh_security_context(&spec, &mut errors);
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("runAsNonRoot"));
+        assert!(errors[0].contains("CHOWN"));
+    }
+
     // ── validate_identity_immutable ──
 
     fn wrap_spec_as_object(spec: &ServarrAppSpec) -> serde_json::Value {
