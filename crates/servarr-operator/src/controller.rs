@@ -1473,6 +1473,18 @@ pub fn error_policy(app: Arc<ServarrApp>, error: &Error, ctx: Arc<Context>) -> A
     Action::requeue(Duration::from_secs(60))
 }
 
+/// Normalize a backup cron schedule to the 6-field form the `cron` crate
+/// requires. The documented/standard format is 5-field (e.g. `0 3 * * *`), so a
+/// `0` seconds field is prepended when the expression has 5 fields; 6- and
+/// 7-field expressions pass through unchanged.
+fn normalize_backup_schedule(expr: &str) -> String {
+    if expr.split_whitespace().count() == 5 {
+        format!("0 {expr}")
+    } else {
+        expr.to_string()
+    }
+}
+
 async fn maybe_run_backup(
     client: &Client,
     app: &ServarrApp,
@@ -1505,8 +1517,9 @@ async fn maybe_run_backup(
         return None;
     }
 
-    // Check if backup is due based on cron schedule
-    let schedule = match cron::Schedule::from_str(&backup_spec.schedule) {
+    // Check if backup is due based on cron schedule.
+    let schedule_expr = normalize_backup_schedule(&backup_spec.schedule);
+    let schedule = match cron::Schedule::from_str(&schedule_expr) {
         Ok(s) => s,
         Err(e) => {
             warn!(error = %e, schedule = %backup_spec.schedule, "invalid cron schedule");
@@ -3024,6 +3037,18 @@ mod tests {
         let now = chrono_now();
         assert!(now.contains('T'), "should contain T separator: {now}");
         assert!(now.ends_with('Z'), "should end with Z: {now}");
+    }
+
+    // ---- normalize_backup_schedule ----
+
+    #[test]
+    fn normalize_backup_schedule_pads_standard_five_field_cron() {
+        // 5-field standard cron (documented format) gets a "0" seconds field and
+        // then parses under the `cron` crate, which rejects bare 5-field input.
+        assert_eq!(normalize_backup_schedule("0 3 * * *"), "0 0 3 * * *");
+        assert!(cron::Schedule::from_str(&normalize_backup_schedule("0 3 * * *")).is_ok());
+        // 6-field expressions are left untouched.
+        assert_eq!(normalize_backup_schedule("0 0 3 * * *"), "0 0 3 * * *");
     }
 
     // ---- print_crd ----
