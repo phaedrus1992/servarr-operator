@@ -16,6 +16,8 @@ use serde::{Deserialize, Serialize};
 use servarr_crds::{AppConfig, AppType, ServarrApp, ServarrAppSpec, SshMode};
 use tracing::{debug, info, warn};
 
+use crate::controller::normalize_backup_schedule;
+
 const DEFAULT_WEBHOOK_PORT: u16 = 9443;
 
 const DEFAULT_TLS_DIR: &str = "/etc/webhook/tls";
@@ -319,21 +321,16 @@ fn validate_backup_schedule(spec: &ServarrAppSpec, errors: &mut Vec<String>) {
         && !backup.schedule.trim().is_empty()
     {
         let normalized = normalize_backup_schedule(&backup.schedule);
-        if cron::Schedule::from_str(&normalized).is_err() {
-            errors.push(format!(
-                "backup.schedule must be a valid cron expression (got '{}')",
-                backup.schedule.trim()
-            ));
+        match cron::Schedule::from_str(&normalized) {
+            Ok(_) => {}
+            Err(e) => {
+                errors.push(format!(
+                    "backup.schedule '{}' is not a valid cron expression: {}",
+                    backup.schedule.trim(),
+                    e
+                ));
+            }
         }
-    }
-}
-
-fn normalize_backup_schedule(expr: &str) -> String {
-    let expr = expr.trim();
-    if expr.split_whitespace().count() == 5 {
-        format!("0 {expr}")
-    } else {
-        expr.to_string()
     }
 }
 

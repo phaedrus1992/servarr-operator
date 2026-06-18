@@ -1477,7 +1477,7 @@ pub fn error_policy(app: Arc<ServarrApp>, error: &Error, ctx: Arc<Context>) -> A
 /// requires. The documented/standard format is 5-field (e.g. `0 3 * * *`), so a
 /// `0` seconds field is prepended when the expression has 5 fields; 6- and
 /// 7-field expressions pass through unchanged.
-fn normalize_backup_schedule(expr: &str) -> String {
+pub(crate) fn normalize_backup_schedule(expr: &str) -> String {
     let expr = expr.trim();
     if expr.split_whitespace().count() == 5 {
         format!("0 {expr}")
@@ -1524,21 +1524,25 @@ async fn maybe_run_backup(
         Ok(s) => s,
         Err(e) => {
             warn!(error = %e, schedule = %backup_spec.schedule, "invalid cron schedule");
-            let _ = recorder
+            let schedule_display = backup_spec.schedule.trim();
+            if let Err(err) = recorder
                 .publish(
                     &Event {
                         type_: EventType::Warning,
                         reason: "InvalidBackupSchedule".into(),
                         note: Some(format!(
                             "Invalid backup schedule '{}': {}",
-                            backup_spec.schedule, e
+                            schedule_display, e
                         )),
                         action: "Backup".into(),
                         secondary: None,
                     },
                     obj_ref,
                 )
-                .await;
+                .await
+            {
+                warn!(error = %err, "failed to publish InvalidBackupSchedule event");
+            }
             return Some(servarr_crds::BackupStatus {
                 last_backup_result: Some(format!("invalid schedule: {e}")),
                 ..Default::default()
@@ -1550,6 +1554,7 @@ async fn maybe_run_backup(
     let now = Utc::now();
 
     // Check last backup time from existing status
+    let mut backup_time_corrupted = false;
     let last_backup = app
         .status
         .as_ref()
@@ -1558,7 +1563,8 @@ async fn maybe_run_backup(
         .and_then(|t| match t.parse::<chrono::DateTime<Utc>>() {
             Ok(dt) => Some(dt),
             Err(e) => {
-                warn!(value = %t, error = %e, "failed to parse last_backup_time");
+                warn!(last_backup_time = %t, error = %e, "failed to parse last_backup_time, treating as never backed up");
+                backup_time_corrupted = true;
                 None
             }
         });
@@ -1591,6 +1597,25 @@ async fn maybe_run_backup(
     };
 
     let app_type = app.spec.app.as_str();
+
+    if backup_time_corrupted && let Err(err) = recorder
+        .publish(
+            &Event {
+                type_: EventType::Warning,
+                reason: "CorruptedBackupTime".into(),
+                note: Some(
+                    "Failed to parse last_backup_time; backup triggered due to unparseable timestamp".into(),
+                ),
+                action: "Backup".into(),
+                secondary: None,
+            },
+            obj_ref,
+        )
+        .await
+    {
+        warn!(error = %err, "failed to publish CorruptedBackupTime event");
+    }
+
     let _ = recorder
         .publish(
             &Event {
