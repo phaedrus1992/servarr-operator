@@ -35,6 +35,9 @@ impl ImageSpec {
             } else {
                 self.tag
             },
+            // `digest` and `pull_policy` pass through unchanged: compiled
+            // defaults always leave `digest` empty (no fallback to inherit) and
+            // `pull_policy` carries its own serde default, so it is never empty.
             digest: self.digest,
             pull_policy: self.pull_policy,
         }

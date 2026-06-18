@@ -45,10 +45,14 @@ pub fn config_checksum(app: &ServarrApp) -> Option<String> {
 pub fn build(app: &ServarrApp, image_overrides: &HashMap<String, ImageSpec>) -> Deployment {
     let mut defaults = AppDefaults::for_app(&app.spec.app).expect("missing app defaults");
 
-    // Apply image override from operator config (env vars / Helm values)
+    // Apply image override from operator config (env vars / Helm values).
+    // Merge rather than replace: a partial override (e.g. only the repository
+    // from DEFAULT_IMAGE_<APP>_REPO without a matching _TAG) inherits the
+    // missing half from the compiled default instead of producing a broken
+    // `repo:` reference (#38).
     let app_key = app.spec.app.to_string();
     if let Some(override_image) = image_overrides.get(&app_key) {
-        defaults.image = override_image.clone();
+        defaults.image = override_image.clone().merge_with(&defaults.image);
     }
 
     let name = common::app_name(app);
