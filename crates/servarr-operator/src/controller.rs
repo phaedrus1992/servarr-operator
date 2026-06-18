@@ -3053,7 +3053,10 @@ mod tests {
         assert_eq!(normalize_backup_schedule("  0 3 * * *  "), "0 0 3 * * *");
         // 6- and 7-field expressions pass through unchanged.
         assert_eq!(normalize_backup_schedule("0 0 3 * * *"), "0 0 3 * * *");
-        assert_eq!(normalize_backup_schedule("0 0 3 * * * 2099"), "0 0 3 * * * 2099");
+        assert_eq!(
+            normalize_backup_schedule("0 0 3 * * * 2099"),
+            "0 0 3 * * * 2099"
+        );
         // Fewer than 5 fields is left as-is and rejected downstream by the parser.
         assert_eq!(normalize_backup_schedule("0 3 * *"), "0 3 * *");
         assert!(cron::Schedule::from_str(&normalize_backup_schedule("0 3 * *")).is_err());
