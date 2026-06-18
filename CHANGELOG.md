@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased] - ReleaseDate
 
+### Changed
+
+- Raise default memory for download clients (SABnzbd, Transmission, Sonarr, Radarr, Lidarr)
+  from 512Mi limit / 128Mi request to 1Gi limit / 256Mi request. Indexer-only apps (Prowlarr)
+  keep the lower default.
+
+### Fixed
+
+- Fix SSH bastion `authorized_keys` rejected by `sshd StrictModes`. Kubernetes Secret mounts
+  use world-writable tmpfs directories that StrictModes unconditionally rejects. A new
+  `copy-authorized-keys` init container copies the Secret to an `emptyDir` volume with correct
+  permissions (`chmod 700` on the directory, `chmod 644` on key files, `chown root:root`).
+  The init container is only added when at least one user has public keys configured.
+- Fix webhook rejecting valid SSH bastion gateway configs. The validation previously required
+  `gateway.hosts` to be non-empty for all route types; SSH bastion always uses `TCPRoute`,
+  which has no `hostname` field and must have an empty hosts list.
+- Fix webhook silently accepting `gateway.hosts` on TCP routes. Non-empty hosts are now
+  rejected with an error message explaining that `TCPRoute` discards hostname configuration.
+
 ## [1.0.0] - 2026-06-18
 
 Initial public release. The operator declaratively manages media automation

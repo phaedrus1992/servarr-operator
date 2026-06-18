@@ -332,3 +332,34 @@ fn bazarr_defaults_are_linuxserver_profile() {
     // wrong)
     assert!(!defaults.persistence.volumes.is_empty());
 }
+
+// ---------------------------------------------------------------------------
+// Download client memory defaults (issue #82)
+// ---------------------------------------------------------------------------
+
+fn assert_download_memory(app: &AppType) {
+    let defaults = AppDefaults::for_app(app).unwrap();
+    assert_eq!(defaults.resources.limits.memory, "1Gi");
+    assert_eq!(defaults.resources.requests.memory, "256Mi");
+}
+
+#[test]
+fn download_apps_get_higher_memory_default() {
+    for app in [
+        AppType::Sabnzbd,
+        AppType::Transmission,
+        AppType::Sonarr,
+        AppType::Radarr,
+        AppType::Lidarr,
+    ] {
+        assert_download_memory(&app);
+    }
+}
+
+#[test]
+fn non_download_apps_keep_lower_memory_default() {
+    // Prowlarr is an indexer, not a download client
+    let defaults = AppDefaults::for_app(&AppType::Prowlarr).unwrap();
+    assert_eq!(defaults.resources.limits.memory, "512Mi");
+    assert_eq!(defaults.resources.requests.memory, "128Mi");
+}

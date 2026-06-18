@@ -1,0 +1,24 @@
+# servarr-operator — Project Rules
+
+## Versioning
+
+**Never manually edit the version in `Cargo.toml`.**
+Version bumps are managed exclusively by `cargo-release`. Running `cargo release patch|minor|major`
+handles the bump, tag, and publish in one step. A hand-edit will conflict with `cargo-release`'s
+own diff detection and may produce a double-bump or a mismatch between the tag and the
+`Cargo.toml` at HEAD.
+
+CHANGELOG entries are still written by hand (or the `keepachangelog` skill) — only the version
+number in `Cargo.toml` / `Cargo.lock` is off-limits for direct edits.
+
+## Release Branch Workflow
+
+Work targeting milestone `X.Y` branches from and targets `release/X.Y.x`, not `main`. The
+`resolve-base-branch.sh` script in dev-sprint determines the correct base automatically. Never
+retarget a milestone-scoped PR to `main` without explicit user approval.
+
+## CI Toolchain Note
+
+CI runs Rust 1.94.0, which may enforce stricter Clippy lints than the local toolchain. Always run
+`cargo clippy --all-targets --all-features -- -D warnings` locally before pushing to catch
+lint regressions early. Known stricter lints on 1.94: `clippy::bool_comparison`.

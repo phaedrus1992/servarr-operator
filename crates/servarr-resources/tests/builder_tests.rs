@@ -1728,37 +1728,50 @@ fn test_deployment_ssh_bastion_init_containers() {
     let deploy = servarr_resources::deployment::build(&app, &std::collections::HashMap::new());
     let pod_spec = deploy.spec.unwrap().template.spec.unwrap();
 
-    // Should have init containers: generate-host-keys and patch-entry
+    // Should have init containers: generate-host-keys, copy-authorized-keys, and patch-entry.
+    // copy-authorized-keys stages the Secret (world-writable tmpfs) into an emptyDir with
+    // correct permissions so sshd StrictModes accepts the directory.
     let init = pod_spec.init_containers.as_ref().unwrap();
     assert!(
         init.iter().any(|c| c.name == "generate-host-keys"),
         "SSH bastion should have generate-host-keys init container"
     );
     assert!(
+        init.iter().any(|c| c.name == "copy-authorized-keys"),
+        "SSH bastion should have copy-authorized-keys init container"
+    );
+    assert!(
         init.iter().any(|c| c.name == "patch-entry"),
         "SSH bastion should have patch-entry init container"
     );
 
-    // Should have authorized-keys directory mount (not per-user subPath).
-    // panubo/sshd ≥1.10.0 exits with set -e when the read-only subPath file's
-    // chmod returns 1, so we mount the whole Secret as a read-only directory so
-    // entry.sh skips the chmod block.
     let container = &pod_spec.containers[0];
     let mounts = container.volume_mounts.as_ref().unwrap();
-    let ak_mount = mounts.iter().find(|m| m.name == "authorized-keys");
-    assert!(
-        ak_mount.is_some(),
-        "SSH bastion should have authorized-keys directory volume mount"
+
+    // authorized-keys-src: Secret staged at a separate path, read-only
+    let src_mount = mounts
+        .iter()
+        .find(|m| m.name == "authorized-keys-src")
+        .expect("SSH bastion should have authorized-keys-src volume mount");
+    assert_eq!(src_mount.mount_path, "/etc/authorized_keys.src");
+    assert_eq!(
+        src_mount.read_only,
+        Some(true),
+        "Secret staging mount must be read-only"
     );
-    let ak_mount = ak_mount.unwrap();
+
+    // authorized-keys: emptyDir populated by copy-authorized-keys init container, writable
+    let ak_mount = mounts
+        .iter()
+        .find(|m| m.name == "authorized-keys")
+        .expect("SSH bastion should have authorized-keys directory volume mount");
     assert_eq!(
         ak_mount.mount_path, "/etc/authorized_keys",
         "authorized-keys should mount at /etc/authorized_keys"
     );
-    assert_eq!(
-        ak_mount.read_only,
-        Some(true),
-        "authorized-keys mount must be read-only"
+    assert!(
+        !ak_mount.read_only.unwrap_or(false),
+        "authorized-keys emptyDir must be writable so init container can populate it"
     );
     assert!(
         ak_mount.sub_path.is_none(),
@@ -1771,11 +1784,15 @@ fn test_deployment_ssh_bastion_init_containers() {
         "SSH bastion in RestrictedRsync mode should have restricted-rsync volume mount"
     );
 
-    // Volumes should include authorized-keys secret and restricted-rsync configmap
+    // Volumes should include authorized-keys-src secret, authorized-keys emptyDir, and restricted-rsync configmap
     let volumes = pod_spec.volumes.as_ref().unwrap();
     assert!(
+        volumes.iter().any(|v| v.name == "authorized-keys-src"),
+        "Should have authorized-keys-src Secret volume"
+    );
+    assert!(
         volumes.iter().any(|v| v.name == "authorized-keys"),
-        "Should have authorized-keys volume"
+        "Should have authorized-keys emptyDir volume"
     );
     assert!(
         volumes.iter().any(|v| v.name == "restricted-rsync"),

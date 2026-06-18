@@ -13,7 +13,7 @@ use axum_server::tls_rustls::RustlsConfig;
 use kube::Client;
 use kube::api::{Api, ListParams};
 use serde::{Deserialize, Serialize};
-use servarr_crds::{AppConfig, AppType, ServarrApp, ServarrAppSpec, SshMode};
+use servarr_crds::{AppConfig, AppType, RouteType, ServarrApp, ServarrAppSpec, SshMode};
 use tracing::{debug, info, warn};
 
 use crate::controller::normalize_backup_schedule;
@@ -426,11 +426,26 @@ fn validate_resource_bounds(spec: &ServarrAppSpec, errors: &mut Vec<String>) {
 }
 
 fn validate_gateway_hosts(spec: &ServarrAppSpec, errors: &mut Vec<String>) {
-    if let Some(ref gw) = spec.gateway
-        && gw.is_enabled()
-        && gw.hosts.is_empty()
-    {
-        errors.push("gateway.hosts must be non-empty when gateway is enabled".into());
+    let Some(ref gw) = spec.gateway else { return };
+    if !gw.is_enabled() {
+        return;
+    }
+    match gw.effective_route_type(&spec.app) {
+        RouteType::Http => {
+            if gw.hosts.is_empty() {
+                errors
+                    .push("gateway.hosts must be non-empty when an HTTP gateway is enabled".into());
+            }
+        }
+        RouteType::Tcp => {
+            if !gw.hosts.is_empty() {
+                errors.push(
+                    "gateway.hosts is not supported for TCP routes (TCPRoute has no hostname \
+                     field); remove hosts or switch to an HTTP route type"
+                        .into(),
+                );
+            }
+        }
     }
 }
 
@@ -975,6 +990,38 @@ mod tests {
         validate_gateway_hosts(&spec, &mut errors);
         assert_eq!(errors.len(), 1);
         assert!(errors[0].contains("non-empty"));
+    }
+
+    #[test]
+    fn gateway_hosts_tcp_route_empty_hosts_ok() {
+        // SshBastion is always TCP; empty hosts must pass (TCPRoute has no hostname field).
+        let mut spec = minimal_spec(AppType::SshBastion);
+        spec.app_config = Some(AppConfig::SshBastion(SshBastionConfig::default()));
+        spec.gateway = Some(GatewaySpec {
+            enabled: Some(true),
+            hosts: vec![],
+            ..Default::default()
+        });
+        let mut errors = Vec::new();
+        validate_gateway_hosts(&spec, &mut errors);
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn gateway_hosts_tcp_route_non_empty_hosts_rejected() {
+        // Non-empty hosts on a TCP route are silently discarded by the Gateway API —
+        // surface that as a validation error rather than silently accepting bad config.
+        let mut spec = minimal_spec(AppType::SshBastion);
+        spec.app_config = Some(AppConfig::SshBastion(SshBastionConfig::default()));
+        spec.gateway = Some(GatewaySpec {
+            enabled: Some(true),
+            hosts: vec!["bastion.example.com".into()],
+            ..Default::default()
+        });
+        let mut errors = Vec::new();
+        validate_gateway_hosts(&spec, &mut errors);
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("TCP"));
     }
 
     // ── validate_unique_volume_names ──
