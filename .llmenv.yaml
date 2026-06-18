@@ -1,0 +1,5 @@
+name: "servarr-operator"
+description: "Manage media servers in Kubernetes"
+id: "servarr-operator"
+
+tags: ["lang-rust", "kubernetes"]
