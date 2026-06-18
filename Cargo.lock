@@ -2737,7 +2737,7 @@ dependencies = [
 
 [[package]]
 name = "servarr-api"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "k8s-openapi",
  "kube",
@@ -2758,7 +2758,7 @@ dependencies = [
 
 [[package]]
 name = "servarr-crds"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "indexmap 2.14.0",
  "k8s-openapi",
@@ -2773,7 +2773,7 @@ dependencies = [
 
 [[package]]
 name = "servarr-operator"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -2812,7 +2812,7 @@ dependencies = [
 
 [[package]]
 name = "servarr-resources"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "k8s-openapi",
  "kube",
