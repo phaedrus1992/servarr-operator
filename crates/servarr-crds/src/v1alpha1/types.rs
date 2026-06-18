@@ -127,8 +127,8 @@ pub struct GatewaySpec {
     /// if no defaults are set, defaults to false for standalone ServarrApps.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enabled: Option<bool>,
-    #[serde(default = "default_route_type")]
-    pub route_type: RouteType,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route_type: Option<RouteType>,
     #[serde(default)]
     pub parent_refs: Vec<GatewayParentRef>,
     #[serde(default)]
@@ -146,12 +146,12 @@ impl GatewaySpec {
 
     /// Returns the effective route_type for the given app type. SshBastion is
     /// always Tcp — SSH is a raw TCP protocol, so HTTPRoute can never carry it.
-    /// All other app types use the configured `route_type`.
+    /// All other app types use the configured `route_type`, defaulting to Http.
     /// Issue #49: prevent HTTPRoute from being silently built for a bastion.
     pub fn effective_route_type(&self, app: &super::AppType) -> RouteType {
         match app {
             super::AppType::SshBastion => RouteType::Tcp,
-            _ => self.route_type.clone(),
+            _ => self.route_type.clone().unwrap_or(RouteType::Http),
         }
     }
 
@@ -160,14 +160,18 @@ impl GatewaySpec {
     pub fn merge_with(self, defaults: &GatewaySpec) -> GatewaySpec {
         GatewaySpec {
             enabled: Some(self.enabled.unwrap_or_else(|| defaults.is_enabled())),
-            route_type: self.route_type,
+            route_type: self.route_type.or_else(|| defaults.route_type.clone()),
             parent_refs: if self.parent_refs.is_empty() {
                 defaults.parent_refs.clone()
             } else {
                 self.parent_refs
             },
             hosts: self.hosts,
-            tls: self.tls.or_else(|| defaults.tls.clone()),
+            tls: match (self.tls, &defaults.tls) {
+                (Some(user_tls), Some(default_tls)) => Some(user_tls.merge_with(default_tls)),
+                (Some(user_tls), None) => Some(user_tls),
+                (None, default_tls) => default_tls.clone(),
+            },
         }
     }
 }
@@ -191,8 +195,18 @@ pub struct TlsSpec {
     pub secret_name: Option<String>,
 }
 
-fn default_route_type() -> RouteType {
-    RouteType::Http
+impl TlsSpec {
+    fn merge_with(self, defaults: &TlsSpec) -> TlsSpec {
+        TlsSpec {
+            enabled: self.enabled,
+            cert_issuer: if self.cert_issuer.is_empty() {
+                defaults.cert_issuer.clone()
+            } else {
+                self.cert_issuer
+            },
+            secret_name: self.secret_name.or_else(|| defaults.secret_name.clone()),
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default, JsonSchema)]
@@ -372,6 +386,53 @@ impl Default for ProbeConfig {
             period_seconds: 10,
             timeout_seconds: 1,
             failure_threshold: 3,
+        }
+    }
+}
+
+impl ProbeConfig {
+    fn merge_with(self, defaults: &ProbeConfig) -> ProbeConfig {
+        ProbeConfig {
+            probe_type: self.probe_type,
+            path: if self.path.is_empty() {
+                defaults.path.clone()
+            } else {
+                self.path
+            },
+            command: if self.command.is_empty() {
+                defaults.command.clone()
+            } else {
+                self.command
+            },
+            initial_delay_seconds: if self.initial_delay_seconds == 0 {
+                defaults.initial_delay_seconds
+            } else {
+                self.initial_delay_seconds
+            },
+            period_seconds: if self.period_seconds == 0 {
+                defaults.period_seconds
+            } else {
+                self.period_seconds
+            },
+            timeout_seconds: if self.timeout_seconds == 0 {
+                defaults.timeout_seconds
+            } else {
+                self.timeout_seconds
+            },
+            failure_threshold: if self.failure_threshold == 0 {
+                defaults.failure_threshold
+            } else {
+                self.failure_threshold
+            },
+        }
+    }
+}
+
+impl ProbeSpec {
+    pub fn merge_with(self, defaults: &ProbeSpec) -> ProbeSpec {
+        ProbeSpec {
+            liveness: self.liveness.merge_with(&defaults.liveness),
+            readiness: self.readiness.merge_with(&defaults.readiness),
         }
     }
 }

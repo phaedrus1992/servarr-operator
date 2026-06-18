@@ -465,7 +465,7 @@ fn test_httproute_builder_enabled() {
             app: AppType::Sonarr,
             gateway: Some(GatewaySpec {
                 enabled: Some(true),
-                route_type: RouteType::Http,
+                route_type: Some(RouteType::Http),
                 parent_refs: vec![GatewayParentRef {
                     name: "istio-gateway".into(),
                     namespace: "istio-system".into(),
@@ -1196,7 +1196,7 @@ fn test_tcproute_http_route_no_tls_returns_none() {
             app: AppType::Sonarr,
             gateway: Some(GatewaySpec {
                 enabled: Some(true),
-                route_type: RouteType::Http,
+                route_type: Some(RouteType::Http),
                 parent_refs: vec![GatewayParentRef {
                     name: "gw".into(),
                     namespace: String::new(),
@@ -1226,7 +1226,7 @@ fn test_tcproute_tcp_route_type_returns_some() {
             app: AppType::Sonarr,
             gateway: Some(GatewaySpec {
                 enabled: Some(true),
-                route_type: RouteType::Tcp,
+                route_type: Some(RouteType::Tcp),
                 parent_refs: vec![GatewayParentRef {
                     name: "my-gateway".into(),
                     namespace: String::new(),
@@ -1273,7 +1273,7 @@ fn test_tcproute_http_route_with_tls_enabled_returns_some() {
             app: AppType::Sonarr,
             gateway: Some(GatewaySpec {
                 enabled: Some(true),
-                route_type: RouteType::Http,
+                route_type: Some(RouteType::Http),
                 parent_refs: vec![GatewayParentRef {
                     name: "gw".into(),
                     namespace: "istio-system".into(),
@@ -1313,7 +1313,7 @@ fn test_tcproute_parent_refs_with_namespace_and_section_name() {
             app: AppType::Sonarr,
             gateway: Some(GatewaySpec {
                 enabled: Some(true),
-                route_type: RouteType::Tcp,
+                route_type: Some(RouteType::Tcp),
                 parent_refs: vec![GatewayParentRef {
                     name: "my-gateway".into(),
                     namespace: "gateway-ns".into(),
@@ -2206,7 +2206,7 @@ fn test_networkpolicy_gateway_namespace_ingress() {
             app: AppType::Sonarr,
             gateway: Some(GatewaySpec {
                 enabled: Some(true),
-                route_type: RouteType::Http,
+                route_type: Some(RouteType::Http),
                 parent_refs: vec![GatewayParentRef {
                     name: "my-gateway".into(),
                     namespace: "gateway-ns".into(),
@@ -3658,7 +3658,7 @@ fn test_httproute_ssa_body_has_type_meta() {
             app: AppType::Sonarr,
             gateway: Some(GatewaySpec {
                 enabled: Some(true),
-                route_type: RouteType::Http,
+                route_type: Some(RouteType::Http),
                 parent_refs: vec![GatewayParentRef {
                     name: "test-gw".into(),
                     namespace: String::new(),

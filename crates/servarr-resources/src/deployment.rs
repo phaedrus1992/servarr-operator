@@ -81,7 +81,15 @@ pub fn build(app: &ServarrApp, image_overrides: &HashMap<String, ImageSpec>) -> 
             &merged_persistence
         }
     };
-    let probes = app.spec.probes.as_ref().unwrap_or(&defaults.probes);
+    // Field-merge probes so partial overrides inherit missing fields from defaults (#59).
+    let merged_probes: ProbeSpec;
+    let probes = match &app.spec.probes {
+        None => &defaults.probes,
+        Some(spec) => {
+            merged_probes = defaults.probes.clone().merge_with(spec);
+            &merged_probes
+        }
+    };
     let uid = app.spec.uid.unwrap_or(defaults.uid);
     let gid = app.spec.gid.unwrap_or(defaults.gid);
 

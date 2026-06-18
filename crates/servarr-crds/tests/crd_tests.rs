@@ -68,7 +68,7 @@ fn test_crd_serde_roundtrip_all_fields() {
         }),
         gateway: Some(GatewaySpec {
             enabled: Some(true),
-            route_type: RouteType::Http,
+            route_type: Some(RouteType::Http),
             parent_refs: vec![GatewayParentRef {
                 name: "my-gateway".into(),
                 namespace: "istio-system".into(),

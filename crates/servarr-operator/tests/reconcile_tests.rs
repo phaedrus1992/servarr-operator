@@ -2205,7 +2205,7 @@ async fn test_gateway_tcp_route_type() {
         app: AppType::Plex,
         gateway: Some(GatewaySpec {
             enabled: Some(true),
-            route_type: RouteType::Tcp,
+            route_type: Some(RouteType::Tcp),
             hosts: vec!["plex.example.com".into()],
             parent_refs: vec![GatewayParentRef {
                 name: "my-gateway".into(),

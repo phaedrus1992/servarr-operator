@@ -220,7 +220,7 @@ fn arb_tls() -> impl Strategy<Value = TlsSpec> {
 fn arb_gateway() -> impl Strategy<Value = GatewaySpec> {
     (
         arb_opt_bool(),
-        arb_route_type(),
+        prop_oneof![Just(None), arb_route_type().prop_map(Some)],
         prop::collection::vec(arb_parent_ref(), 0..3),
         prop::collection::vec(arb_string(), 0..3),
         prop_oneof![Just(None), arb_tls().prop_map(Some)],
@@ -573,4 +573,98 @@ fn probe_config_defaults_inject() {
     assert_eq!(v.period_seconds, 10);
     assert_eq!(v.timeout_seconds, 1);
     assert_eq!(v.failure_threshold, 3);
+}
+
+#[test]
+fn probe_spec_merge_with_empty_path() {
+    // Issue #59: Partial probe override should inherit path from defaults.
+    // When a CR sets `probes: { liveness: { probeType: Http } }` (no path),
+    // the path deserializes to "" (serde default), but should be merged
+    // with the default path instead of replacing it entirely.
+    let defaults = ProbeSpec {
+        liveness: ProbeConfig {
+            probe_type: ProbeType::Http,
+            path: "/api/health".to_string(),
+            ..Default::default()
+        },
+        readiness: Default::default(),
+    };
+
+    let user = ProbeSpec {
+        liveness: ProbeConfig {
+            probe_type: ProbeType::Http,
+            path: "".to_string(), // Deserialized from CR without path field
+            ..Default::default()
+        },
+        readiness: Default::default(),
+    };
+
+    let merged = user.merge_with(&defaults);
+
+    // Empty path should inherit from defaults
+    assert_eq!(merged.liveness.path, "/api/health");
+    // Other fields should come from user spec
+    assert!(matches!(merged.liveness.probe_type, ProbeType::Http));
+}
+
+#[test]
+fn gateway_spec_deserialize_omitted_route_type() {
+    // Issue #58: When a GatewaySpec is deserialized without a routeType field,
+    // it should be distinguishable from an explicit routeType: Http.
+    // Currently route_type is RouteType with serde default = Http,
+    // which makes "omitted" and "explicitly Http" indistinguishable.
+    // This test documents the current behavior; the fix requires making
+    // route_type: Option<RouteType> so "unset" can be distinguished.
+
+    // Deserialize without routeType field
+    let json = r#"{ "hosts": ["example.com"] }"#;
+    let spec: GatewaySpec = serde_json::from_str(json).expect("deserialize");
+
+    // With the fix (route_type: Option<RouteType>), omitted routeType deserializes to None
+    assert!(spec.route_type.is_none());
+    // and merge_with will fall back to defaults
+}
+
+#[test]
+fn gateway_spec_merge_with_tls_cert_issuer() {
+    // Issue #60: GatewaySpec::merge_with should field-merge inner TlsSpec,
+    // not just at the Option level. When a CR sets `tls: { enabled: true }`
+    // (no cert_issuer), the empty cert_issuer should inherit from the
+    // stack-level default instead of silently breaking cert creation.
+    use servarr_crds::v1alpha1::TlsSpec;
+
+    let defaults = GatewaySpec {
+        enabled: None,
+        route_type: None,
+        parent_refs: vec![],
+        hosts: vec!["example.com".to_string()],
+        tls: Some(TlsSpec {
+            enabled: true,
+            cert_issuer: "letsencrypt".to_string(),
+            secret_name: None,
+        }),
+    };
+
+    // User spec with partial TLS: enabled but no cert_issuer
+    let user = GatewaySpec {
+        enabled: None,
+        route_type: None,
+        parent_refs: vec![],
+        hosts: vec!["example.com".to_string()],
+        tls: Some(TlsSpec {
+            enabled: true,
+            cert_issuer: "".to_string(), // Serde default, not explicitly set
+            secret_name: None,
+        }),
+    };
+
+    let merged = user.merge_with(&defaults);
+
+    // TLS should be present
+    assert!(merged.tls.is_some());
+    let merged_tls = merged.tls.unwrap();
+    // Empty cert_issuer should inherit from defaults
+    assert_eq!(merged_tls.cert_issuer, "letsencrypt");
+    // enabled should come from user
+    assert!(merged_tls.enabled);
 }
