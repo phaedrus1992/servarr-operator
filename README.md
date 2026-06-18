@@ -11,6 +11,7 @@ networking, backups, and cross-app integration.
 |-----|------|-------------|------|
 | Plex | Media server | 32400 | 0 - Media Servers |
 | Jellyfin | Media server | 8096 | 0 - Media Servers |
+| SshBastion | SSH jump host | 2222 | 0 - Media Servers |
 | SABnzbd | Usenet client | 8080 | 1 - Download Clients |
 | Transmission | BitTorrent client | 9091 | 1 - Download Clients |
 | Sonarr | TV management | 8989 | 2 - Media Managers |
@@ -21,6 +22,8 @@ networking, backups, and cross-app integration.
 | Maintainerr | Media cleanup | 6246 | 3 - Ancillary |
 | Prowlarr | Indexer manager | 9696 | 3 - Ancillary |
 | Jackett | Indexer proxy | 9117 | 3 - Ancillary |
+| Bazarr | Subtitle management | 6767 | 3 - Ancillary |
+| Subgen | AI subtitle generation | 9000 | 3 - Ancillary |
 
 ## Custom Resources
 
@@ -97,8 +100,15 @@ spec:
 - **Cross-app sync** -- Prowlarr automatically discovers and registers Sonarr/Radarr/Lidarr instances
 - **Split 4K** -- `split4k: true` on Sonarr/Radarr in a MediaStack automatically creates paired standard and 4K instances
 - **Overseerr sync** -- Overseerr automatically discovers and registers Sonarr/Radarr servers with correct 4K flags
+- **Bazarr sync** -- Bazarr automatically discovers and registers Sonarr/Radarr instances for subtitle management
+- **Subgen sync** -- Subgen automatically wires up to a Jellyfin instance for Whisper AI subtitle generation
 - **App configuration** -- Transmission settings.json, SABnzbd host whitelist, Prowlarr custom indexers
+- **SSH bastion** -- jump host with per-user access modes (shell, sftp, scp, rsync, restricted-rsync)
+- **In-cluster NFS** -- MediaStack can deploy its own NFS server and auto-inject media mounts, or point at an external NAS
 - **GPU passthrough** -- NVIDIA, Intel, and AMD device support for hardware transcoding
+- **Admin credentials** -- declarative admin accounts via referenced Secrets, with automatic rotation
+- **Validating webhook** -- admission validation of ServarrApp specs (port ranges, resource limits, unique names, immutable fields)
+- **Drift detection** -- continuously reconciles live Deployment drift back to the desired spec
 - **Observability** -- Prometheus metrics and structured JSON logging
 
 ## Quick Start
@@ -159,6 +169,9 @@ kubectl get pods
 - [Configuration](docs/configuration.md) -- full CRD field reference
 - [Examples](docs/examples.md) -- working YAML for every app type
 - [Networking](docs/networking.md) -- services, Gateway API, TLS, and NetworkPolicy
+- [NFS Volumes](docs/nfs-volumes.md) -- in-cluster NFS server and automatic media mounts
+- [GPU Scheduling](docs/gpu-scheduling.md) -- GPU-aware scheduling with Node Feature Discovery
+- [Hardware Transcoding](docs/nfd-gpu-transcoding.md) -- enabling GPU transcoding for Jellyfin and Plex
 - [Backup and Restore](docs/backup-restore.md) -- API-driven and volume-level backups
 - [Admin Credentials](docs/admin-credentials.md) -- declarative admin account management
 - [Troubleshooting](docs/troubleshooting.md) -- common issues and diagnosis

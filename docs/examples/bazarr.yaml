@@ -1,0 +1,13 @@
+# Bazarr — subtitle management.
+# With bazarrSync enabled, the operator discovers Sonarr/Radarr in the
+# namespace and registers them in Bazarr automatically. Bazarr's API key is
+# managed by the operator, so no apiKeySecret is required.
+apiVersion: servarr.dev/v1alpha1
+kind: ServarrApp
+metadata:
+  name: bazarr
+spec:
+  app: Bazarr
+  bazarrSync:
+    enabled: true
+    autoRemove: true
