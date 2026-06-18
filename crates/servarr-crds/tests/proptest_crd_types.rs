@@ -443,10 +443,11 @@ proptest! {
     }
 
     // merge_with is idempotent: applying the same override twice == once.
+    // Convention: receiver (override) wins, argument (base) is the fallback.
     #[test]
-    fn prop_persistence_merge_idempotent(base in arb_persistence(), over in arb_persistence()) {
-        let once = base.merge_with(&over);
-        let twice = once.merge_with(&over);
+    fn prop_persistence_merge_idempotent(over in arb_persistence(), base in arb_persistence()) {
+        let once = over.merge_with(&base);
+        let twice = once.merge_with(&base);
         prop_assert_eq!(
             serde_json::to_value(&once).unwrap(),
             serde_json::to_value(&twice).unwrap()
@@ -455,8 +456,8 @@ proptest! {
 
     // merge_with never produces duplicate NFS mount names.
     #[test]
-    fn prop_persistence_merge_nfs_dedup(base in arb_persistence(), over in arb_persistence()) {
-        let merged = base.merge_with(&over);
+    fn prop_persistence_merge_nfs_dedup(over in arb_persistence(), base in arb_persistence()) {
+        let merged = over.merge_with(&base);
         let mut seen = std::collections::HashSet::new();
         for m in &merged.nfs_mounts {
             prop_assert!(
@@ -467,14 +468,14 @@ proptest! {
         }
     }
 
-    // merge_with replaces volumes wholesale when the override is non-empty,
-    // and falls back to the base otherwise.
+    // merge_with replaces volumes wholesale when the override (receiver) is
+    // non-empty, and falls back to the base (argument) otherwise.
     #[test]
     fn prop_persistence_merge_volumes_replace(
-        base in arb_persistence(),
         over in arb_persistence(),
+        base in arb_persistence(),
     ) {
-        let merged = base.merge_with(&over);
+        let merged = over.merge_with(&base);
         let expected = if over.volumes.is_empty() { &base.volumes } else { &over.volumes };
         prop_assert_eq!(
             serde_json::to_value(&merged.volumes).unwrap(),
