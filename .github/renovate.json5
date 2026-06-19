@@ -12,7 +12,7 @@
   assigneesFromCodeOwners: true,
   baseBranchPatterns: [
     'main',
-    'release/**',
+    '/^release\\/.*/',
   ],
   branchConcurrentLimit: 5,
   internalChecksFilter: 'strict',
