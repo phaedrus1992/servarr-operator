@@ -724,7 +724,9 @@ fn test_deployment_builder_plex() {
     let container = &pod_spec.containers[0];
 
     assert_eq!(container.name, "plex");
-    assert_eq!(container.image.as_deref(), Some("linuxserver/plex:1.43.0"));
+    let plex_defaults = AppDefaults::for_app(&AppType::Plex).expect("plex defaults");
+    let expected_plex_image = format!("{}:{}", plex_defaults.image.repository, plex_defaults.image.tag);
+    assert_eq!(container.image.as_deref(), Some(expected_plex_image.as_str()));
 
     // Check port
     let ports = container.ports.as_ref().unwrap();
@@ -764,10 +766,9 @@ fn test_deployment_builder_jellyfin() {
     let container = &pod_spec.containers[0];
 
     assert_eq!(container.name, "jellyfin");
-    assert_eq!(
-        container.image.as_deref(),
-        Some("linuxserver/jellyfin:10.11.7")
-    );
+    let jf_defaults = AppDefaults::for_app(&AppType::Jellyfin).expect("jellyfin defaults");
+    let expected_jf_image = format!("{}:{}", jf_defaults.image.repository, jf_defaults.image.tag);
+    assert_eq!(container.image.as_deref(), Some(expected_jf_image.as_str()));
 
     // Check port
     let ports = container.ports.as_ref().unwrap();
