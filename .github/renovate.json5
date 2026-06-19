@@ -12,6 +12,7 @@
   assigneesFromCodeOwners: true,
   baseBranchPatterns: [
     'main',
+    'release/**',
   ],
   branchConcurrentLimit: 5,
   internalChecksFilter: 'strict',
@@ -172,6 +173,15 @@
       description: 'Separate major updates into individual PRs for review',
       matchUpdateTypes: ['major'],
       groupName: null,
+    },
+
+    // Release branch maintenance: only patch-level updates.
+    // Placed after all other rules so enabled:false wins.
+    {
+      description: 'Disable minor and major updates on release/* branches',
+      matchBaseBranches: ['/^release\\//'],
+      matchUpdateTypes: ['minor', 'major'],
+      enabled: false,
     },
   ],
 
