@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased] - ReleaseDate
 
+### Fixed
+
+- Fix SSH bastion `authorized_keys` containing broken symlinks. The `copy-authorized-keys`
+  init container copied Kubernetes Secret-mount symlinks as-is; it now dereferences each key
+  file so `sshd` can read them.
+- Fix container image tags and Helm chart `appVersion` carrying a `v` prefix. They now use
+  bare semver (`1.0.2`, not `v1.0.2`) so source charts, deployed `appVersion`, and image tags
+  all agree.
+
 ## [1.0.1] - 2026-06-18
 
 ### Changed
