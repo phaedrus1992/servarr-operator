@@ -36,6 +36,14 @@ repos:
         files: ^charts/
         stages: [pre-push]
 
+      - id: renovate-config-validator
+        name: renovate config validator
+        entry: npx --yes --package renovate -- renovate-config-validator --strict .github/renovate.json5
+        language: system
+        pass_filenames: false
+        files: ^\.github/renovate\.json5$
+        stages: [pre-push]
+
       # ── Stage 2: analysis ─────────────────────────────────────────────────
 
       - id: cargo-clippy
