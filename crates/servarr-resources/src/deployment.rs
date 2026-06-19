@@ -1,7 +1,7 @@
 use k8s_openapi::api::apps::v1::{Deployment, DeploymentSpec, DeploymentStrategy};
 use k8s_openapi::api::core::v1::{
-    Capabilities, ConfigMapVolumeSource, Container, ContainerPort, EnvVar, EnvVarSource,
-    ExecAction, HTTPGetAction, LocalObjectReference, NFSVolumeSource,
+    Capabilities, ConfigMapVolumeSource, Container, ContainerPort, EmptyDirVolumeSource, EnvVar,
+    EnvVarSource, ExecAction, HTTPGetAction, LocalObjectReference, NFSVolumeSource,
     PersistentVolumeClaimVolumeSource, PodSecurityContext, PodSpec, PodTemplateSpec, Probe,
     ResourceRequirements as K8sResources, SeccompProfile, SecretKeySelector, SecurityContext,
     TCPSocketAction, Volume, VolumeMount,
@@ -423,17 +423,19 @@ fn build_volume_mounts(persistence: &PersistenceSpec, app: &ServarrApp) -> Vec<V
         });
     }
 
-    // SSH bastion: mount the whole authorized-keys Secret as a read-only directory.
-    // panubo/sshd ≥1.10.0 has a bug: its `while read -d ''` loop exits with code 1
-    // (causing set -e to abort) when the last file it chmod's is not writable.
-    // Mounting the entire directory as read-only makes `[ -w /etc/authorized_keys ]`
-    // return false, causing entry.sh to skip the chmod block entirely.
+    // SSH bastion: mount the authorized-keys Secret at a staging path.
+    // Copy to emptyDir with proper permissions in the copy-authorized-keys init container.
     if let Some(AppConfig::SshBastion(ref sc)) = app.spec.app_config {
         if sc.users.iter().any(|u| !u.public_keys.is_empty()) {
             mounts.push(VolumeMount {
+                name: "authorized-keys-src".into(),
+                mount_path: "/etc/authorized_keys.src".into(),
+                read_only: Some(true),
+                ..Default::default()
+            });
+            mounts.push(VolumeMount {
                 name: "authorized-keys".into(),
                 mount_path: "/etc/authorized_keys".into(),
-                read_only: Some(true),
                 ..Default::default()
             });
         }
@@ -610,19 +612,24 @@ fn build_volumes(app: &ServarrApp, persistence: &PersistenceSpec) -> Vec<Volume>
         });
     }
 
-    // SSH bastion: mount the whole authorized-keys Secret as a single directory volume
-    // (see build_volume_mounts for why we avoid per-user subPath mounts).
+    // SSH bastion: mount the authorized-keys Secret at staging path, then copy to emptyDir
+    // with proper permissions to satisfy sshd StrictModes.
     if let Some(AppConfig::SshBastion(ref sc)) = app.spec.app_config {
         use k8s_openapi::api::core::v1::SecretVolumeSource;
         let secret_name = common::child_name(app, "authorized-keys");
         if sc.users.iter().any(|u| !u.public_keys.is_empty()) {
             volumes.push(Volume {
-                name: "authorized-keys".into(),
+                name: "authorized-keys-src".into(),
                 secret: Some(SecretVolumeSource {
                     secret_name: Some(secret_name.clone()),
                     default_mode: Some(0o444),
                     ..Default::default()
                 }),
+                ..Default::default()
+            });
+            volumes.push(Volume {
+                name: "authorized-keys".into(),
+                empty_dir: Some(EmptyDirVolumeSource::default()),
                 ..Default::default()
             });
         }
@@ -1268,12 +1275,48 @@ echo "Host keys ready."
         ..Default::default()
     });
 
-    // Patch entry.sh so authorized_keys are read-only (bind-mounted from Secret)
+    if ssh_config.users.iter().any(|u| !u.public_keys.is_empty()) {
+        // Copy authorized_keys from Secret staging path to emptyDir with proper permissions.
+        // sshd StrictModes requires non-world-writable directory; 700 satisfies it.
+        let copy_keys_script = r#"#!/bin/sh
+set -e
+mkdir -p /etc/authorized_keys
+for f in /etc/authorized_keys.src/*; do cp "$f" /etc/authorized_keys/; done
+chmod 700 /etc/authorized_keys
+chmod 644 /etc/authorized_keys/*
+chown -R root:root /etc/authorized_keys
+echo "Authorized keys copied and permissions set."
+"#;
+
+        init.push(Container {
+            name: "copy-authorized-keys".into(),
+            image: Some(image.to_string()),
+            command: Some(vec!["/bin/sh".into(), "-c".into(), copy_keys_script.into()]),
+            security_context: Some(security_context.clone()),
+            volume_mounts: Some(vec![
+                VolumeMount {
+                    name: "authorized-keys-src".into(),
+                    mount_path: "/etc/authorized_keys.src".into(),
+                    read_only: Some(true),
+                    ..Default::default()
+                },
+                VolumeMount {
+                    name: "authorized-keys".into(),
+                    mount_path: "/etc/authorized_keys".into(),
+                    ..Default::default()
+                },
+            ]),
+            ..Default::default()
+        });
+    }
+
+    // Patch entry.sh to no longer skip chown/chmod on authorized_keys
+    // (they're now in a writable emptyDir with proper permissions from copy-authorized-keys)
     // and install restricted-rsync if in that mode
     let mut patch_script = String::from(
         r#"#!/bin/sh
 set -e
-# Patch entry.sh to skip chown/chmod on authorized_keys (they're read-only mounts)
+# Patch entry.sh to skip chown/chmod on authorized_keys (emptyDir, already set by copy-authorized-keys)
 if [ -f /entry.sh ]; then
   sed -i 's/chmod 600 "$f"/true/g' /entry.sh
   sed -i 's/chown "$user:$user" "$f"/true/g' /entry.sh

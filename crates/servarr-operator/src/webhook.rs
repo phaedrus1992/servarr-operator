@@ -13,7 +13,7 @@ use axum_server::tls_rustls::RustlsConfig;
 use kube::Client;
 use kube::api::{Api, ListParams};
 use serde::{Deserialize, Serialize};
-use servarr_crds::{AppConfig, AppType, ServarrApp, ServarrAppSpec, SshMode};
+use servarr_crds::{AppConfig, AppType, RouteType, ServarrApp, ServarrAppSpec, SshMode};
 use tracing::{debug, info, warn};
 
 use crate::controller::normalize_backup_schedule;
@@ -263,6 +263,9 @@ async fn validate_spec(
     // Rule 12: backup.schedule must be a valid cron expression
     validate_backup_schedule(&parsed, &mut errors);
 
+    // Rule 13: SshBastion security context must not break init container
+    validate_ssh_security_context(&parsed, &mut errors);
+
     if errors.is_empty() {
         Ok(())
     } else {
@@ -426,11 +429,26 @@ fn validate_resource_bounds(spec: &ServarrAppSpec, errors: &mut Vec<String>) {
 }
 
 fn validate_gateway_hosts(spec: &ServarrAppSpec, errors: &mut Vec<String>) {
-    if let Some(ref gw) = spec.gateway
-        && gw.is_enabled()
-        && gw.hosts.is_empty()
-    {
-        errors.push("gateway.hosts must be non-empty when gateway is enabled".into());
+    let Some(ref gw) = spec.gateway else { return };
+    if !gw.is_enabled() {
+        return;
+    }
+    match gw.effective_route_type(&spec.app) {
+        RouteType::Http => {
+            if gw.hosts.is_empty() {
+                errors
+                    .push("gateway.hosts must be non-empty when an HTTP gateway is enabled".into());
+            }
+        }
+        RouteType::Tcp => {
+            if !gw.hosts.is_empty() {
+                errors.push(
+                    "gateway.hosts is not supported for TCP routes (TCPRoute has no hostname \
+                     field); remove hosts or switch to an HTTP route type"
+                        .into(),
+                );
+            }
+        }
     }
 }
 
@@ -540,6 +558,46 @@ fn validate_indexer_definition_names(spec: &ServarrAppSpec, errors: &mut Vec<Str
                     "appConfig.prowlarr.customDefinitions[].name '{}' must be non-empty and contain only alphanumeric characters or hyphens",
                     def.name
                 ));
+            }
+        }
+    }
+}
+
+fn validate_ssh_security_context(spec: &ServarrAppSpec, errors: &mut Vec<String>) {
+    let Some(AppConfig::SshBastion(_)) = spec.app_config else {
+        return;
+    };
+
+    let security = spec.security.as_ref();
+    let persistence = spec.persistence.as_ref();
+
+    if let Some(sec) = security {
+        if sec.read_only_root_filesystem == Some(true) {
+            let has_writable_auth_keys = persistence
+                .map(|p| p.volumes.iter().any(|v| v.name == "authorized-keys"))
+                .unwrap_or(false);
+
+            if !has_writable_auth_keys {
+                errors.push(
+                    "SshBastion with readOnlyRootFilesystem: true must have a writable \
+                     'authorized-keys' volume for the copy-authorized-keys init container"
+                        .to_string(),
+                );
+            }
+        }
+
+        if sec.run_as_non_root == Some(true) {
+            let has_chown_capability = sec
+                .capabilities_add
+                .iter()
+                .any(|cap| cap.to_uppercase() == "CHOWN");
+
+            if !has_chown_capability {
+                errors.push(
+                    "SshBastion with runAsNonRoot: true must include CHOWN capability for the \
+                     copy-authorized-keys init container to set authorized_keys ownership"
+                        .to_string(),
+                );
             }
         }
     }
@@ -977,6 +1035,38 @@ mod tests {
         assert!(errors[0].contains("non-empty"));
     }
 
+    #[test]
+    fn gateway_hosts_tcp_route_empty_hosts_ok() {
+        // SshBastion is always TCP; empty hosts must pass (TCPRoute has no hostname field).
+        let mut spec = minimal_spec(AppType::SshBastion);
+        spec.app_config = Some(AppConfig::SshBastion(SshBastionConfig::default()));
+        spec.gateway = Some(GatewaySpec {
+            enabled: Some(true),
+            hosts: vec![],
+            ..Default::default()
+        });
+        let mut errors = Vec::new();
+        validate_gateway_hosts(&spec, &mut errors);
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn gateway_hosts_tcp_route_non_empty_hosts_rejected() {
+        // Non-empty hosts on a TCP route are silently discarded by the Gateway API —
+        // surface that as a validation error rather than silently accepting bad config.
+        let mut spec = minimal_spec(AppType::SshBastion);
+        spec.app_config = Some(AppConfig::SshBastion(SshBastionConfig::default()));
+        spec.gateway = Some(GatewaySpec {
+            enabled: Some(true),
+            hosts: vec!["bastion.example.com".into()],
+            ..Default::default()
+        });
+        let mut errors = Vec::new();
+        validate_gateway_hosts(&spec, &mut errors);
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("TCP"));
+    }
+
     // ── validate_unique_volume_names ──
 
     #[test]
@@ -1227,6 +1317,192 @@ mod tests {
         validate_ssh_shell_override(&spec, &mut errors);
         assert_eq!(errors.len(), 1);
         assert!(errors[0].contains("restricted-rsync"));
+    }
+
+    // ── validate_ssh_security_context ──
+
+    #[test]
+    fn ssh_security_context_non_ssh_app() {
+        let spec = minimal_spec(AppType::Sonarr);
+        let mut errors = Vec::new();
+        validate_ssh_security_context(&spec, &mut errors);
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn ssh_security_context_readonly_without_auth_keys_volume() {
+        let mut spec = minimal_spec(AppType::SshBastion);
+        spec.app_config = Some(AppConfig::SshBastion(SshBastionConfig::default()));
+        spec.security = Some(SecurityProfile {
+            profile_type: SecurityProfileType::Custom,
+            user: 1000,
+            group: 1000,
+            run_as_non_root: Some(false),
+            read_only_root_filesystem: Some(true),
+            allow_privilege_escalation: Some(false),
+            capabilities_add: vec![],
+            capabilities_drop: vec![],
+        });
+        let mut errors = Vec::new();
+        validate_ssh_security_context(&spec, &mut errors);
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("readOnlyRootFilesystem"));
+        assert!(errors[0].contains("authorized-keys"));
+    }
+
+    #[test]
+    fn ssh_security_context_readonly_with_auth_keys_volume() {
+        let mut spec = minimal_spec(AppType::SshBastion);
+        spec.app_config = Some(AppConfig::SshBastion(SshBastionConfig::default()));
+        spec.security = Some(SecurityProfile {
+            profile_type: SecurityProfileType::Custom,
+            user: 1000,
+            group: 1000,
+            run_as_non_root: Some(false),
+            read_only_root_filesystem: Some(true),
+            allow_privilege_escalation: Some(false),
+            capabilities_add: vec![],
+            capabilities_drop: vec![],
+        });
+        spec.persistence = Some(PersistenceSpec {
+            volumes: vec![PvcVolume {
+                name: "authorized-keys".into(),
+                mount_path: "/etc/authorized_keys".into(),
+                ..Default::default()
+            }],
+            nfs_mounts: vec![],
+        });
+        let mut errors = Vec::new();
+        validate_ssh_security_context(&spec, &mut errors);
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn ssh_security_context_nonroot_without_chown_capability() {
+        let mut spec = minimal_spec(AppType::SshBastion);
+        spec.app_config = Some(AppConfig::SshBastion(SshBastionConfig::default()));
+        spec.security = Some(SecurityProfile {
+            profile_type: SecurityProfileType::Custom,
+            user: 1000,
+            group: 1000,
+            run_as_non_root: Some(true),
+            read_only_root_filesystem: Some(false),
+            allow_privilege_escalation: Some(false),
+            capabilities_add: vec![],
+            capabilities_drop: vec![],
+        });
+        let mut errors = Vec::new();
+        validate_ssh_security_context(&spec, &mut errors);
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("runAsNonRoot"));
+        assert!(errors[0].contains("CHOWN"));
+    }
+
+    #[test]
+    fn ssh_security_context_nonroot_with_chown_capability() {
+        let mut spec = minimal_spec(AppType::SshBastion);
+        spec.app_config = Some(AppConfig::SshBastion(SshBastionConfig::default()));
+        spec.security = Some(SecurityProfile {
+            profile_type: SecurityProfileType::Custom,
+            user: 1000,
+            group: 1000,
+            run_as_non_root: Some(true),
+            read_only_root_filesystem: Some(false),
+            allow_privilege_escalation: Some(false),
+            capabilities_add: vec!["CHOWN".into()],
+            capabilities_drop: vec![],
+        });
+        let mut errors = Vec::new();
+        validate_ssh_security_context(&spec, &mut errors);
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn ssh_security_context_combined_constraints() {
+        let mut spec = minimal_spec(AppType::SshBastion);
+        spec.app_config = Some(AppConfig::SshBastion(SshBastionConfig::default()));
+        spec.security = Some(SecurityProfile {
+            profile_type: SecurityProfileType::Custom,
+            user: 1000,
+            group: 1000,
+            run_as_non_root: Some(true),
+            read_only_root_filesystem: Some(true),
+            allow_privilege_escalation: Some(false),
+            capabilities_add: vec!["CHOWN".into()],
+            capabilities_drop: vec![],
+        });
+        spec.persistence = Some(PersistenceSpec {
+            volumes: vec![PvcVolume {
+                name: "authorized-keys".into(),
+                mount_path: "/etc/authorized_keys".into(),
+                ..Default::default()
+            }],
+            nfs_mounts: vec![],
+        });
+        let mut errors = Vec::new();
+        validate_ssh_security_context(&spec, &mut errors);
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn ssh_security_context_no_security_field() {
+        let mut spec = minimal_spec(AppType::SshBastion);
+        spec.app_config = Some(AppConfig::SshBastion(SshBastionConfig::default()));
+        spec.security = None;
+        let mut errors = Vec::new();
+        validate_ssh_security_context(&spec, &mut errors);
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn ssh_security_context_both_flags_missing_auth_keys() {
+        let mut spec = minimal_spec(AppType::SshBastion);
+        spec.app_config = Some(AppConfig::SshBastion(SshBastionConfig::default()));
+        spec.security = Some(SecurityProfile {
+            profile_type: SecurityProfileType::Custom,
+            user: 1000,
+            group: 1000,
+            run_as_non_root: Some(true),
+            read_only_root_filesystem: Some(true),
+            allow_privilege_escalation: Some(false),
+            capabilities_add: vec!["CHOWN".into()],
+            capabilities_drop: vec![],
+        });
+        spec.persistence = None;
+        let mut errors = Vec::new();
+        validate_ssh_security_context(&spec, &mut errors);
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("readOnlyRootFilesystem"));
+        assert!(errors[0].contains("authorized-keys"));
+    }
+
+    #[test]
+    fn ssh_security_context_both_flags_missing_chown() {
+        let mut spec = minimal_spec(AppType::SshBastion);
+        spec.app_config = Some(AppConfig::SshBastion(SshBastionConfig::default()));
+        spec.security = Some(SecurityProfile {
+            profile_type: SecurityProfileType::Custom,
+            user: 1000,
+            group: 1000,
+            run_as_non_root: Some(true),
+            read_only_root_filesystem: Some(true),
+            allow_privilege_escalation: Some(false),
+            capabilities_add: vec![],
+            capabilities_drop: vec![],
+        });
+        spec.persistence = Some(PersistenceSpec {
+            volumes: vec![PvcVolume {
+                name: "authorized-keys".into(),
+                mount_path: "/etc/authorized_keys".into(),
+                ..Default::default()
+            }],
+            nfs_mounts: vec![],
+        });
+        let mut errors = Vec::new();
+        validate_ssh_security_context(&spec, &mut errors);
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("runAsNonRoot"));
+        assert!(errors[0].contains("CHOWN"));
     }
 
     // ── validate_identity_immutable ──
