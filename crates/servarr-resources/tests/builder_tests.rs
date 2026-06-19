@@ -1740,6 +1740,23 @@ fn test_deployment_ssh_bastion_init_containers() {
         init.iter().any(|c| c.name == "copy-authorized-keys"),
         "SSH bastion should have copy-authorized-keys init container"
     );
+    // Script must dereference symlinks (POSIX cp without -r), not copy them as-is (BusyBox cp -r
+    // preserves symlinks from secret mounts → broken symlinks in the emptyDir).
+    let copy_script = init
+        .iter()
+        .find(|c| c.name == "copy-authorized-keys")
+        .and_then(|c| c.command.as_ref())
+        .and_then(|cmd| cmd.last())
+        .expect("copy-authorized-keys must have a shell script as its last command arg");
+    assert!(
+        !copy_script.contains("cp -r"),
+        "copy-authorized-keys script must not use 'cp -r' (BusyBox preserves symlinks from \
+         secret mounts); use a for-loop with non-recursive cp to dereference them"
+    );
+    assert!(
+        copy_script.contains("for f in /etc/authorized_keys.src/*"),
+        "copy-authorized-keys script must iterate files and dereference symlinks via plain cp"
+    );
     assert!(
         init.iter().any(|c| c.name == "patch-entry"),
         "SSH bastion should have patch-entry init container"
