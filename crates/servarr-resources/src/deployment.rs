@@ -1281,7 +1281,7 @@ echo "Host keys ready."
         let copy_keys_script = r#"#!/bin/sh
 set -e
 mkdir -p /etc/authorized_keys
-cp -r /etc/authorized_keys.src/* /etc/authorized_keys/
+for f in /etc/authorized_keys.src/*; do cp "$f" /etc/authorized_keys/; done
 chmod 700 /etc/authorized_keys
 chmod 644 /etc/authorized_keys/*
 chown -R root:root /etc/authorized_keys
