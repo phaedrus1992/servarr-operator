@@ -17,6 +17,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Fix container image tags and Helm chart `appVersion` carrying a `v` prefix. They now use
   bare semver (`1.0.2`, not `v1.0.2`) so source charts, deployed `appVersion`, and image tags
   all agree.
+- Fix SSH bastion admission webhook accepting user names and `allowedPaths` values
+  containing shell metacharacters. User names are now validated against
+  `^[a-z_][a-z0-9_-]{0,31}$`; allowed paths must be absolute and must not contain
+  `"`, `\`, `$`, backtick, or whitespace. Invalid values are rejected at admission
+  time with a descriptive error.
+- Fix restricted-rsync wrapper permitting arbitrary rsync flags such as `--log-file`.
+  Only a known-safe flag set (`--server`, `--sender`, `--numeric-ids`, `--timeout`,
+  `-e*`, and short flags `vzrltpgo`) is now allowed; unrecognized flags and bare-word
+  arguments before the path separator are rejected.
 - Fix SSH bastion restricted-rsync rejecting paths with spaces and not expanding globs. The
   wrapper kept only the last whitespace-separated token of the source path (so
   `/media/Show Name/` became `Name/` and was rejected) and passed globs to `rsync` unexpanded.
