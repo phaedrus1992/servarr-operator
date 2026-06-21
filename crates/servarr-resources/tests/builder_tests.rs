@@ -725,8 +725,14 @@ fn test_deployment_builder_plex() {
 
     assert_eq!(container.name, "plex");
     let plex_defaults = AppDefaults::for_app(&AppType::Plex).expect("plex defaults");
-    let expected_plex_image = format!("{}:{}", plex_defaults.image.repository, plex_defaults.image.tag);
-    assert_eq!(container.image.as_deref(), Some(expected_plex_image.as_str()));
+    let expected_plex_image = format!(
+        "{}:{}",
+        plex_defaults.image.repository, plex_defaults.image.tag
+    );
+    assert_eq!(
+        container.image.as_deref(),
+        Some(expected_plex_image.as_str())
+    );
 
     // Check port
     let ports = container.ports.as_ref().unwrap();
