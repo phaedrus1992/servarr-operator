@@ -11,6 +11,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Fix SSH bastion pod not restarting when `authorized-keys` Secret or `restricted-rsync`
+  ConfigMap changes. The `config_checksum` pod-annotation hash previously covered only the
+  main app ConfigMap and Prowlarr definitions; it now also hashes the `authorized-keys`
+  Secret string data and the `restricted-rsync` ConfigMap so rotating SSH keys or updating
+  the wrapper script triggers a rolling restart automatically.
+- Fix SSH bastion `restricted-rsync` wrapper rejecting real rsync server-mode combined
+  flags (e.g. `-vlogDtprze.iLsfxCIvu`). The flag allowlist regex `[^vzrltpgo]` was too
+  narrow for the combined short flags rsync uses in practice. The allowlist is removed;
+  `--sender` already enforces read-only at the protocol level, matching `rrsync`'s approach.
 - Fix SSH bastion `authorized_keys` containing broken symlinks. The `copy-authorized-keys`
   init container copied Kubernetes Secret-mount symlinks as-is; it now dereferences each key
   file so `sshd` can read them.
