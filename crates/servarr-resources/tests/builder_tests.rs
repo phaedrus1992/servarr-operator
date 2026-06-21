@@ -3782,3 +3782,57 @@ fn test_sshbastion_gateway_defaults_to_tcp() {
         "HTTPRoute must not be built for SshBastion — SSH is TCP only"
     );
 }
+
+fn make_bastion(public_keys: &str, rsync_allowed_flags: Option<Vec<String>>) -> ServarrApp {
+    ServarrApp {
+        metadata: ObjectMeta {
+            name: Some("bastion".into()),
+            namespace: Some("infra".into()),
+            uid: Some("uid-bastion-checksum".into()),
+            ..Default::default()
+        },
+        spec: ServarrAppSpec {
+            app: AppType::SshBastion,
+            app_config: Some(AppConfig::SshBastion(SshBastionConfig {
+                users: vec![SshUser {
+                    name: "alice".into(),
+                    uid: 1001,
+                    gid: 1001,
+                    mode: SshMode::Rsync,
+                    restricted_rsync: rsync_allowed_flags
+                        .map(|flags| RestrictedRsyncConfig { allowed_paths: flags }),
+                    shell: None,
+                    public_keys: public_keys.into(),
+                }],
+                ..Default::default()
+            })),
+            ..Default::default()
+        },
+        status: None,
+    }
+}
+
+#[test]
+fn test_config_checksum_changes_on_bastion_key_rotation() {
+    let a = make_bastion("ssh-ed25519 AAAAC3 alice1", None);
+    let b = make_bastion("ssh-ed25519 AAAAC3 alice2", None);
+    let ca = servarr_resources::deployment::config_checksum(&a);
+    let cb = servarr_resources::deployment::config_checksum(&b);
+    assert!(ca.is_some(), "checksum must be present for bastion with keys");
+    assert_ne!(ca, cb, "checksum must change when public_keys rotate");
+}
+
+#[test]
+fn test_config_checksum_changes_on_rsync_flag_change() {
+    let a = make_bastion("ssh-ed25519 AAAAC3 alice", Some(vec!["--archive".into()]));
+    let b = make_bastion(
+        "ssh-ed25519 AAAAC3 alice",
+        Some(vec!["--archive".into(), "--compress".into()]),
+    );
+    let ca = servarr_resources::deployment::config_checksum(&a);
+    let cb = servarr_resources::deployment::config_checksum(&b);
+    assert_ne!(
+        ca, cb,
+        "checksum must change when allowed rsync flags change"
+    );
+}
