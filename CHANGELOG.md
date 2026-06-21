@@ -9,8 +9,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased] - ReleaseDate
 
-## [1.0.2] - 2026-06-21
-
 ### Fixed
 
 - Fix SSH bastion pod not restarting when `authorized-keys` Secret or `restricted-rsync`
@@ -22,6 +20,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   flags (e.g. `-vlogDtprze.iLsfxCIvu`). The flag allowlist regex `[^vzrltpgo]` was too
   narrow for the combined short flags rsync uses in practice. The allowlist is removed;
   `--sender` already enforces read-only at the protocol level, matching `rrsync`'s approach.
+
+## [1.0.2] - 2026-06-21
+
+### Fixed
+
 - Fix SSH bastion `authorized_keys` containing broken symlinks. The `copy-authorized-keys`
   init container copied Kubernetes Secret-mount symlinks as-is; it now dereferences each key
   file so `sshd` can read them.
