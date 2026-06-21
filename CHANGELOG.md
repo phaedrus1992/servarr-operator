@@ -17,6 +17,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Fix container image tags and Helm chart `appVersion` carrying a `v` prefix. They now use
   bare semver (`1.0.2`, not `v1.0.2`) so source charts, deployed `appVersion`, and image tags
   all agree.
+- Fix SSH bastion restricted-rsync wrapper dropping audit log entries silently when syslog
+  is unavailable in the container. Rejected and allowed rsync events now fall back to stderr
+  so they appear in `kubectl logs` even without a syslog socket.
+- Fix SSH bastion admission webhook accepting `user.shell` values that are non-absolute or
+  contain colons or shell metacharacters. A colon would corrupt the colon-delimited
+  `SSH_USERS` env var format; the webhook now rejects such values at admission time.
 - Fix SSH bastion admission webhook accepting user names and `allowedPaths` values
   containing shell metacharacters. User names are now validated against
   `^[a-z_][a-z0-9_-]{0,31}$`; allowed paths must be absolute and must not contain
