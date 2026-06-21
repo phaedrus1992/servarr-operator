@@ -298,6 +298,38 @@ fn nonexistent_path_outside_allowlist_is_rejected() {
 }
 
 #[test]
+fn disallowed_flag_log_file_is_rejected() {
+    let (_tmp, wd) = fresh_dir("flaglist");
+    let tv = make_dir(&wd, "tv");
+    let script = gen_script(SshMode::RestrictedRsync, vec![tv.display().to_string()]);
+    let cmd = format!(
+        "rsync --server --sender --log-file=/tmp/x . {}",
+        tv.display()
+    );
+    let res = run_wrapper(&wd, &script, &cmd);
+    assert_ne!(
+        res.status, 0,
+        "--log-file must be rejected by flag allowlist; stderr: {}",
+        res.stderr
+    );
+}
+
+#[test]
+fn non_flag_arg_before_dot_separator_is_rejected() {
+    let (_tmp, wd) = fresh_dir("bareflag");
+    let tv = make_dir(&wd, "tv");
+    let script = gen_script(SshMode::RestrictedRsync, vec![tv.display().to_string()]);
+    // A bare word (non-flag) before the "." path separator must not pass through.
+    let cmd = format!("rsync --server --sender inject . {}", tv.display());
+    let res = run_wrapper(&wd, &script, &cmd);
+    assert_ne!(
+        res.status, 0,
+        "bare word before path separator must be rejected; stderr: {}",
+        res.stderr
+    );
+}
+
+#[test]
 fn rsync_mode_allows_any_path_and_parses_spaces() {
     let (_tmp, wd) = fresh_dir("anymode");
     make_dir(&wd, "Some Show");
