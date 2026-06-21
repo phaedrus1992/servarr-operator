@@ -3799,8 +3799,9 @@ fn make_bastion(public_keys: &str, rsync_allowed_flags: Option<Vec<String>>) -> 
                     uid: 1001,
                     gid: 1001,
                     mode: SshMode::Rsync,
-                    restricted_rsync: rsync_allowed_flags
-                        .map(|flags| RestrictedRsyncConfig { allowed_paths: flags }),
+                    restricted_rsync: rsync_allowed_flags.map(|flags| RestrictedRsyncConfig {
+                        allowed_paths: flags,
+                    }),
                     shell: None,
                     public_keys: public_keys.into(),
                 }],
@@ -3818,7 +3819,10 @@ fn test_config_checksum_changes_on_bastion_key_rotation() {
     let b = make_bastion("ssh-ed25519 AAAAC3 alice2", None);
     let ca = servarr_resources::deployment::config_checksum(&a);
     let cb = servarr_resources::deployment::config_checksum(&b);
-    assert!(ca.is_some(), "checksum must be present for bastion with keys");
+    assert!(
+        ca.is_some(),
+        "checksum must be present for bastion with keys"
+    );
     assert_ne!(ca, cb, "checksum must change when public_keys rotate");
 }
 
