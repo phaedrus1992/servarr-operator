@@ -613,7 +613,7 @@ fn validate_ssh_bastion_inputs(spec: &ServarrAppSpec, errors: &mut Vec<String>) 
     for user in &sc.users {
         if !is_valid_ssh_username(&user.name) {
             errors.push(format!(
-                "appConfig.sshBastion.users[].name '{}' must match ^[a-z_][a-z0-9_-]{{0,31}}$",
+                "appConfig.sshBastion.users[].name {:?} must match ^[a-z_][a-z0-9_-]{{0,31}}$",
                 user.name
             ));
         }
@@ -621,7 +621,7 @@ fn validate_ssh_bastion_inputs(spec: &ServarrAppSpec, errors: &mut Vec<String>) 
             for path in &rr.allowed_paths {
                 if !is_valid_allowed_path(path) {
                     errors.push(format!(
-                        "appConfig.sshBastion.users[].restrictedRsync.allowedPaths '{}' must be \
+                        "appConfig.sshBastion.users[].restrictedRsync.allowedPaths {:?} must be \
                          an absolute path containing no shell metacharacters",
                         path
                     ));
@@ -639,11 +639,8 @@ fn is_valid_ssh_username(name: &str) -> bool {
     if !matches!(first, 'a'..='z' | '_') {
         return false;
     }
-    let rest: Vec<char> = chars.collect();
-    rest.len() <= 31
-        && rest
-            .iter()
-            .all(|c| matches!(c, 'a'..='z' | '0'..='9' | '_' | '-'))
+    // All valid chars are ASCII, so byte length == char count.
+    name.len() <= 32 && chars.all(|c| matches!(c, 'a'..='z' | '0'..='9' | '_' | '-'))
 }
 
 fn is_valid_allowed_path(path: &str) -> bool {

@@ -135,6 +135,9 @@ for arg in "${{ARGS[@]:1}}"; do
         log_reject "Flag not permitted: $arg"
       fi
       ;;
+    *)
+      log_reject "Argument not allowed before path separator: $arg"
+      ;;
   esac
 done
 
