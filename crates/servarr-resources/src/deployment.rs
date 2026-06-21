@@ -18,10 +18,11 @@ use crate::common;
 pub fn config_checksum(app: &ServarrApp) -> Option<String> {
     use sha2::{Digest, Sha256};
 
-    // Collect all ConfigMaps that should trigger a rollout
     let config_maps = [
         crate::configmap::build(app),
         crate::configmap::build_prowlarr_definitions(app),
+        // ponytail: sub_path mounts are not auto-updated by kubelet; restart required
+        crate::configmap::build_ssh_bastion_restricted_rsync(app),
     ];
 
     let mut hasher = Sha256::new();
@@ -37,6 +38,20 @@ pub fn config_checksum(app: &ServarrApp) -> Option<String> {
             }
             has_data = true;
         }
+    }
+
+    // authorized-keys is copied by an init container at startup; key rotation
+    // requires a pod restart to take effect.
+    if let Some(secret) = crate::secret::build_authorized_keys(app)
+        && let Some(data) = secret.string_data.as_ref()
+    {
+        let mut keys: Vec<_> = data.keys().collect();
+        keys.sort();
+        for key in keys {
+            hasher.update(key.as_bytes());
+            hasher.update(data[key].as_bytes());
+        }
+        has_data = true;
     }
 
     has_data.then(|| hex::encode(hasher.finalize()))
