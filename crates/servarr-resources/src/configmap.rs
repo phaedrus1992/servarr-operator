@@ -66,7 +66,8 @@ else
 fi
 
 log_reject() {{
-  logger -t restricted-rsync -p auth.warning "REJECTED: user=$USER reason=$1" || true
+  logger -t restricted-rsync -p auth.warning "REJECTED: user=$USER reason=$1" \
+    || echo "REJECTED: user=$USER reason=$1" >&2
   echo "Error: $1" >&2
   exit 1
 }}
@@ -190,7 +191,8 @@ for rsync_path in "${{RSYNC_PATHS[@]}}"; do
 done
 
 # Log successful access
-logger -t restricted-rsync -p auth.info "ALLOWED: user=$USER paths=${{RSYNC_PATHS[*]}}" || true
+logger -t restricted-rsync -p auth.info "ALLOWED: user=$USER paths=${{RSYNC_PATHS[*]}}" \
+  || echo "ALLOWED: user=$USER paths=${{RSYNC_PATHS[*]}}" >&2
 
 # Execute rsync with the validated, expanded arguments.
 exec "${{ARGS[@]}}"

@@ -91,6 +91,12 @@ struct RunResult {
 /// Write the script to `workdir`, stub out `rsync`/`logger` on PATH, and run the
 /// wrapper as a login shell: `bash wrapper.sh -c "<cmd>"`.
 fn run_wrapper(workdir: &Path, script: &str, cmd: &str) -> RunResult {
+    run_wrapper_impl(workdir, script, cmd, "#!/bin/bash\nexit 0\n")
+}
+
+/// Like `run_wrapper` but lets the caller choose the logger stub body.
+/// Pass `"#!/bin/bash\nexit 1\n"` to simulate syslog unavailability.
+fn run_wrapper_impl(workdir: &Path, script: &str, cmd: &str, logger_stub: &str) -> RunResult {
     let script_path = workdir.join("wrapper.sh");
     fs::write(&script_path, script).expect("write wrapper");
 
@@ -101,8 +107,7 @@ fn run_wrapper(workdir: &Path, script: &str, cmd: &str) -> RunResult {
         &bin.join("rsync"),
         "#!/bin/bash\nfor a in \"$@\"; do printf 'ARG:%s\\n' \"$a\"; done\n",
     );
-    // Stub logger so the script's syslog calls don't fail under `set -e`.
-    write_exec(&bin.join("logger"), "#!/bin/bash\nexit 0\n");
+    write_exec(&bin.join("logger"), logger_stub);
 
     let out = Command::new("bash")
         .arg(&script_path)
@@ -325,6 +330,46 @@ fn non_flag_arg_before_dot_separator_is_rejected() {
     assert_ne!(
         res.status, 0,
         "bare word before path separator must be rejected; stderr: {}",
+        res.stderr
+    );
+}
+
+#[test]
+fn logger_failure_falls_back_to_stderr_on_reject() {
+    let (_tmp, wd) = fresh_dir("logger-rej");
+    let tv = make_dir(&wd, "tv");
+    let script = gen_script(SshMode::RestrictedRsync, vec![tv.display().to_string()]);
+    // Simulate syslog unavailable — logger exits 1.
+    let cmd = format!("rsync --server . {}", tv.display()); // write without --sender → rejected
+    let res = run_wrapper_impl(&wd, &script, &cmd, "#!/bin/bash\nexit 1\n");
+    assert_ne!(
+        res.status, 0,
+        "write must be rejected; stderr: {}",
+        res.stderr
+    );
+    assert!(
+        res.stderr.contains("REJECTED"),
+        "rejection must appear in stderr when logger fails, got: {:?}",
+        res.stderr
+    );
+}
+
+#[test]
+fn logger_failure_falls_back_to_stderr_on_allow() {
+    let (_tmp, wd) = fresh_dir("logger-allow");
+    let tv = make_dir(&wd, "tv");
+    let script = gen_script(SshMode::RestrictedRsync, vec![tv.display().to_string()]);
+    // Simulate syslog unavailable — logger exits 1.
+    let cmd = format!("rsync --server --sender . {}", tv.display());
+    let res = run_wrapper_impl(&wd, &script, &cmd, "#!/bin/bash\nexit 1\n");
+    assert_eq!(
+        res.status, 0,
+        "allowed read must succeed; stderr: {}",
+        res.stderr
+    );
+    assert!(
+        res.stderr.contains("ALLOWED"),
+        "ALLOWED audit event must appear in stderr when logger fails, got: {:?}",
         res.stderr
     );
 }
