@@ -66,7 +66,7 @@ else
 fi
 
 log_reject() {{
-  logger -t restricted-rsync -p auth.warning "REJECTED: user=$USER reason=$1"
+  logger -t restricted-rsync -p auth.warning "REJECTED: user=$USER reason=$1" || true
   echo "Error: $1" >&2
   exit 1
 }}
@@ -85,15 +85,17 @@ fi
 # redirect, or chain commands. What survives can only be words, quotes, backslash
 # escapes, and glob characters (* ? [ ]) -- so eval performs word-splitting and
 # pathname expansion but cannot execute anything other than the rsync call validated
-# below. Filenames containing these metacharacters are intentionally unsupported.
+# below. Brace expansion ({{}}) and tilde (~) are rejected too, so a single request
+# cannot fan out into a huge argument list. Filenames containing any of these
+# metacharacters are intentionally unsupported.
 case "$CMD_STRING" in
-  *[\$\;\&\|\<\>\(\)\`]* | *$'\n'*)
+  *[\$\;\&\|\<\>\(\)\{{\}}~\`]* | *$'\n'*)
     log_reject "Command contains forbidden shell metacharacters"
     ;;
 esac
 
 declare -a ARGS
-eval "set -- $CMD_STRING" 2>/dev/null || log_reject "Could not parse command"
+eval "set -- $CMD_STRING" || log_reject "Could not parse command"
 ARGS=("$@")
 
 # Must have at least the command name
@@ -147,7 +149,7 @@ for rsync_path in "${{RSYNC_PATHS[@]}}"; do
   if [[ "${{#ALLOWED_PATHS[@]}}" -gt 0 ]]; then
     # Normalize path: resolve to absolute and remove trailing slashes
     if [[ -e "$rsync_path" ]]; then
-      resolved_path=$(realpath "$rsync_path")
+      resolved_path=$(realpath "$rsync_path") || log_reject "Could not resolve path: $rsync_path"
     else
       resolved_path="${{rsync_path%/}}"
     fi
@@ -168,7 +170,7 @@ for rsync_path in "${{RSYNC_PATHS[@]}}"; do
 done
 
 # Log successful access
-logger -t restricted-rsync -p auth.info "ALLOWED: user=$USER paths=${{RSYNC_PATHS[*]}}"
+logger -t restricted-rsync -p auth.info "ALLOWED: user=$USER paths=${{RSYNC_PATHS[*]}}" || true
 
 # Execute rsync with the validated, expanded arguments.
 exec "${{ARGS[@]}}"
