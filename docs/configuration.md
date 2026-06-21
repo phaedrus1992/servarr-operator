@@ -633,6 +633,11 @@ Valid `mode` values: `shell`, `sftp`, `scp`, `rsync`, `restricted-rsync`. The
 `restrictedRsync.allowedPaths` list restricts a `restricted-rsync` user to
 read-only transfers from the listed paths.
 
+Source paths may contain spaces and shell globs (e.g. `host:/mnt/media/Show Name/`
+or `host:/mnt/media/Season *`), matching a normal `rsync`-over-ssh session. Paths
+containing other shell metacharacters (`$ ; & | < > ( ) { } ~` backtick) are
+rejected, so filenames using those characters are not supported over rsync mode.
+
 ```yaml
 spec:
   app: SshBastion
