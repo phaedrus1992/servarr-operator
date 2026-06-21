@@ -33,9 +33,14 @@ fn test_deployment_builder_sonarr() {
 
     let container = &pod_spec.containers[0];
     assert_eq!(container.name, "sonarr");
+    let sonarr_defaults = AppDefaults::for_app(&AppType::Sonarr).expect("sonarr defaults");
+    let expected_sonarr_image = format!(
+        "{}:{}",
+        sonarr_defaults.image.repository, sonarr_defaults.image.tag
+    );
     assert_eq!(
         container.image.as_deref(),
-        Some("linuxserver/sonarr:4.0.16")
+        Some(expected_sonarr_image.as_str())
     );
 
     // Check PUID/PGID env vars for LinuxServer
@@ -609,7 +614,14 @@ fn test_image_repository_only_inherits_default_tag() {
 
     let deploy = servarr_resources::deployment::build(&app, &std::collections::HashMap::new());
     let container = &deploy.spec.unwrap().template.spec.unwrap().containers[0];
-    assert_eq!(container.image.as_deref(), Some("mirror/sonarr:4.0.16"));
+    let sonarr_tag = AppDefaults::for_app(&AppType::Sonarr)
+        .expect("sonarr defaults")
+        .image
+        .tag;
+    assert_eq!(
+        container.image.as_deref(),
+        Some(format!("mirror/sonarr:{sonarr_tag}").as_str())
+    );
 }
 
 #[test]
