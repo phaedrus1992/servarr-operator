@@ -298,6 +298,23 @@ fn nonexistent_path_outside_allowlist_is_rejected() {
 }
 
 #[test]
+fn disallowed_flag_log_file_is_rejected() {
+    let (_tmp, wd) = fresh_dir("flaglist");
+    let tv = make_dir(&wd, "tv");
+    let script = gen_script(SshMode::RestrictedRsync, vec![tv.display().to_string()]);
+    let cmd = format!(
+        "rsync --server --sender --log-file=/tmp/x . {}",
+        tv.display()
+    );
+    let res = run_wrapper(&wd, &script, &cmd);
+    assert_ne!(
+        res.status, 0,
+        "--log-file must be rejected by flag allowlist; stderr: {}",
+        res.stderr
+    );
+}
+
+#[test]
 fn rsync_mode_allows_any_path_and_parses_spaces() {
     let (_tmp, wd) = fresh_dir("anymode");
     make_dir(&wd, "Some Show");
