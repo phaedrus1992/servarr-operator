@@ -14,7 +14,7 @@
 
 [sonarr]
 repository = "linuxserver/sonarr"
-tag = "4.0.16"
+tag = "4.0.17"
 port = 8989
 security = "linuxserver"
 downloads = true
@@ -35,7 +35,7 @@ downloads = true
 
 [prowlarr]
 repository = "linuxserver/prowlarr"
-tag = "2.3.0"
+tag = "2.3.5"
 port = 9696
 security = "linuxserver"
 downloads = false
@@ -49,7 +49,7 @@ downloads = true
 
 [transmission]
 repository = "linuxserver/transmission"
-tag = "4.1.0"
+tag = "4.1.1"
 port = 9091
 security = "linuxserver"
 downloads = true
@@ -78,7 +78,7 @@ downloads = false
 
 [jackett]
 repository = "linuxserver/jackett"
-tag = "0.24.1554"
+tag = "0.24.2057"
 port = 9117
 security = "linuxserver"
 downloads = false
@@ -102,14 +102,14 @@ probe_path = "/status"
 
 [jellyfin]
 repository = "linuxserver/jellyfin"
-tag = "10.11.7"
+tag = "10.11.10"
 port = 8096
 security = "linuxserver"
 downloads = false
 
 [plex]
 repository = "linuxserver/plex"
-tag = "1.43.0"
+tag = "1.43.1"
 port = 32400
 security = "linuxserver"
 downloads = false
