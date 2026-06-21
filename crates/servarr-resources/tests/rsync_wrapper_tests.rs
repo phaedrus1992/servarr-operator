@@ -15,9 +15,10 @@ use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 use servarr_crds::*;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
+use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::{SystemTime, UNIX_EPOCH};
+use tempfile::TempDir;
 
 /// Generate the wrapper script for a single user with the given mode + allowed paths.
 fn gen_script(mode: SshMode, allowed_paths: Vec<String>) -> String {
@@ -56,22 +57,29 @@ fn gen_script(mode: SshMode, allowed_paths: Vec<String>) -> String {
         .expect("script key must exist")
 }
 
-/// Create a fresh, canonicalized temp directory unique to this test run.
-fn fresh_dir(tag: &str) -> PathBuf {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let dir = std::env::temp_dir().join(format!("rsync-wrap-{tag}-{}-{nanos}", std::process::id()));
-    fs::create_dir_all(&dir).unwrap();
-    // Canonicalize so the allowlist (literal) and realpath() in the script agree
-    // even if temp_dir() contains a symlink component.
-    fs::canonicalize(&dir).unwrap()
+/// Create a fresh temp directory unique to this test. The returned `TempDir` guard
+/// removes it on drop (including on panic); the `PathBuf` is its canonicalized path,
+/// so the allowlist (literal) and the script's `realpath` agree even if the system
+/// temp dir contains a symlink component (e.g. macOS `/tmp` -> `/private/tmp`).
+fn fresh_dir(tag: &str) -> (TempDir, PathBuf) {
+    let dir = tempfile::Builder::new()
+        .prefix(&format!("rsync-wrap-{tag}-"))
+        .tempdir()
+        .expect("create temp dir");
+    let canonical = fs::canonicalize(dir.path()).expect("canonicalize temp dir");
+    (dir, canonical)
+}
+
+/// Create `parent/name` and return its path.
+fn make_dir(parent: &Path, name: &str) -> PathBuf {
+    let p = parent.join(name);
+    fs::create_dir_all(&p).expect("create dir");
+    p
 }
 
 fn write_exec(path: &Path, body: &str) {
-    fs::write(path, body).unwrap();
-    fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+    fs::write(path, body).expect("write stub");
+    fs::set_permissions(path, fs::Permissions::from_mode(0o755)).expect("chmod stub");
 }
 
 struct RunResult {
@@ -84,10 +92,10 @@ struct RunResult {
 /// wrapper as a login shell: `bash wrapper.sh -c "<cmd>"`.
 fn run_wrapper(workdir: &Path, script: &str, cmd: &str) -> RunResult {
     let script_path = workdir.join("wrapper.sh");
-    fs::write(&script_path, script).unwrap();
+    fs::write(&script_path, script).expect("write wrapper");
 
     let bin = workdir.join("bin");
-    fs::create_dir_all(&bin).unwrap();
+    fs::create_dir_all(&bin).expect("create bin dir");
     // Stub rsync echoes each received argument so tests can assert on exact parsing.
     write_exec(
         &bin.join("rsync"),
@@ -104,10 +112,19 @@ fn run_wrapper(workdir: &Path, script: &str, cmd: &str) -> RunResult {
         .env_remove("SSH_ORIGINAL_COMMAND")
         .current_dir(workdir)
         .output()
-        .expect("failed to run bash");
+        .unwrap_or_else(|e| panic!("failed to run bash {}: {e}", script_path.display()));
+
+    // A signal kill yields no exit code; treating that as a normal failure would make
+    // the `assert_ne!(status, 0)` rejection tests pass vacuously, so fail loudly.
+    if let Some(sig) = out.status.signal() {
+        panic!(
+            "bash killed by signal {sig}; stderr:\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
 
     RunResult {
-        status: out.status.code().unwrap_or(-1),
+        status: out.status.code().expect("exit code present (no signal)"),
         stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
         stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
     }
@@ -115,10 +132,9 @@ fn run_wrapper(workdir: &Path, script: &str, cmd: &str) -> RunResult {
 
 #[test]
 fn path_with_spaces_is_passed_to_rsync_intact() {
-    let wd = fresh_dir("space");
-    let tv = wd.join("tv");
-    let show = tv.join("Taskmaster AU");
-    fs::create_dir_all(&show).unwrap();
+    let (_tmp, wd) = fresh_dir("space");
+    let tv = make_dir(&wd, "tv");
+    make_dir(&tv, "Taskmaster AU");
 
     let script = gen_script(SshMode::RestrictedRsync, vec![tv.display().to_string()]);
     // rsync escapes the embedded space with a backslash in the remote command.
@@ -143,10 +159,10 @@ fn path_with_spaces_is_passed_to_rsync_intact() {
 
 #[test]
 fn glob_is_expanded_before_reaching_rsync() {
-    let wd = fresh_dir("glob");
-    let tv = wd.join("tv");
-    fs::create_dir_all(tv.join("TaskA")).unwrap();
-    fs::create_dir_all(tv.join("TaskB")).unwrap();
+    let (_tmp, wd) = fresh_dir("glob");
+    let tv = make_dir(&wd, "tv");
+    make_dir(&tv, "TaskA");
+    make_dir(&tv, "TaskB");
 
     let script = gen_script(SshMode::RestrictedRsync, vec![tv.display().to_string()]);
     let cmd = format!("rsync --server --sender -e.x . {}/Task*", tv.display());
@@ -171,9 +187,8 @@ fn glob_is_expanded_before_reaching_rsync() {
 
 #[test]
 fn command_chaining_is_rejected() {
-    let wd = fresh_dir("inject-chain");
-    let tv = wd.join("tv");
-    fs::create_dir_all(&tv).unwrap();
+    let (_tmp, wd) = fresh_dir("inject-chain");
+    let tv = make_dir(&wd, "tv");
     let pwned = wd.join("pwned");
 
     let script = gen_script(SshMode::RestrictedRsync, vec![tv.display().to_string()]);
@@ -190,10 +205,9 @@ fn command_chaining_is_rejected() {
 
 #[test]
 fn command_substitution_is_rejected() {
-    let wd = fresh_dir("inject-subst");
-    let tv = wd.join("tv");
-    fs::create_dir_all(&tv).unwrap();
-    let pwned = wd.join("pwned2");
+    let (_tmp, wd) = fresh_dir("inject-subst");
+    let tv = make_dir(&wd, "tv");
+    let pwned = wd.join("pwned");
 
     let script = gen_script(SshMode::RestrictedRsync, vec![tv.display().to_string()]);
     let cmd = format!(
@@ -211,8 +225,27 @@ fn command_substitution_is_rejected() {
 }
 
 #[test]
+fn brace_and_tilde_metacharacters_are_rejected() {
+    let (_tmp, wd) = fresh_dir("metachar");
+    let tv = make_dir(&wd, "tv");
+    let script = gen_script(SshMode::RestrictedRsync, vec![tv.display().to_string()]);
+
+    // Brace expansion could fan a single request into a huge argument list.
+    let brace = format!("rsync --server --sender . {}/{{a,b,c}}", tv.display());
+    assert_ne!(
+        run_wrapper(&wd, &script, &brace).status,
+        0,
+        "brace expansion must be rejected"
+    );
+
+    // Tilde expansion could resolve outside the intended tree.
+    let res = run_wrapper(&wd, &script, "rsync --server --sender . ~root/x");
+    assert_ne!(res.status, 0, "tilde expansion must be rejected");
+}
+
+#[test]
 fn non_rsync_command_is_rejected() {
-    let wd = fresh_dir("non-rsync");
+    let (_tmp, wd) = fresh_dir("non-rsync");
     let script = gen_script(SshMode::RestrictedRsync, vec![wd.display().to_string()]);
     let res = run_wrapper(&wd, &script, "cat /etc/passwd");
     assert_ne!(res.status, 0, "non-rsync command must be rejected");
@@ -220,9 +253,8 @@ fn non_rsync_command_is_rejected() {
 
 #[test]
 fn write_without_sender_is_rejected() {
-    let wd = fresh_dir("write");
-    let tv = wd.join("tv");
-    fs::create_dir_all(&tv).unwrap();
+    let (_tmp, wd) = fresh_dir("write");
+    let tv = make_dir(&wd, "tv");
     let script = gen_script(SshMode::RestrictedRsync, vec![tv.display().to_string()]);
     let cmd = format!("rsync --server . {}/", tv.display());
     let res = run_wrapper(&wd, &script, &cmd);
@@ -231,9 +263,8 @@ fn write_without_sender_is_rejected() {
 
 #[test]
 fn path_traversal_is_rejected() {
-    let wd = fresh_dir("traversal");
-    let tv = wd.join("tv");
-    fs::create_dir_all(&tv).unwrap();
+    let (_tmp, wd) = fresh_dir("traversal");
+    let tv = make_dir(&wd, "tv");
     let script = gen_script(SshMode::RestrictedRsync, vec![tv.display().to_string()]);
     let cmd = format!("rsync --server --sender . {}/../etc", tv.display());
     let res = run_wrapper(&wd, &script, &cmd);
@@ -242,11 +273,9 @@ fn path_traversal_is_rejected() {
 
 #[test]
 fn path_outside_allowlist_is_rejected() {
-    let wd = fresh_dir("outside");
-    let tv = wd.join("tv");
-    let secret = wd.join("secret");
-    fs::create_dir_all(&tv).unwrap();
-    fs::create_dir_all(&secret).unwrap();
+    let (_tmp, wd) = fresh_dir("outside");
+    let tv = make_dir(&wd, "tv");
+    let secret = make_dir(&wd, "secret");
     let script = gen_script(SshMode::RestrictedRsync, vec![tv.display().to_string()]);
     let cmd = format!("rsync --server --sender . {}", secret.display());
     let res = run_wrapper(&wd, &script, &cmd);
@@ -254,10 +283,24 @@ fn path_outside_allowlist_is_rejected() {
 }
 
 #[test]
+fn nonexistent_path_outside_allowlist_is_rejected() {
+    let (_tmp, wd) = fresh_dir("nonexist");
+    let tv = make_dir(&wd, "tv");
+    let script = gen_script(SshMode::RestrictedRsync, vec![tv.display().to_string()]);
+    // Path does not exist on the server and is outside the allowlist; exercises the
+    // `else` branch where realpath is skipped and the literal path is checked.
+    let cmd = format!("rsync --server --sender . {}/elsewhere/show", wd.display());
+    let res = run_wrapper(&wd, &script, &cmd);
+    assert_ne!(
+        res.status, 0,
+        "non-existent path outside allowlist must be rejected"
+    );
+}
+
+#[test]
 fn rsync_mode_allows_any_path_and_parses_spaces() {
-    let wd = fresh_dir("anymode");
-    let show = wd.join("Some Show");
-    fs::create_dir_all(&show).unwrap();
+    let (_tmp, wd) = fresh_dir("anymode");
+    make_dir(&wd, "Some Show");
 
     // Empty allowlist => SshMode::Rsync: any path permitted, but parsing still applies.
     let script = gen_script(SshMode::Rsync, vec![]);
