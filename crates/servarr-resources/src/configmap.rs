@@ -66,7 +66,7 @@ else
 fi
 
 log_reject() {{
-  logger -t restricted-rsync -p auth.warning "REJECTED: user=$USER reason=$1"
+  logger -t restricted-rsync -p auth.warning "REJECTED: user=$USER reason=$1" || true
   echo "Error: $1" >&2
   exit 1
 }}
@@ -76,11 +76,27 @@ if [[ -z "$CMD_STRING" ]]; then
   log_reject "Interactive sessions not allowed"
 fi
 
-# Parse command string into array safely (no eval)
-# rsync --server always produces simple space-separated arguments without
-# shell metacharacters, so read -ra is safe and avoids code injection.
+# Parse the command string the way a login shell would, so that paths containing
+# spaces and shell globs (e.g. "/media/Show Name/" or "/media/Season *") behave the
+# same as an unrestricted rsync-over-ssh session.
+#
+# The user controls this command string, so guard against injection BEFORE eval:
+# reject any shell metacharacter that could run another command, substitute output,
+# redirect, or chain commands. What survives can only be words, quotes, backslash
+# escapes, and glob characters (* ? [ ]) -- so eval performs word-splitting and
+# pathname expansion but cannot execute anything other than the rsync call validated
+# below. Brace expansion ({{}}) and tilde (~) are rejected too, so a single request
+# cannot fan out into a huge argument list. Filenames containing any of these
+# metacharacters are intentionally unsupported.
+case "$CMD_STRING" in
+  *[\$\;\&\|\<\>\(\)\{{\}}~\`]* | *$'\n'*)
+    log_reject "Command contains forbidden shell metacharacters"
+    ;;
+esac
+
 declare -a ARGS
-read -ra ARGS <<< "$CMD_STRING"
+eval "set -- $CMD_STRING" || log_reject "Could not parse command"
+ARGS=("$@")
 
 # Must have at least the command name
 if [[ ${{#ARGS[@]}} -lt 1 ]]; then
@@ -105,57 +121,58 @@ if [[ "$has_sender" != "true" ]]; then
   log_reject "Write operations not allowed (read-only mode)"
 fi
 
-# Find the path argument
-# rsync server format: rsync --server [options] . <path>
-# The path is the last argument, after a "." argument
-RSYNC_PATH=""
+# Collect every path argument. rsync server format: rsync --server [opts] . <path>...
+# Everything after the standalone "." is a source path; a glob may have expanded to
+# several. Validate each path independently.
+declare -a RSYNC_PATHS=()
 found_dot=false
 for arg in "${{ARGS[@]}}"; do
   if [[ "$found_dot" == "true" ]]; then
-    RSYNC_PATH="$arg"
-  fi
-  if [[ "$arg" == "." ]]; then
+    RSYNC_PATHS+=("$arg")
+  elif [[ "$arg" == "." ]]; then
     found_dot=true
   fi
 done
 
-if [[ -z "$RSYNC_PATH" ]]; then
+if [[ "${{#RSYNC_PATHS[@]}}" -eq 0 ]]; then
   log_reject "Could not parse rsync path"
 fi
 
-# Check for path traversal attempts
-if [[ "$RSYNC_PATH" == *".."* ]]; then
-  log_reject "Path traversal not allowed"
-fi
-
-# If no allowed paths are configured, any path is permitted (Rsync mode).
-# If allowed paths are configured, enforce the path allowlist (RestrictedRsync mode).
-if [[ "${{#ALLOWED_PATHS[@]}}" -gt 0 ]]; then
-  # Normalize path: resolve to absolute and remove trailing slashes
-  if [[ -e "$RSYNC_PATH" ]]; then
-    RESOLVED_PATH=$(realpath "$RSYNC_PATH")
-  else
-    RESOLVED_PATH="${{RSYNC_PATH%/}}"
+for rsync_path in "${{RSYNC_PATHS[@]}}"; do
+  # Check for path traversal attempts
+  if [[ "$rsync_path" == *".."* ]]; then
+    log_reject "Path traversal not allowed"
   fi
 
-  path_allowed=false
-  for allowed in "${{ALLOWED_PATHS[@]}}"; do
-    allowed="${{allowed%/}}"
-    if [[ "$RESOLVED_PATH" == "$allowed" || "$RESOLVED_PATH" == "$allowed"/* ]]; then
-      path_allowed=true
-      break
+  # If no allowed paths are configured, any path is permitted (Rsync mode).
+  # If allowed paths are configured, enforce the path allowlist (RestrictedRsync mode).
+  if [[ "${{#ALLOWED_PATHS[@]}}" -gt 0 ]]; then
+    # Normalize path: resolve to absolute and remove trailing slashes
+    if [[ -e "$rsync_path" ]]; then
+      resolved_path=$(realpath "$rsync_path") || log_reject "Could not resolve path: $rsync_path"
+    else
+      resolved_path="${{rsync_path%/}}"
     fi
-  done
 
-  if [[ "$path_allowed" != "true" ]]; then
-    log_reject "Path not in allowed list: $RSYNC_PATH"
+    path_allowed=false
+    for allowed in "${{ALLOWED_PATHS[@]}}"; do
+      allowed="${{allowed%/}}"
+      if [[ "$resolved_path" == "$allowed" || "$resolved_path" == "$allowed"/* ]]; then
+        path_allowed=true
+        break
+      fi
+    done
+
+    if [[ "$path_allowed" != "true" ]]; then
+      log_reject "Path not in allowed list: $rsync_path"
+    fi
   fi
-fi
+done
 
 # Log successful access
-logger -t restricted-rsync -p auth.info "ALLOWED: user=$USER path=$RSYNC_PATH"
+logger -t restricted-rsync -p auth.info "ALLOWED: user=$USER paths=${{RSYNC_PATHS[*]}}" || true
 
-# Execute rsync with properly quoted arguments
+# Execute rsync with the validated, expanded arguments.
 exec "${{ARGS[@]}}"
 "#
         );
