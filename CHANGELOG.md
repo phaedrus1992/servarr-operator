@@ -17,6 +17,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Fix container image tags and Helm chart `appVersion` carrying a `v` prefix. They now use
   bare semver (`1.0.2`, not `v1.0.2`) so source charts, deployed `appVersion`, and image tags
   all agree.
+- Fix SSH bastion restricted-rsync rejecting paths with spaces and not expanding globs. The
+  wrapper kept only the last whitespace-separated token of the source path (so
+  `/media/Show Name/` became `Name/` and was rejected) and passed globs to `rsync` unexpanded.
+  It now parses the command like a login shell — rejecting injection-prone metacharacters,
+  then word-splitting and glob-expanding — and validates every source path against the
+  allowlist.
 
 ## [1.0.1] - 2026-06-18
 
