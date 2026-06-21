@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased] - ReleaseDate
 
+## [1.0.2] - 2026-06-21
+
 ### Fixed
 
 - Fix SSH bastion `authorized_keys` containing broken symlinks. The `copy-authorized-keys`
@@ -123,6 +125,7 @@ lifecycle: deployment, storage, networking, backups, and cross-app integration.
   on each `v*` tag.
 
 <!-- next-url -->
-[Unreleased]: https://github.com/phaedrus1992/servarr-operator/compare/v1.0.1...HEAD
+[Unreleased]: https://github.com/phaedrus1992/servarr-operator/compare/v1.0.2...HEAD
+[1.0.2]: https://github.com/phaedrus1992/servarr-operator/compare/v1.0.1...v1.0.2
 [1.0.1]: https://github.com/phaedrus1992/servarr-operator/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/phaedrus1992/servarr-operator/compare/50a4a1eb98121d552a37ba8dcf6f38043478d8d5...v1.0.0
