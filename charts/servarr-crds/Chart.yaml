@@ -2,5 +2,5 @@ apiVersion: v2
 name: servarr-crds
 description: CRDs and webhook configuration for the Servarr Operator
 type: application
-version: 1.0.2
-appVersion: "1.0.2"
+version: 1.0.3
+appVersion: "1.0.3"
