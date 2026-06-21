@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased] - ReleaseDate
 
+## [1.0.3] - 2026-06-21
+
+### Fixed
+
+- Fix SSH bastion pod not restarting when `authorized-keys` Secret or `restricted-rsync`
+  ConfigMap changes. The `config_checksum` pod-annotation hash previously covered only the
+  main app ConfigMap and Prowlarr definitions; it now also hashes the `authorized-keys`
+  Secret string data and the `restricted-rsync` ConfigMap so rotating SSH keys or updating
+  the wrapper script triggers a rolling restart automatically.
+- Fix SSH bastion `restricted-rsync` wrapper rejecting real rsync server-mode combined
+  flags (e.g. `-vlogDtprze.iLsfxCIvu`). The flag allowlist regex `[^vzrltpgo]` was too
+  narrow for the combined short flags rsync uses in practice. The allowlist is removed;
+  `--sender` already enforces read-only at the protocol level, matching `rrsync`'s approach.
+
+## [1.0.2] - 2026-06-21
+
 ### Fixed
 
 - Fix SSH bastion `authorized_keys` containing broken symlinks. The `copy-authorized-keys`
@@ -17,6 +33,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Fix container image tags and Helm chart `appVersion` carrying a `v` prefix. They now use
   bare semver (`1.0.2`, not `v1.0.2`) so source charts, deployed `appVersion`, and image tags
   all agree.
+- Fix SSH bastion restricted-rsync wrapper dropping audit log entries silently when syslog
+  is unavailable in the container. Rejected and allowed rsync events now fall back to stderr
+  so they appear in `kubectl logs` even without a syslog socket.
+- Fix SSH bastion admission webhook accepting `user.shell` values that are non-absolute or
+  contain colons or shell metacharacters. A colon would corrupt the colon-delimited
+  `SSH_USERS` env var format; the webhook now rejects such values at admission time.
+- Fix SSH bastion admission webhook accepting user names and `allowedPaths` values
+  containing shell metacharacters. User names are now validated against
+  `^[a-z_][a-z0-9_-]{0,31}$`; allowed paths must be absolute and must not contain
+  `"`, `\`, `$`, backtick, or whitespace. Invalid values are rejected at admission
+  time with a descriptive error.
+- Fix restricted-rsync wrapper permitting arbitrary rsync flags such as `--log-file`.
+  Only a known-safe flag set (`--server`, `--sender`, `--numeric-ids`, `--timeout`,
+  `-e*`, and short flags `vzrltpgo`) is now allowed; unrecognized flags and bare-word
+  arguments before the path separator are rejected.
+- Fix SSH bastion restricted-rsync rejecting paths with spaces and not expanding globs. The
+  wrapper kept only the last whitespace-separated token of the source path (so
+  `/media/Show Name/` became `Name/` and was rejected) and passed globs to `rsync` unexpanded.
+  It now parses the command like a login shell — rejecting injection-prone metacharacters,
+  then word-splitting and glob-expanding — and validates every source path against the
+  allowlist.
 
 ## [1.0.1] - 2026-06-18
 
@@ -102,6 +139,8 @@ lifecycle: deployment, storage, networking, backups, and cross-app integration.
   on each `v*` tag.
 
 <!-- next-url -->
-[Unreleased]: https://github.com/phaedrus1992/servarr-operator/compare/v1.0.1...HEAD
+[Unreleased]: https://github.com/phaedrus1992/servarr-operator/compare/v1.0.3...HEAD
+[1.0.3]: https://github.com/phaedrus1992/servarr-operator/compare/v1.0.2...v1.0.3
+[1.0.2]: https://github.com/phaedrus1992/servarr-operator/compare/v1.0.1...v1.0.2
 [1.0.1]: https://github.com/phaedrus1992/servarr-operator/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/phaedrus1992/servarr-operator/compare/50a4a1eb98121d552a37ba8dcf6f38043478d8d5...v1.0.0

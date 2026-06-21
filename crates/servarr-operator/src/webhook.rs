@@ -266,6 +266,9 @@ async fn validate_spec(
     // Rule 13: SshBastion security context must not break init container
     validate_ssh_security_context(&parsed, &mut errors);
 
+    // Rule 14: SSH bastion user names and allowed paths must be safe for shell interpolation
+    validate_ssh_bastion_inputs(&parsed, &mut errors);
+
     if errors.is_empty() {
         Ok(())
     } else {
@@ -601,6 +604,67 @@ fn validate_ssh_security_context(spec: &ServarrAppSpec, errors: &mut Vec<String>
             }
         }
     }
+}
+
+fn validate_ssh_bastion_inputs(spec: &ServarrAppSpec, errors: &mut Vec<String>) {
+    let Some(AppConfig::SshBastion(ref sc)) = spec.app_config else {
+        return;
+    };
+    for user in &sc.users {
+        if !is_valid_ssh_username(&user.name) {
+            errors.push(format!(
+                "appConfig.sshBastion.users[].name {:?} must match ^[a-z_][a-z0-9_-]{{0,31}}$",
+                user.name
+            ));
+        }
+        if let Some(ref rr) = user.restricted_rsync {
+            for path in &rr.allowed_paths {
+                if !is_valid_allowed_path(path) {
+                    errors.push(format!(
+                        "appConfig.sshBastion.users[].restrictedRsync.allowedPaths {:?} must be \
+                         an absolute path containing no shell metacharacters",
+                        path
+                    ));
+                }
+            }
+        }
+        if let Some(ref shell) = user.shell
+            && !is_valid_shell_path(shell)
+        {
+            errors.push(format!(
+                "appConfig.sshBastion.users[].shell {:?} must be an absolute path \
+                 containing no colons or shell metacharacters",
+                shell
+            ));
+        }
+    }
+}
+
+fn is_valid_ssh_username(name: &str) -> bool {
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if !matches!(first, 'a'..='z' | '_') {
+        return false;
+    }
+    // All valid chars are ASCII, so byte length == char count.
+    name.len() <= 32 && chars.all(|c| matches!(c, 'a'..='z' | '0'..='9' | '_' | '-'))
+}
+
+fn is_valid_allowed_path(path: &str) -> bool {
+    path.starts_with('/')
+        && !path
+            .chars()
+            .any(|c| matches!(c, '"' | '\\' | '$' | '`') || c.is_whitespace())
+}
+
+fn is_valid_shell_path(shell: &str) -> bool {
+    // Colon is also forbidden: shell is embedded in a colon-delimited passwd-format record.
+    shell.starts_with('/')
+        && !shell
+            .chars()
+            .any(|c| matches!(c, ':' | '"' | '\\' | '$' | '`') || c.is_whitespace())
 }
 
 /// Parse CPU quantity to millicores for comparison.
@@ -1647,5 +1711,176 @@ mod tests {
         validate_backup_schedule(&spec, &mut errors);
         assert_eq!(errors.len(), 1);
         assert!(errors[0].contains("valid cron"));
+    }
+
+    // ── validate_ssh_bastion_inputs ──
+
+    fn ssh_bastion_spec_with_user(name: &str, allowed_paths: Vec<String>) -> ServarrAppSpec {
+        let mut spec = minimal_spec(AppType::SshBastion);
+        spec.app_config = Some(AppConfig::SshBastion(SshBastionConfig {
+            users: vec![SshUser {
+                name: name.into(),
+                uid: 1000,
+                gid: 1000,
+                mode: SshMode::RestrictedRsync,
+                restricted_rsync: Some(RestrictedRsyncConfig { allowed_paths }),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }));
+        spec
+    }
+
+    #[test]
+    fn ssh_bastion_inputs_valid_name_and_path() {
+        let spec = ssh_bastion_spec_with_user("alice_backup", vec!["/media/shows".into()]);
+        let mut errors = Vec::new();
+        validate_ssh_bastion_inputs(&spec, &mut errors);
+        assert!(errors.is_empty(), "unexpected errors: {errors:?}");
+    }
+
+    #[test]
+    fn ssh_bastion_inputs_non_ssh_app() {
+        let spec = minimal_spec(AppType::Sonarr);
+        let mut errors = Vec::new();
+        validate_ssh_bastion_inputs(&spec, &mut errors);
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn ssh_bastion_inputs_empty_username() {
+        let spec = ssh_bastion_spec_with_user("", vec![]);
+        let mut errors = Vec::new();
+        validate_ssh_bastion_inputs(&spec, &mut errors);
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("name"));
+    }
+
+    #[test]
+    fn ssh_bastion_inputs_username_injection() {
+        let spec = ssh_bastion_spec_with_user("foo; reboot", vec![]);
+        let mut errors = Vec::new();
+        validate_ssh_bastion_inputs(&spec, &mut errors);
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("name"));
+    }
+
+    #[test]
+    fn ssh_bastion_inputs_username_uppercase() {
+        let spec = ssh_bastion_spec_with_user("Alice", vec![]);
+        let mut errors = Vec::new();
+        validate_ssh_bastion_inputs(&spec, &mut errors);
+        assert_eq!(errors.len(), 1);
+    }
+
+    #[test]
+    fn ssh_bastion_inputs_username_starts_with_digit() {
+        let spec = ssh_bastion_spec_with_user("1user", vec![]);
+        let mut errors = Vec::new();
+        validate_ssh_bastion_inputs(&spec, &mut errors);
+        assert_eq!(errors.len(), 1);
+    }
+
+    #[test]
+    fn ssh_bastion_inputs_username_too_long() {
+        let name = "a".repeat(33);
+        let spec = ssh_bastion_spec_with_user(&name, vec![]);
+        let mut errors = Vec::new();
+        validate_ssh_bastion_inputs(&spec, &mut errors);
+        assert_eq!(errors.len(), 1);
+    }
+
+    #[test]
+    fn ssh_bastion_inputs_path_relative() {
+        let spec = ssh_bastion_spec_with_user("alice", vec!["media/shows".into()]);
+        let mut errors = Vec::new();
+        validate_ssh_bastion_inputs(&spec, &mut errors);
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("allowedPaths"));
+    }
+
+    #[test]
+    fn ssh_bastion_inputs_path_quote_injection() {
+        let spec = ssh_bastion_spec_with_user("alice", vec!["/media\" /etc \"".into()]);
+        let mut errors = Vec::new();
+        validate_ssh_bastion_inputs(&spec, &mut errors);
+        assert_eq!(errors.len(), 1);
+    }
+
+    #[test]
+    fn ssh_bastion_inputs_path_dollar_injection() {
+        let spec = ssh_bastion_spec_with_user("alice", vec!["/media/$HOME".into()]);
+        let mut errors = Vec::new();
+        validate_ssh_bastion_inputs(&spec, &mut errors);
+        assert_eq!(errors.len(), 1);
+    }
+
+    #[test]
+    fn ssh_bastion_inputs_path_backtick_injection() {
+        let spec = ssh_bastion_spec_with_user("alice", vec!["/media/`id`".into()]);
+        let mut errors = Vec::new();
+        validate_ssh_bastion_inputs(&spec, &mut errors);
+        assert_eq!(errors.len(), 1);
+    }
+
+    #[test]
+    fn ssh_bastion_inputs_path_whitespace() {
+        let spec = ssh_bastion_spec_with_user("alice", vec!["/media/my shows".into()]);
+        let mut errors = Vec::new();
+        validate_ssh_bastion_inputs(&spec, &mut errors);
+        assert_eq!(errors.len(), 1);
+    }
+
+    // ── user.shell validation ──
+
+    fn spec_with_shell(shell: Option<&str>) -> ServarrAppSpec {
+        let mut spec = minimal_spec(AppType::SshBastion);
+        spec.app_config = Some(AppConfig::SshBastion(SshBastionConfig {
+            users: vec![SshUser {
+                name: "alice".into(),
+                uid: 1000,
+                gid: 1000,
+                mode: SshMode::Shell,
+                shell: shell.map(str::to_owned),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }));
+        spec
+    }
+
+    #[test]
+    fn ssh_bastion_inputs_shell_valid() {
+        let spec = spec_with_shell(Some("/bin/bash"));
+        let mut errors = Vec::new();
+        validate_ssh_bastion_inputs(&spec, &mut errors);
+        assert!(errors.is_empty(), "unexpected errors: {errors:?}");
+    }
+
+    #[test]
+    fn ssh_bastion_inputs_shell_relative() {
+        let spec = spec_with_shell(Some("bash"));
+        let mut errors = Vec::new();
+        validate_ssh_bastion_inputs(&spec, &mut errors);
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("shell"));
+    }
+
+    #[test]
+    fn ssh_bastion_inputs_shell_with_colon() {
+        let spec = spec_with_shell(Some("/bin/bash:/etc/passwd"));
+        let mut errors = Vec::new();
+        validate_ssh_bastion_inputs(&spec, &mut errors);
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("shell"));
+    }
+
+    #[test]
+    fn ssh_bastion_inputs_shell_with_newline() {
+        let spec = spec_with_shell(Some("/bin/bash\n/bin/sh"));
+        let mut errors = Vec::new();
+        validate_ssh_bastion_inputs(&spec, &mut errors);
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("shell"));
     }
 }
