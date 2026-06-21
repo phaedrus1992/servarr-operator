@@ -122,26 +122,6 @@ if [[ "$has_sender" != "true" ]]; then
   log_reject "Write operations not allowed (read-only mode)"
 fi
 
-# Flag allowlist: only these flags may reach rsync in server mode.
-# Short combined flags (e.g. -vrlz) are validated char-by-char against the permitted set.
-for arg in "${{ARGS[@]:1}}"; do
-  [[ "$arg" == "." ]] && break
-  case "$arg" in
-    --server|--sender|--numeric-ids) ;;
-    --timeout=*|--timeout) ;;
-    -e*) ;;
-    -*)
-      stripped="${{arg#-}}"
-      if [[ -z "$stripped" ]] || [[ "$stripped" =~ [^vzrltpgo] ]]; then
-        log_reject "Flag not permitted: $arg"
-      fi
-      ;;
-    *)
-      log_reject "Argument not allowed before path separator: $arg"
-      ;;
-  esac
-done
-
 # Collect every path argument. rsync server format: rsync --server [opts] . <path>...
 # Everything after the standalone "." is a source path; a glob may have expanded to
 # several. Validate each path independently.
