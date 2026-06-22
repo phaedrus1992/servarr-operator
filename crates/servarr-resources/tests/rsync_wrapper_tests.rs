@@ -367,3 +367,47 @@ fn rsync_mode_allows_any_path_and_parses_spaces() {
         res.stdout
     );
 }
+
+#[test]
+fn unescaped_parentheses_in_path_are_rejected() {
+    let (_tmp, wd) = fresh_dir("bare-parens");
+    let tv = make_dir(&wd, "tv");
+    let script = gen_script(SshMode::RestrictedRsync, vec![tv.display().to_string()]);
+    // Bare () are never sent by a legitimate rsync client — it always escapes them as \( \).
+    // An attacker sending bare () is attempting subshell injection before eval.
+    let cmd = format!("rsync --server --sender -e.x . {}/(id)/", tv.display());
+    let res = run_wrapper(&wd, &script, &cmd);
+    assert_ne!(
+        res.status, 0,
+        "bare unescaped parens must be rejected; stderr: {}",
+        res.stderr
+    );
+}
+
+#[test]
+fn path_with_parentheses_is_passed_to_rsync_intact() {
+    let (_tmp, wd) = fresh_dir("parens");
+    let tv = make_dir(&wd, "tv");
+    make_dir(&tv, "Show (2024)");
+
+    let script = gen_script(SshMode::RestrictedRsync, vec![tv.display().to_string()]);
+    // rsync escapes special characters when constructing the remote command.
+    // Parentheses arrive escaped as \( and \).
+    let cmd = format!(
+        r"rsync --server --sender -e.x . {}/Show\ \(2024\)/",
+        tv.display()
+    );
+    let res = run_wrapper(&wd, &script, &cmd);
+
+    let expected = format!("{}/Show (2024)/", tv.display());
+    assert_eq!(
+        res.status, 0,
+        "path with escaped parentheses should be accepted; stderr: {}",
+        res.stderr
+    );
+    assert!(
+        res.stdout.contains(&format!("ARG:{}", expected)),
+        "rsync should receive the unescaped path with parens '{expected}', got:\n{}",
+        res.stdout
+    );
+}

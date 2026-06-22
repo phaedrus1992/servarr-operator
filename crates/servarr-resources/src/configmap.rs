@@ -82,18 +82,48 @@ fi
 # same as an unrestricted rsync-over-ssh session.
 #
 # The user controls this command string, so guard against injection BEFORE eval:
-# reject any shell metacharacter that could run another command, substitute output,
-# redirect, or chain commands. What survives can only be words, quotes, backslash
-# escapes, and glob characters (* ? [ ]) -- so eval performs word-splitting and
-# pathname expansion but cannot execute anything other than the rsync call validated
-# below. Brace expansion ({{}}) and tilde (~) are rejected too, so a single request
-# cannot fan out into a huge argument list. Filenames containing any of these
-# metacharacters are intentionally unsupported.
-case "$CMD_STRING" in
+# reject metacharacters that could run another command, substitute output, redirect,
+# or chain commands. eval does perform word-splitting and glob expansion on the full
+# CMD_STRING (including paths), but the guards below ensure only safe characters survive
+# to that point. Brace expansion and tilde (~) on flags are rejected so a single request
+# cannot fan out into a huge argument list or resolve outside the intended tree.
+#
+# Two-phase check:
+#   Phase 1 — PREFIX_PART (flags before the ` . ` path separator): strict, rejects
+#             everything that could be injection including parens and braces.
+#   Phase 2 — full CMD_STRING: rejects chars rsync NEVER sends unescaped in paths;
+#             parens and braces get special handling because rsync encodes them as
+#             \( \) and \{{ \}} respectively, so bare versions indicate injection.
+PREFIX_PART="${{CMD_STRING% .*}}"
+case "$PREFIX_PART" in
   *[\$\;\&\|\<\>\(\)\{{\}}~\`]* | *$'\n'*)
     log_reject "Command contains forbidden shell metacharacters"
     ;;
 esac
+
+# Check the full command for UNESCAPED dangerous characters. Rsync escapes special
+# chars in paths (e.g. braces become \{{ }}, parens become \( \)), so they're safe.
+# Bare unescaped chars indicate injection attempts.
+case "$CMD_STRING" in
+  *[\$\;\&\|\<\>\~\`]* | *$'\n'*)
+    # Dollar signs, command chaining, redirects, backticks, tildes, newlines
+    # never appear unescaped in rsync paths.
+    log_reject "Command contains forbidden shell metacharacters"
+    ;;
+  *[\{{\}}]* )
+    # Rsync sends escaped braces as \{{ }}, not bare {{ }}
+    # Bare braces indicate brace expansion injection; only check path portion
+    if [[ "$CMD_STRING" == *' . '* ]]; then
+      AFTER_DOT="${{CMD_STRING#*' . '}}"
+      [[ "$AFTER_DOT" == *[\{{\}}]* ]] && log_reject "Command contains unescaped braces"
+    fi
+    ;;
+esac
+# Bare parens indicate injection — rsync always sends \( \) for literal parens.
+# case-pattern *[(]* cannot distinguish \( from bare (; use ERE instead.
+if [[ "$CMD_STRING" =~ (^|[^\\])[()] ]]; then
+  log_reject "Command contains forbidden shell metacharacters"
+fi
 
 declare -a ARGS
 eval "set -- $CMD_STRING" || log_reject "Could not parse command"
