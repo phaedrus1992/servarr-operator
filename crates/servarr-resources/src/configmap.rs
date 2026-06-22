@@ -115,17 +115,13 @@ case "$CMD_STRING" in
     # Bare braces indicate brace expansion injection; only check path portion
     if [[ "$CMD_STRING" == *' . '* ]]; then
       AFTER_DOT="${{CMD_STRING#*' . '}}"
-      case "$AFTER_DOT" in
-        *[\{{\}}]* )
-          log_reject "Command contains unescaped braces"
-          ;;
-      esac
+      [[ "$AFTER_DOT" == *[\{{\}}]* ]] && log_reject "Command contains unescaped braces"
     fi
     ;;
 esac
 # Bare parens indicate injection — rsync always sends \( \) for literal parens.
 # case-pattern *[(]* cannot distinguish \( from bare (; use ERE instead.
-if [[ "$CMD_STRING" =~ (^|[^\\])\( ]] || [[ "$CMD_STRING" =~ (^|[^\\])\) ]]; then
+if [[ "$CMD_STRING" =~ (^|[^\\])[()] ]]; then
   log_reject "Command contains forbidden shell metacharacters"
 fi
 
