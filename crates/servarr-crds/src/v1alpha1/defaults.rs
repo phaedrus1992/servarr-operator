@@ -67,6 +67,14 @@ impl AppDefaults {
                 },
             ]);
         }
+        if matches!(app, super::AppType::Maintainerr) {
+            // Issue #131: Maintainerr v3 expects /opt/data, not /config
+            if let Some(config_vol) = defaults.persistence.volumes.iter_mut().find(|v| v.name == "config") {
+                config_vol.mount_path = "/opt/data".to_string();
+            }
+            // Issue #138: Maintainerr needs higher memory for large library scans
+            defaults.resources = std_resources("1", "2Gi", "100m", "512Mi");
+        }
         Ok(defaults)
     }
 
@@ -152,6 +160,15 @@ impl AppDefaults {
                     value: "medium".into(),
                 },
             ]);
+        }
+
+        if matches!(app, super::AppType::Maintainerr) {
+            // Issue #131: Maintainerr v3 expects /opt/data, not /config
+            if let Some(config_vol) = defaults.persistence.volumes.iter_mut().find(|v| v.name == "config") {
+                config_vol.mount_path = "/opt/data".to_string();
+            }
+            // Issue #138: Maintainerr needs higher memory for large library scans
+            defaults.resources = std_resources("1", "2Gi", "100m", "512Mi");
         }
 
         Ok(defaults)

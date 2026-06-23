@@ -363,3 +363,37 @@ fn non_download_apps_keep_lower_memory_default() {
     assert_eq!(defaults.resources.limits.memory, "512Mi");
     assert_eq!(defaults.resources.requests.memory, "128Mi");
 }
+
+// ---------------------------------------------------------------------------
+// Maintainerr defaults (issue #131, #132, #138)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn maintainerr_config_volume_mount_path() {
+    // Issue #131: Maintainerr v3 stores data at /opt/data, not /config
+    let defaults = AppDefaults::for_app(&AppType::Maintainerr).unwrap();
+    let config_vol = defaults
+        .persistence
+        .volumes
+        .iter()
+        .find(|v| v.name == "config")
+        .expect("Maintainerr should have a config volume");
+    assert_eq!(
+        config_vol.mount_path, "/opt/data",
+        "Maintainerr config should be mounted at /opt/data"
+    );
+}
+
+#[test]
+fn maintainerr_has_higher_memory_for_large_scans() {
+    // Issue #138: Maintainerr needs ≥1Gi for large library scans
+    let defaults = AppDefaults::for_app(&AppType::Maintainerr).unwrap();
+    assert_eq!(
+        defaults.resources.limits.memory, "2Gi",
+        "Maintainerr needs 2Gi memory limit for large library scans"
+    );
+    assert_eq!(
+        defaults.resources.requests.memory, "512Mi",
+        "Maintainerr should request 512Mi"
+    );
+}
