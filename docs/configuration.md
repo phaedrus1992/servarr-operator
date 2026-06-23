@@ -40,6 +40,7 @@
 | `overseerrSync` | `OverseerrSyncSpec` | No | -- |
 | `bazarrSync` | `BazarrSyncSpec` | No | -- |
 | `subgenSync` | `SubgenSyncSpec` | No | -- |
+| `maintainerrSync` | `MaintainerrSyncSpec` | No | -- |
 
 ---
 
@@ -902,6 +903,28 @@ Configures Subgen-to-Jellyfin synchronization. Only applies to `Subgen`-type app
 spec:
   app: Subgen
   subgenSync:
+    enabled: true
+```
+
+---
+
+### `maintainerrSync`
+
+**Type:** `MaintainerrSyncSpec` -- **Optional**
+
+Configures Maintainerr cross-app synchronization. Only applies to `Maintainerr`-type apps. When enabled, the operator discovers Sonarr, Radarr, Overseerr, and Tautulli instances in the target namespace and registers them in Maintainerr. split4k Sonarr/Radarr instances are registered individually. The operator manages Maintainerr's API key automatically -- no `apiKeySecret` is required. Registration is idempotent: already-registered servers are skipped on subsequent reconciles. Sync results are reported via the `MaintainerrSyncReady` status condition.
+
+| Sub-field | Type | Default |
+|---|---|---|
+| `enabled` | `bool` | `false` |
+| `namespaceScope` | `string` | Same namespace as the Maintainerr CR |
+
+Plex is not yet auto-configured: Plex uses plex.tv account authentication rather than an operator-managed API key, so the operator has no token to inject (tracked in [#148](https://github.com/phaedrus1992/servarr-operator/issues/148)).
+
+```yaml
+spec:
+  app: Maintainerr
+  maintainerrSync:
     enabled: true
 ```
 
