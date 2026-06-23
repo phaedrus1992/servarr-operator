@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased] - ReleaseDate
 
+### Changed
+
+- Upgrade `kube` 3.1 → 4.0 and `k8s-openapi` 0.27 → 0.28 together. The two crates are
+  version-locked (kube 4 requires k8s-openapi 0.28), so they are bumped in lockstep to avoid a
+  workspace carrying two incompatible k8s-openapi versions. Updated test kubeconfig builders for
+  the new `other` catch-all field on the `Named*` structs and `Config`'s `#[non_exhaustive]`
+  constructor. Renovate now groups `kube`/`k8s-openapi` even on major updates so they never
+  split into separate, individually-broken PRs again.
+
 ### Fixed
 
 - Fix SSH bastion `restricted-rsync` wrapper rejecting paths containing parentheses

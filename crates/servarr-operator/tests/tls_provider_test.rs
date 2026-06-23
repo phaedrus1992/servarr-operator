@@ -9,20 +9,10 @@ async fn kube_client_config_initialises_tls() {
     // Building a kube client from a Config exercises the rustls TLS
     // stack. This will panic if no CryptoProvider is available, which
     // is exactly the failure mode we want to catch early.
-    let config = kube::Config {
-        cluster_url: "https://localhost:6443".parse().unwrap(),
-        default_namespace: "default".into(),
-        root_cert: None,
-        connect_timeout: None,
-        read_timeout: None,
-        write_timeout: None,
-        accept_invalid_certs: true,
-        auth_info: Default::default(),
-        proxy_url: None,
-        tls_server_name: None,
-        disable_compression: false,
-        headers: vec![],
-    };
+    // kube 4's Config is #[non_exhaustive] — build via the constructor and
+    // tweak the one field this test cares about.
+    let mut config = kube::Config::new("https://localhost:6443".parse().unwrap());
+    config.accept_invalid_certs = true;
 
     // Client::try_from exercises the full TLS client construction path.
     // It will fail (no real cluster) but must not *panic*.
