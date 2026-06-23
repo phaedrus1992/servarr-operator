@@ -453,7 +453,10 @@ mod tests {
         };
         let json = serde_json::to_string(&resp).expect("should serialize");
         assert!(json.contains("\"serverName\":\"Lidarr\""), "got: {json}");
-        assert!(!json.contains("\"name\""), "alias leaked into output: {json}");
+        assert!(
+            !json.contains("\"name\""),
+            "alias leaked into output: {json}"
+        );
     }
 
     #[test]

@@ -681,7 +681,10 @@ fn maintainerr_sync_spec_roundtrip_and_camel_case() {
     let json = serde_json::to_string(&spec).expect("serialize");
     // namespace_scope must render as camelCase namespaceScope
     assert!(json.contains("\"namespaceScope\":\"media\""), "got: {json}");
-    assert!(!json.contains("namespace_scope"), "snake_case leaked: {json}");
+    assert!(
+        !json.contains("namespace_scope"),
+        "snake_case leaked: {json}"
+    );
     // roundtrip preserves the JSON representation
     let back: MaintainerrSyncSpec = serde_json::from_str(&json).expect("deserialize");
     assert_eq!(
