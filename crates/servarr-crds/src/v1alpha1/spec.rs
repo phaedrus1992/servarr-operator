@@ -120,6 +120,10 @@ pub struct ServarrAppSpec {
     #[serde(default)]
     pub subgen_sync: Option<SubgenSyncSpec>,
 
+    /// Maintainerr cross-app synchronization. Only applies to Maintainerr-type apps.
+    #[serde(default)]
+    pub maintainerr_sync: Option<MaintainerrSyncSpec>,
+
     /// Admin credentials for this app. References a user-created Kubernetes Secret
     /// with `username` and `password` keys. The operator reads but never owns this secret.
     ///

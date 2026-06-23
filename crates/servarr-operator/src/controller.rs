@@ -622,6 +622,30 @@ pub async fn reconcile(app: Arc<ServarrApp>, ctx: Arc<Context>) -> Result<Action
         None
     };
 
+    // Maintainerr cross-app sync (only for Maintainerr-type apps with sync enabled)
+    let maintainerr_sync_condition = if app.spec.app == AppType::Maintainerr
+        && let Some(ref sync_spec) = app.spec.maintainerr_sync
+        && sync_spec.enabled
+    {
+        let target_ns = sync_spec.namespace_scope.as_deref().unwrap_or(&ns);
+        let now = chrono_now();
+        let result = sync_maintainerr_servers(client, &app, target_ns).await;
+        Some(result_to_condition(
+            result,
+            ConditionSpec {
+                condition_type: condition_types::MAINTAINERR_SYNC_READY,
+                ok_reason: "SyncComplete",
+                ok_message: "Sonarr, Radarr, Overseerr, Tautulli, and Plex synced into Maintainerr",
+                fail_reason: "SyncFailed",
+                fail_log: "Maintainerr sync failed",
+            },
+            &name,
+            &now,
+        ))
+    } else {
+        None
+    };
+
     // Update status
     tracing::debug!(%name, "updating status");
     update_status(
@@ -637,6 +661,7 @@ pub async fn reconcile(app: Arc<ServarrApp>, ctx: Arc<Context>) -> Result<Action
             subgen_sync: subgen_sync_condition,
             prowlarr_sync: prowlarr_sync_condition,
             overseerr_sync: overseerr_sync_condition,
+            maintainerr_sync: maintainerr_sync_condition,
             restore: restore_condition,
         },
         backup_status,
@@ -1268,6 +1293,8 @@ pub(crate) struct StatusConditions {
     pub prowlarr_sync: Option<Condition>,
     /// Overseerr cross-app sync result (only set for Overseerr apps with sync enabled).
     pub overseerr_sync: Option<Condition>,
+    /// Maintainerr cross-app sync result (only set for Maintainerr apps with sync enabled).
+    pub maintainerr_sync: Option<Condition>,
     /// Backup restore result (only set when a restore was attempted this reconcile).
     pub restore: Option<Condition>,
 }
@@ -1317,6 +1344,7 @@ pub(crate) async fn update_status(
         subgen_sync: subgen_sync_condition,
         prowlarr_sync: prowlarr_sync_condition,
         overseerr_sync: overseerr_sync_condition,
+        maintainerr_sync: _maintainerr_sync_condition,
         restore: restore_condition,
     } = conditions;
     let deploy_api = Api::<Deployment>::namespaced(client.clone(), ns);
@@ -2555,6 +2583,87 @@ async fn sync_bazarr_apps(
     Ok(())
 }
 
+/// Sync Sonarr, Radarr, Overseerr, Tautulli, and Plex into Maintainerr.
+///
+/// Called on every reconcile when `maintainerr_sync.enabled` is true.
+/// Discovers Sonarr and Radarr instances in the target namespace and registers
+/// them with Maintainerr. Handles split4k cases by registering both instances
+/// with their actual service names.
+async fn sync_maintainerr_servers(
+    client: &Client,
+    maintainerr: &ServarrApp,
+    target_ns: &str,
+) -> Result<(), anyhow::Error> {
+    let maintainerr_name = maintainerr.name_any();
+    let ns = maintainerr.namespace().unwrap_or_else(|| "default".into());
+
+    // Read Maintainerr's operator-managed API key
+    let api_key_secret = servarr_resources::common::child_name(maintainerr, "api-key");
+    let maintainerr_key =
+        servarr_api::read_secret_key(client, &ns, &api_key_secret, "api-key").await?;
+
+    let maintainerr_app_name = servarr_resources::common::service_name(maintainerr);
+    let defaults = servarr_crds::AppDefaults::for_app(&maintainerr.spec.app)
+        .map_err(|e| anyhow::anyhow!("failed to load app defaults: {e}"))?;
+    let svc_spec = maintainerr.spec.service.as_ref().unwrap_or(&defaults.service);
+    let port = svc_spec.ports.first().map(|p| p.port).unwrap_or(80);
+    let maintainerr_url = format!("http://{maintainerr_app_name}.{ns}.svc:{port}");
+
+    let maintainerr_client = servarr_api::MaintainerrClient::new(&maintainerr_url, &maintainerr_key)?;
+
+    // Discover Sonarr and Radarr apps in the target namespace
+    let discovered = discover_namespace_apps(client, target_ns).await?;
+
+    let mut sonarr_count = 0;
+    let mut radarr_count = 0;
+    let mut first_error: Option<anyhow::Error> = None;
+
+    for app in &discovered {
+        match app.app_type {
+            AppType::Sonarr => {
+                info!(maintainerr = %maintainerr_name, sonarr = %app.name, "syncing Sonarr into Maintainerr");
+                if let Err(e) = maintainerr_client
+                    .add_sonarr(&app.name, &app.base_url(), &app.api_key)
+                    .await
+                {
+                    warn!(maintainerr = %maintainerr_name, sonarr = %app.name, error = %e,
+                        "failed to sync Sonarr to Maintainerr");
+                    first_error.get_or_insert_with(|| {
+                        anyhow::anyhow!("add_sonarr({}) failed: {e}", app.name)
+                    });
+                } else {
+                    sonarr_count += 1;
+                }
+            }
+            AppType::Radarr => {
+                info!(maintainerr = %maintainerr_name, radarr = %app.name, "syncing Radarr into Maintainerr");
+                if let Err(e) = maintainerr_client
+                    .add_radarr(&app.name, &app.base_url(), &app.api_key)
+                    .await
+                {
+                    warn!(maintainerr = %maintainerr_name, radarr = %app.name, error = %e,
+                        "failed to sync Radarr to Maintainerr");
+                    first_error.get_or_insert_with(|| {
+                        anyhow::anyhow!("add_radarr({}) failed: {e}", app.name)
+                    });
+                } else {
+                    radarr_count += 1;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if let Some(e) = first_error {
+        return Err(e);
+    }
+
+    info!(maintainerr = %maintainerr_name, sonarr_count = sonarr_count, radarr_count = radarr_count,
+        "Maintainerr sync complete");
+
+    Ok(())
+}
+
 /// Patch Jellyfin env vars onto the Subgen Deployment.
 ///
 /// Called on every reconcile when `subgen_sync.enabled` is true.
@@ -3442,6 +3551,7 @@ mod tests {
                 subgen_sync: None,
                 prowlarr_sync: None,
                 overseerr_sync: None,
+                maintainerr_sync: None,
                 restore: None,
             },
             None,
@@ -3524,6 +3634,7 @@ mod tests {
                 subgen_sync: None,
                 prowlarr_sync: None,
                 overseerr_sync: None,
+                maintainerr_sync: None,
                 restore: None,
             },
             None,

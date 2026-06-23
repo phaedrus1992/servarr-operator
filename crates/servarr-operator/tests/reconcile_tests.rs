@@ -2521,3 +2521,163 @@ async fn test_media_stack_nfs_external_does_not_create_in_cluster_resources() {
     );
     // _ss_mock drop verifies expect(0)
 }
+
+// ---------------------------------------------------------------------------
+// Maintainerr sync tests
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_maintainerr_sync_discovers_sonarr_and_radarr() {
+    let server = MockServer::new().await;
+    let client = mock_client(&server.uri()).await;
+    let ctx = test_controller_context(&client, "test").await;
+
+    // Setup: Create Maintainerr app with sync enabled
+    let maintainerr = make_test_app(
+        "maintainerr",
+        "test",
+        AppType::Maintainerr,
+        Some(json!({
+            "app": "Maintainerr",
+            "maintainerrSync": {
+                "enabled": true,
+                "namespaceScope": "test"
+            }
+        })),
+    );
+
+    // Mock reading Maintainerr's API key secret
+    let secret_json = json!({
+        "apiVersion": "v1",
+        "kind": "Secret",
+        "metadata": {"name": "maintainerr-api-key", "namespace": "test"},
+        "data": {"api-key": "bWFpbnRhaW5lcnItYWktc2VjcmV0"}  // base64: "maintainerr-ai-secret"
+    });
+
+    Mock::given(method("GET"))
+        .and(path("/api/v1/namespaces/test/secrets/maintainerr-api-key"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(&secret_json))
+        .mount_as_scoped(&server)
+        .await;
+
+    // Mock listing ServarrApps to discover Sonarr and Radarr
+    let apps_list_json = json!({
+        "apiVersion": "servarr.dev/v1alpha1",
+        "kind": "ServarrAppList",
+        "items": [
+            {
+                "apiVersion": "servarr.dev/v1alpha1",
+                "kind": "ServarrApp",
+                "metadata": {"name": "sonarr", "namespace": "test"},
+                "spec": {
+                    "app": "Sonarr",
+                    "instance": null,
+                    "service": {"ports": [{"port": 8989}]}
+                }
+            },
+            {
+                "apiVersion": "servarr.dev/v1alpha1",
+                "kind": "ServarrApp",
+                "metadata": {"name": "radarr", "namespace": "test"},
+                "spec": {
+                    "app": "Radarr",
+                    "instance": null,
+                    "service": {"ports": [{"port": 7878}]}
+                }
+            }
+        ]
+    });
+
+    Mock::given(method("GET"))
+        .and(path_regex(r"^/apis/servarr\.dev/v1alpha1/namespaces/test/servarrapps.*"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(&apps_list_json))
+        .mount_as_scoped(&server)
+        .await;
+
+    // Mock reading Sonarr and Radarr API key secrets
+    let sonarr_secret = json!({
+        "apiVersion": "v1",
+        "kind": "Secret",
+        "metadata": {"name": "sonarr-api-key", "namespace": "test"},
+        "data": {"api-key": "c29uYXJyLWtleQ=="}  // base64: "sonarr-key"
+    });
+
+    let radarr_secret = json!({
+        "apiVersion": "v1",
+        "kind": "Secret",
+        "metadata": {"name": "radarr-api-key", "namespace": "test"},
+        "data": {"api-key": "cmFkYXJyLWtleQ=="}  // base64: "radarr-key"
+    });
+
+    Mock::given(method("GET"))
+        .and(path("/api/v1/namespaces/test/secrets/sonarr-api-key"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(&sonarr_secret))
+        .mount_as_scoped(&server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/api/v1/namespaces/test/secrets/radarr-api-key"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(&radarr_secret))
+        .mount_as_scoped(&server)
+        .await;
+
+    // Mock Maintainerr API calls to add Sonarr and Radarr
+    Mock::given(method("POST"))
+        .and(path_regex(r"^http://maintainerr\.test\.svc:\d+/api/v1/integrations/sonarr.*"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect_at_least(1)
+        .mount_as_scoped(&server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path_regex(r"^http://maintainerr\.test\.svc:\d+/api/v1/integrations/radarr.*"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect_at_least(1)
+        .mount_as_scoped(&server)
+        .await;
+
+    mount_default_reconcile_mocks(&server, &maintainerr, "test").await;
+
+    let result = servarr_operator::reconcile(Arc::new(maintainerr), ctx).await;
+    assert!(
+        result.is_ok(),
+        "Maintainerr sync should succeed, got: {result:?}"
+    );
+}
+
+#[tokio::test]
+async fn test_maintainerr_sync_disabled_skips_sync() {
+    let server = MockServer::new().await;
+    let client = mock_client(&server.uri()).await;
+    let ctx = test_controller_context(&client, "test").await;
+
+    // Setup: Create Maintainerr app with sync disabled
+    let maintainerr = make_test_app(
+        "maintainerr",
+        "test",
+        AppType::Maintainerr,
+        Some(json!({
+            "app": "Maintainerr",
+            "maintainerrSync": {
+                "enabled": false
+            }
+        })),
+    );
+
+    // Should not attempt any Maintainerr API calls
+    Mock::given(method("POST"))
+        .and(path_regex(r"^http://maintainerr\.test\.svc:\d+.*"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(0)
+        .named("no-maintainerr-api-calls")
+        .mount_as_scoped(&server)
+        .await;
+
+    mount_default_reconcile_mocks(&server, &maintainerr, "test").await;
+
+    let result = servarr_operator::reconcile(Arc::new(maintainerr), ctx).await;
+    assert!(
+        result.is_ok(),
+        "Maintainerr reconcile with sync disabled should succeed, got: {result:?}"
+    );
+}

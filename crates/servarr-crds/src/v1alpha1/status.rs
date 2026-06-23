@@ -75,6 +75,8 @@ pub mod condition_types {
     pub const PROWLARR_SYNC_READY: &str = "ProwlarrSyncReady";
     /// Cross-app sync health for Overseerr (True = last sync OK, False = last sync failed).
     pub const OVERSEERR_SYNC_READY: &str = "OverseerrSyncReady";
+    /// Cross-app sync health for Maintainerr (True = last sync OK, False = last sync failed).
+    pub const MAINTAINERR_SYNC_READY: &str = "MaintainerrSyncReady";
     /// Backup restore result (True = restore succeeded, False = restore failed).
     pub const RESTORE_READY: &str = "RestoreReady";
 }
