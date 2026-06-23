@@ -2640,6 +2640,19 @@ async fn sync_maintainerr_servers(
     let maintainerr_client =
         servarr_api::MaintainerrClient::new(&maintainerr_url, &maintainerr_key)?;
 
+    // Read Plex token if configured
+    let plex_token = if let Some(sync_spec) = &maintainerr.spec.maintainerr_sync {
+        if let Some(secret_name) = &sync_spec.plex_token_secret {
+            servarr_api::read_secret_key(client, &ns, secret_name, "plex-token")
+                .await
+                .ok()
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
     // Discover apps in the target namespace
     let discovered = discover_namespace_apps(client, target_ns).await?;
 
@@ -2659,6 +2672,7 @@ async fn sync_maintainerr_servers(
     let mut radarr_count = 0;
     let mut overseerr_configured = false;
     let mut tautulli_configured = false;
+    let mut plex_configured = false;
     let mut failures = 0;
 
     // Register all discovered apps. split4k instances appear as separate apps in discovery.
@@ -2724,12 +2738,30 @@ async fn sync_maintainerr_servers(
                     }
                 }
             }
+            AppType::Plex if !plex_configured && plex_token.is_some() => {
+                info!(maintainerr = %maintainerr_name, plex = %app.name, "syncing Plex into Maintainerr");
+                let plex_port = app.port as u16;
+                if let Err(e) = maintainerr_client.set_plex(&app.host, plex_port).await {
+                    warn!(maintainerr = %maintainerr_name, plex = %app.name, error = %e,
+                        "failed to set Plex hostname/port in Maintainerr");
+                    failures += 1;
+                } else if let Err(e) = maintainerr_client
+                    .set_plex_token(plex_token.as_ref().unwrap())
+                    .await
+                {
+                    warn!(maintainerr = %maintainerr_name, plex = %app.name, error = %e,
+                        "failed to set Plex token in Maintainerr");
+                    failures += 1;
+                } else {
+                    plex_configured = true;
+                }
+            }
             _ => {}
         }
     }
 
     info!(maintainerr = %maintainerr_name, sonarr_count, radarr_count,
-        overseerr_configured, tautulli_configured, failures,
+        overseerr_configured, tautulli_configured, plex_configured, failures,
         "Maintainerr sync complete");
 
     if failures > 0 {

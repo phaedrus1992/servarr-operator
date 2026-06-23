@@ -677,6 +677,7 @@ fn maintainerr_sync_spec_roundtrip_and_camel_case() {
     let spec = MaintainerrSyncSpec {
         enabled: true,
         namespace_scope: Some("media".to_string()),
+        plex_token_secret: None,
     };
     let json = serde_json::to_string(&spec).expect("serialize");
     // namespace_scope must render as camelCase namespaceScope
