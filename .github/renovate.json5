@@ -175,6 +175,19 @@
       groupName: null,
     },
 
+    // kube and k8s-openapi are version-locked: kube 4 requires k8s-openapi
+    // 0.28, so a major kube bump MUST ship with the matching k8s-openapi bump
+    // or the workspace ends up with two incompatible k8s-openapi versions that
+    // won't compile. Re-group them even on major (placed AFTER the
+    // major-isolation rule so this groupName overrides its null). Excludes
+    // schemars: it has a normal version range, not a lockstep coupling.
+    {
+      groupName: 'Rust Kubernetes crates',
+      groupSlug: 'rust-kubernetes',
+      matchManagers: ['cargo'],
+      matchPackageNames: ['/^kube/', '/^k8s/'],
+    },
+
     // Release branch maintenance: only patch-level updates.
     // Placed after all other rules so enabled:false wins.
     {

@@ -1358,6 +1358,7 @@ mod k8s_secret {
                     insecure_skip_tls_verify: Some(true),
                     ..Default::default()
                 }),
+                ..Default::default()
             }],
             contexts: vec![NamedContext {
                 name: "test".into(),
@@ -1367,10 +1368,12 @@ mod k8s_secret {
                     namespace: Some("test".into()),
                     ..Default::default()
                 }),
+                ..Default::default()
             }],
             auth_infos: vec![NamedAuthInfo {
                 name: "test".into(),
                 auth_info: Some(AuthInfo::default()),
+                ..Default::default()
             }],
             current_context: Some("test".into()),
             ..Default::default()
