@@ -39,13 +39,25 @@ pub fn build_ssh_bastion_restricted_rsync(app: &ServarrApp) -> Option<ConfigMap>
                 rr.allowed_paths
                     .iter()
                     .map(|p| {
-                        let escaped = p.replace('"', "\\\"");
-                        format!("      \"{escaped}\"")
+                        // Single-quote wrapping: bash treats single-quoted strings as fully literal.
+                        // Handles all special chars ($, `, \, ", etc.) in one escaping scheme.
+                        // Only limitation: cannot embed a literal single quote without closing the string.
+                        let escaped = p.replace('\'', "'\\''");
+                        format!("      '{escaped}'")
                     })
                     .collect::<Vec<_>>()
                     .join("\n")
             })
             .unwrap_or_default();
+
+        // Warn if RestrictedRsync mode is configured without restricted_rsync settings (misconfiguration).
+        if user.mode == SshMode::RestrictedRsync && user.restricted_rsync.is_none() {
+            tracing::warn!(
+                user = %user.name,
+                "RestrictedRsync mode configured but no restricted_rsync path list — \
+                 defaulting to unrestricted rsync (likely a misconfiguration)"
+            );
+        }
 
         let script = format!(
             r#"#!/bin/bash
@@ -616,7 +628,7 @@ mod tests {
     }
 
     #[test]
-    fn ssh_bastion_restricted_rsync_escapes_quotes_in_paths() {
+    fn ssh_bastion_restricted_rsync_escapes_special_chars_in_paths() {
         let mut app = minimal_ssh_bastion_app();
         app.spec.app_config = Some(AppConfig::SshBastion(SshBastionConfig {
             users: vec![SshUser {
@@ -627,7 +639,9 @@ mod tests {
                 restricted_rsync: Some(RestrictedRsyncConfig {
                     allowed_paths: vec![
                         "/media/shows".into(),
-                        "/data/\"secret\"".into(), // path with embedded quotes
+                        "/data/with'quote".into(), // path with embedded single quote
+                        "/data/with$var".into(),   // path with $
+                        "/data/with`cmd`".into(),  // path with backticks
                     ],
                 }),
                 ..Default::default()
@@ -642,11 +656,21 @@ mod tests {
             .and_then(|d| d.get("restricted-rsync-alice.sh"))
             .expect("should have alice's script");
 
-        // Check that quotes are escaped in the bash script
+        // Check that single quotes are properly escaped via '\'' splicing
         assert!(
-            script.contains(r#""/data/\"secret\"""#),
-            "quotes should be escaped in allowed paths: {}",
+            script.contains("'/data/with'\\''quote'"),
+            "single quotes should be escaped via '\\'' splicing: {}",
             script
+        );
+
+        // Check that $, backticks, and \ are safe inside single quotes (no escaping needed)
+        assert!(
+            script.contains("'/data/with$var'"),
+            "$ should be literal inside single quotes"
+        );
+        assert!(
+            script.contains("'/data/with`cmd`'"),
+            "backticks should be literal inside single quotes"
         );
     }
 
@@ -674,18 +698,22 @@ mod tests {
             .and_then(|d| d.get("restricted-rsync-bob.sh"))
             .expect("should have bob's script");
 
-        // Check that rejection logging has stderr fallback
+        // Check that rejection logging has stderr fallback (both on same invocation)
         assert!(
-            script.contains("logger -t restricted-rsync -p auth.warning")
-                && script.contains("|| echo"),
-            "rejection logging should have stderr fallback"
+            script.contains(
+                r#"logger -t restricted-rsync -p auth.warning "REJECTED: user=$USER reason=$1" \
+    || echo "REJECTED: user=$USER reason=$1" >&2"#
+            ),
+            "rejection logging must have stderr fallback on the same invocation"
         );
 
-        // Check that acceptance logging has stderr fallback
+        // Check that acceptance logging has stderr fallback (both on same invocation)
         assert!(
-            script.contains(r#"logger -t restricted-rsync -p auth.info"#)
-                && script.contains(r#"ALLOWED: user=$USER"#),
-            "acceptance logging should be present and have fallback"
+            script.contains(
+                r#"logger -t restricted-rsync -p auth.info "ALLOWED: user=$USER paths=${RSYNC_PATHS[*]}" \
+  || echo "ALLOWED: user=$USER paths=${RSYNC_PATHS[*]}" >&2"#
+            ),
+            "acceptance logging must have stderr fallback on the same invocation"
         );
     }
 
@@ -711,10 +739,43 @@ mod tests {
             .and_then(|d| d.get("restricted-rsync-charlie.sh"))
             .expect("should have charlie's script");
 
-        // Rsync mode (no path restriction) should have empty ALLOWED_PATHS
+        // Rsync mode (no path restriction) should have empty ALLOWED_PATHS array
         assert!(
-            script.contains("ALLOWED_PATHS=("),
-            "rsync mode should have ALLOWED_PATHS array"
+            script.contains("ALLOWED_PATHS=(\n\n)"),
+            "rsync mode should have empty ALLOWED_PATHS array (unrestricted mode)"
+        );
+    }
+
+    #[test]
+    fn ssh_bastion_restricted_rsync_misconfiguration_warning() {
+        // RestrictedRsync mode without restricted_rsync config is a misconfiguration.
+        // It silently falls back to unrestricted mode, which is dangerous.
+        // This test ensures we generate a script (for backwards compat) but document the issue.
+        let mut app = minimal_ssh_bastion_app();
+        app.spec.app_config = Some(AppConfig::SshBastion(SshBastionConfig {
+            users: vec![SshUser {
+                name: "danielle".into(),
+                uid: 1003,
+                gid: 1003,
+                mode: SshMode::RestrictedRsync,
+                restricted_rsync: None, // Missing config!
+                ..Default::default()
+            }],
+            ..Default::default()
+        }));
+
+        let cm = build_ssh_bastion_restricted_rsync(&app).expect("should generate configmap");
+        let script = cm
+            .data
+            .as_ref()
+            .and_then(|d| d.get("restricted-rsync-danielle.sh"))
+            .expect("should generate script even for misconfigured user");
+
+        // The script should have an empty ALLOWED_PATHS (unrestricted mode).
+        // This is a fallback behavior; the warning is logged upstream in Rust.
+        assert!(
+            script.contains("ALLOWED_PATHS=(\n\n)"),
+            "misconfigured RestrictedRsync should fall back to empty (unrestricted) ALLOWED_PATHS"
         );
     }
 }
