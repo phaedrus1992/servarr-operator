@@ -622,6 +622,30 @@ pub async fn reconcile(app: Arc<ServarrApp>, ctx: Arc<Context>) -> Result<Action
         None
     };
 
+    // Maintainerr cross-app sync (only for Maintainerr-type apps with sync enabled)
+    let maintainerr_sync_condition = if app.spec.app == AppType::Maintainerr
+        && let Some(ref sync_spec) = app.spec.maintainerr_sync
+        && sync_spec.enabled
+    {
+        let target_ns = sync_spec.namespace_scope.as_deref().unwrap_or(&ns);
+        let now = chrono_now();
+        let result = sync_maintainerr_servers(client, &app, target_ns).await;
+        Some(result_to_condition(
+            result,
+            ConditionSpec {
+                condition_type: condition_types::MAINTAINERR_SYNC_READY,
+                ok_reason: "SyncComplete",
+                ok_message: "Sonarr, Radarr, Overseerr, and Tautulli synced into Maintainerr",
+                fail_reason: "SyncFailed",
+                fail_log: "Maintainerr sync failed",
+            },
+            &name,
+            &now,
+        ))
+    } else {
+        None
+    };
+
     // Update status
     tracing::debug!(%name, "updating status");
     update_status(
@@ -637,6 +661,7 @@ pub async fn reconcile(app: Arc<ServarrApp>, ctx: Arc<Context>) -> Result<Action
             subgen_sync: subgen_sync_condition,
             prowlarr_sync: prowlarr_sync_condition,
             overseerr_sync: overseerr_sync_condition,
+            maintainerr_sync: maintainerr_sync_condition,
             restore: restore_condition,
         },
         backup_status,
@@ -1268,6 +1293,8 @@ pub(crate) struct StatusConditions {
     pub prowlarr_sync: Option<Condition>,
     /// Overseerr cross-app sync result (only set for Overseerr apps with sync enabled).
     pub overseerr_sync: Option<Condition>,
+    /// Maintainerr cross-app sync result (only set for Maintainerr apps with sync enabled).
+    pub maintainerr_sync: Option<Condition>,
     /// Backup restore result (only set when a restore was attempted this reconcile).
     pub restore: Option<Condition>,
 }
@@ -1317,6 +1344,7 @@ pub(crate) async fn update_status(
         subgen_sync: subgen_sync_condition,
         prowlarr_sync: prowlarr_sync_condition,
         overseerr_sync: overseerr_sync_condition,
+        maintainerr_sync: maintainerr_sync_condition,
         restore: restore_condition,
     } = conditions;
     let deploy_api = Api::<Deployment>::namespaced(client.clone(), ns);
@@ -1423,6 +1451,7 @@ pub(crate) async fn update_status(
         subgen_sync_condition,
         prowlarr_sync_condition,
         overseerr_sync_condition,
+        maintainerr_sync_condition,
         restore_condition,
     ]
     .into_iter()
@@ -1942,10 +1971,16 @@ pub(crate) async fn discover_namespace_apps(
 
     let mut discovered = Vec::new();
     for app in &apps {
-        // Only sync Servarr v3 apps (they share the /api/v3 interface)
+        // Discover Servarr apps and request coordinators that expose an
+        // operator-managed API key. Plex is excluded: it uses plex.tv account
+        // auth, so it has no api_key_secret and would always be skipped below.
         if !matches!(
             app.spec.app,
-            AppType::Sonarr | AppType::Radarr | AppType::Lidarr
+            AppType::Sonarr
+                | AppType::Radarr
+                | AppType::Lidarr
+                | AppType::Overseerr
+                | AppType::Tautulli
         ) {
             continue;
         }
@@ -2550,6 +2585,157 @@ async fn sync_bazarr_apps(
 
     if let Some(e) = first_error {
         return Err(e);
+    }
+
+    Ok(())
+}
+
+/// Sync Sonarr, Radarr, Overseerr, and Tautulli into Maintainerr.
+///
+/// Called on every reconcile when `maintainerr_sync.enabled` is true. Discovers
+/// Sonarr, Radarr, Overseerr, and Tautulli instances in the target namespace and
+/// registers them with Maintainerr. split4k Sonarr/Radarr instances are discovered
+/// as separate `ServarrApp`s, so each is registered independently.
+///
+/// Registration is idempotent: existing Sonarr/Radarr servers are listed first and
+/// already-registered names are skipped, so repeated reconciles do not accumulate
+/// duplicate entries.
+///
+/// Per-app failures are logged and do not abort the loop, but the function returns
+/// `Err` if any registration failed so the `MaintainerrSyncReady` status condition
+/// reflects the partial failure. The caller converts this into a condition rather
+/// than propagating it, so a sync failure never blocks the rest of reconciliation.
+///
+/// Plex is intentionally not synced here: Plex uses plex.tv account authentication
+/// rather than an operator-managed API key, so the operator has no token to inject.
+/// Tracked for follow-up.
+async fn sync_maintainerr_servers(
+    client: &Client,
+    maintainerr: &ServarrApp,
+    target_ns: &str,
+) -> Result<(), anyhow::Error> {
+    let maintainerr_name = maintainerr.name_any();
+    let ns = maintainerr.namespace().unwrap_or_else(|| "default".into());
+
+    // Read Maintainerr's operator-managed API key
+    let api_key_secret = servarr_resources::common::child_name(maintainerr, "api-key");
+    let maintainerr_key =
+        servarr_api::read_secret_key(client, &ns, &api_key_secret, "api-key").await?;
+
+    let maintainerr_app_name = servarr_resources::common::service_name(maintainerr);
+    let defaults = servarr_crds::AppDefaults::for_app(&maintainerr.spec.app)
+        .map_err(|e| anyhow::anyhow!("failed to load app defaults: {e}"))?;
+    let svc_spec = maintainerr
+        .spec
+        .service
+        .as_ref()
+        .unwrap_or(&defaults.service);
+    // A Maintainerr service with no port is a malformed spec/defaults — surface it
+    // rather than silently constructing a URL against the wrong port.
+    let port = svc_spec.ports.first().map(|p| p.port).ok_or_else(|| {
+        anyhow::anyhow!("Maintainerr service spec has no ports; check spec.service or app defaults")
+    })?;
+    let maintainerr_url = format!("http://{maintainerr_app_name}.{ns}.svc:{port}");
+
+    let maintainerr_client =
+        servarr_api::MaintainerrClient::new(&maintainerr_url, &maintainerr_key)?;
+
+    // Discover apps in the target namespace
+    let discovered = discover_namespace_apps(client, target_ns).await?;
+
+    // List already-registered servers so re-registration is idempotent (#132).
+    let existing_sonarr: std::collections::HashSet<String> = maintainerr_client
+        .list_sonarr()
+        .await
+        .map(|servers| servers.into_iter().map(|s| s.name).collect())
+        .unwrap_or_default();
+    let existing_radarr: std::collections::HashSet<String> = maintainerr_client
+        .list_radarr()
+        .await
+        .map(|servers| servers.into_iter().map(|s| s.name).collect())
+        .unwrap_or_default();
+
+    let mut sonarr_count = 0;
+    let mut radarr_count = 0;
+    let mut overseerr_configured = false;
+    let mut tautulli_configured = false;
+    let mut failures = 0;
+
+    // Register all discovered apps. split4k instances appear as separate apps in discovery.
+    for app in &discovered {
+        match app.app_type {
+            AppType::Sonarr => {
+                if existing_sonarr.contains(&app.name) {
+                    continue;
+                }
+                info!(maintainerr = %maintainerr_name, sonarr = %app.name, "syncing Sonarr into Maintainerr");
+                if let Err(e) = maintainerr_client
+                    .add_sonarr(&app.name, &app.base_url(), &app.api_key)
+                    .await
+                {
+                    warn!(maintainerr = %maintainerr_name, sonarr = %app.name, error = %e,
+                        "failed to sync Sonarr to Maintainerr");
+                    failures += 1;
+                } else {
+                    sonarr_count += 1;
+                }
+            }
+            AppType::Radarr => {
+                if existing_radarr.contains(&app.name) {
+                    continue;
+                }
+                info!(maintainerr = %maintainerr_name, radarr = %app.name, "syncing Radarr into Maintainerr");
+                if let Err(e) = maintainerr_client
+                    .add_radarr(&app.name, &app.base_url(), &app.api_key)
+                    .await
+                {
+                    warn!(maintainerr = %maintainerr_name, radarr = %app.name, error = %e,
+                        "failed to sync Radarr to Maintainerr");
+                    failures += 1;
+                } else {
+                    radarr_count += 1;
+                }
+            }
+            AppType::Overseerr if !overseerr_configured => {
+                info!(maintainerr = %maintainerr_name, overseerr = %app.name, "syncing Overseerr into Maintainerr");
+                match maintainerr_client
+                    .set_overseerr(&app.base_url(), &app.api_key)
+                    .await
+                {
+                    Ok(()) => overseerr_configured = true,
+                    Err(e) => {
+                        warn!(maintainerr = %maintainerr_name, overseerr = %app.name, error = %e,
+                            "failed to sync Overseerr to Maintainerr");
+                        failures += 1;
+                    }
+                }
+            }
+            AppType::Tautulli if !tautulli_configured => {
+                info!(maintainerr = %maintainerr_name, tautulli = %app.name, "syncing Tautulli into Maintainerr");
+                match maintainerr_client
+                    .set_tautulli(&app.base_url(), &app.api_key)
+                    .await
+                {
+                    Ok(()) => tautulli_configured = true,
+                    Err(e) => {
+                        warn!(maintainerr = %maintainerr_name, tautulli = %app.name, error = %e,
+                            "failed to sync Tautulli to Maintainerr");
+                        failures += 1;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    info!(maintainerr = %maintainerr_name, sonarr_count, radarr_count,
+        overseerr_configured, tautulli_configured, failures,
+        "Maintainerr sync complete");
+
+    if failures > 0 {
+        return Err(anyhow::anyhow!(
+            "{failures} app(s) failed to sync into Maintainerr (see warnings above)"
+        ));
     }
 
     Ok(())
@@ -3442,6 +3628,7 @@ mod tests {
                 subgen_sync: None,
                 prowlarr_sync: None,
                 overseerr_sync: None,
+                maintainerr_sync: None,
                 restore: None,
             },
             None,
@@ -3524,6 +3711,7 @@ mod tests {
                 subgen_sync: None,
                 prowlarr_sync: None,
                 overseerr_sync: None,
+                maintainerr_sync: None,
                 restore: None,
             },
             None,

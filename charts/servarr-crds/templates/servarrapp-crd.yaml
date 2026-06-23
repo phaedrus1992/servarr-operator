@@ -373,6 +373,7 @@ spec:
                         - port
                         type: object
                       settings:
+                        default: {}
                         type: object
                         x-kubernetes-preserve-unknown-fields: true
                     type: object
@@ -457,10 +458,11 @@ spec:
                       type: object
                     type: array
                   routeType:
-                    default: Http
                     enum:
                     - Http
                     - Tcp
+                    - null
+                    nullable: true
                     type: string
                   tls:
                     description: |-
@@ -516,12 +518,11 @@ spec:
                     default: IfNotPresent
                     type: string
                   repository:
+                    default: ''
                     type: string
                   tag:
                     default: ''
                     type: string
-                required:
-                - repository
                 type: object
               imagePullSecrets:
                 description: Names of Kubernetes Secrets for private registry authentication.
@@ -535,6 +536,19 @@ spec:
                   instances of the same app type within a namespace.
                 nullable: true
                 type: string
+              maintainerrSync:
+                description: Maintainerr cross-app synchronization. Only applies to Maintainerr-type apps.
+                nullable: true
+                properties:
+                  enabled:
+                    default: false
+                    description: Enable Maintainerr cross-app sync.
+                    type: boolean
+                  namespaceScope:
+                    description: Namespace to discover companion apps in. Defaults to Maintainerr's own namespace.
+                    nullable: true
+                    type: string
+                type: object
               networkPolicy:
                 nullable: true
                 type: boolean

@@ -376,6 +376,7 @@ spec:
                               - port
                               type: object
                             settings:
+                              default: {}
                               type: object
                               x-kubernetes-preserve-unknown-fields: true
                           type: object
@@ -469,10 +470,11 @@ spec:
                             type: object
                           type: array
                         routeType:
-                          default: Http
                           enum:
                           - Http
                           - Tcp
+                          - null
+                          nullable: true
                           type: string
                         tls:
                           description: |-
@@ -532,12 +534,11 @@ spec:
                           default: IfNotPresent
                           type: string
                         repository:
+                          default: ''
                           type: string
                         tag:
                           default: ''
                           type: string
-                      required:
-                      - repository
                       type: object
                     imagePullSecrets:
                       items:
@@ -548,6 +549,24 @@ spec:
                       description: Optional instance label for multi-instance deployments (e.g. "4k").
                       nullable: true
                       type: string
+                    maintainerrSync:
+                      description: |-
+                        Sync spec for Maintainerr → Sonarr/Radarr/Overseerr/Tautulli/Plex integration.
+
+                        When enabled on a Maintainerr-type ServarrApp, the operator discovers
+                        Sonarr, Radarr, Overseerr, Tautulli, and Plex instances in the target
+                        namespace and registers them in Maintainerr for media management.
+                      nullable: true
+                      properties:
+                        enabled:
+                          default: false
+                          description: Enable Maintainerr cross-app sync.
+                          type: boolean
+                        namespaceScope:
+                          description: Namespace to discover companion apps in. Defaults to Maintainerr's own namespace.
+                          nullable: true
+                          type: string
+                      type: object
                     networkPolicy:
                       nullable: true
                       type: boolean
@@ -988,10 +1007,11 @@ spec:
                                 type: object
                               type: array
                             routeType:
-                              default: Http
                               enum:
                               - Http
                               - Tcp
+                              - null
+                              nullable: true
                               type: string
                             tls:
                               description: |-
@@ -1023,12 +1043,11 @@ spec:
                               default: IfNotPresent
                               type: string
                             repository:
+                              default: ''
                               type: string
                             tag:
                               default: ''
                               type: string
-                          required:
-                          - repository
                           type: object
                         persistence:
                           nullable: true
@@ -1243,10 +1262,11 @@ spec:
                           type: object
                         type: array
                       routeType:
-                        default: Http
                         enum:
                         - Http
                         - Tcp
+                        - null
+                        nullable: true
                         type: string
                       tls:
                         description: |-
@@ -1520,12 +1540,11 @@ spec:
                         default: IfNotPresent
                         type: string
                       repository:
+                        default: ''
                         type: string
                       tag:
                         default: ''
                         type: string
-                    required:
-                    - repository
                     type: object
                   movies4kPath:
                     default: /movies-4k
