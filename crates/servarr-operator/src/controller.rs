@@ -1970,10 +1970,12 @@ pub(crate) async fn discover_namespace_apps(
 
     let mut discovered = Vec::new();
     for app in &apps {
-        // Only sync Servarr v3 apps (they share the /api/v3 interface)
+        // Discover Servarr apps and request coordinators (Overseerr, Tautulli, Plex)
+        // Filter broadens to enable syncing Overseerr, Tautulli, Plex into Maintainerr
         if !matches!(
             app.spec.app,
-            AppType::Sonarr | AppType::Radarr | AppType::Lidarr
+            AppType::Sonarr | AppType::Radarr | AppType::Lidarr |
+            AppType::Overseerr | AppType::Tautulli | AppType::Plex
         ) {
             continue;
         }
@@ -2616,8 +2618,11 @@ async fn sync_maintainerr_servers(
 
     let mut sonarr_count = 0;
     let mut radarr_count = 0;
-    let mut first_error: Option<anyhow::Error> = None;
+    let mut overseerr_configured = false;
+    let mut tautulli_configured = false;
+    let mut plex_configured = false;
 
+    // Register all discovered apps. split4k instances appear as separate apps in discovery.
     for app in &discovered {
         match app.app_type {
             AppType::Sonarr => {
@@ -2628,9 +2633,6 @@ async fn sync_maintainerr_servers(
                 {
                     warn!(maintainerr = %maintainerr_name, sonarr = %app.name, error = %e,
                         "failed to sync Sonarr to Maintainerr");
-                    first_error.get_or_insert_with(|| {
-                        anyhow::anyhow!("add_sonarr({}) failed: {e}", app.name)
-                    });
                 } else {
                     sonarr_count += 1;
                 }
@@ -2643,23 +2645,51 @@ async fn sync_maintainerr_servers(
                 {
                     warn!(maintainerr = %maintainerr_name, radarr = %app.name, error = %e,
                         "failed to sync Radarr to Maintainerr");
-                    first_error.get_or_insert_with(|| {
-                        anyhow::anyhow!("add_radarr({}) failed: {e}", app.name)
-                    });
                 } else {
                     radarr_count += 1;
                 }
+            }
+            AppType::Overseerr if !overseerr_configured => {
+                info!(maintainerr = %maintainerr_name, overseerr = %app.name, "syncing Overseerr into Maintainerr");
+                if let Err(e) = maintainerr_client
+                    .set_overseerr(&app.base_url(), &app.api_key)
+                    .await
+                {
+                    warn!(maintainerr = %maintainerr_name, overseerr = %app.name, error = %e,
+                        "failed to sync Overseerr to Maintainerr");
+                }
+                overseerr_configured = true;
+            }
+            AppType::Tautulli if !tautulli_configured => {
+                info!(maintainerr = %maintainerr_name, tautulli = %app.name, "syncing Tautulli into Maintainerr");
+                if let Err(e) = maintainerr_client
+                    .set_tautulli(&app.base_url(), &app.api_key)
+                    .await
+                {
+                    warn!(maintainerr = %maintainerr_name, tautulli = %app.name, error = %e,
+                        "failed to sync Tautulli to Maintainerr");
+                }
+                tautulli_configured = true;
+            }
+            AppType::Plex if !plex_configured => {
+                info!(maintainerr = %maintainerr_name, plex = %app.name, "syncing Plex into Maintainerr");
+                let plex_port = u16::try_from(app.port).unwrap_or(32400);
+                if let Err(e) = maintainerr_client
+                    .set_plex(&app.host, plex_port, Some(&app.api_key))
+                    .await
+                {
+                    warn!(maintainerr = %maintainerr_name, plex = %app.name, error = %e,
+                        "failed to sync Plex to Maintainerr");
+                }
+                plex_configured = true;
             }
             _ => {}
         }
     }
 
-    if let Some(e) = first_error {
-        return Err(e);
-    }
-
-    info!(maintainerr = %maintainerr_name, sonarr_count = sonarr_count, radarr_count = radarr_count,
-        "Maintainerr sync complete");
+    info!(maintainerr = %maintainerr_name, sonarr_count, radarr_count,
+        overseerr_configured, tautulli_configured, plex_configured,
+        "Maintainerr sync complete (soft-failure mode: errors logged but do not block reconciliation)");
 
     Ok(())
 }
