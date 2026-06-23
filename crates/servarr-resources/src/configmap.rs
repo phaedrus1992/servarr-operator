@@ -611,10 +611,12 @@ mod tests {
     use servarr_crds::{RestrictedRsyncConfig, SshBastionConfig, SshUser};
 
     fn minimal_ssh_bastion_app() -> ServarrApp {
-        let mut metadata = ObjectMeta::default();
-        metadata.name = Some("test-app".into());
-        metadata.namespace = Some("default".into());
-        metadata.uid = Some("12345-67890".into());
+        let metadata = ObjectMeta {
+            name: Some("test-app".into()),
+            namespace: Some("default".into()),
+            uid: Some("12345-67890".into()),
+            ..Default::default()
+        };
 
         ServarrApp {
             metadata,
