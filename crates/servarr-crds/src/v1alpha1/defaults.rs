@@ -66,12 +66,18 @@ impl AppDefaults {
                     value: "medium".into(),
                 },
             ]);
+            // Whisper medium model requires ~1.5GB; 512Mi default causes OOM
+            defaults.resources = std_resources("1", "2Gi", "100m", "512Mi");
         }
         if matches!(app, super::AppType::Maintainerr) {
             // Issue #131: Maintainerr v3 expects /opt/data, not /config
-            if let Some(config_vol) = defaults.persistence.volumes.iter_mut().find(|v| v.name == "config") {
-                config_vol.mount_path = "/opt/data".to_string();
-            }
+            let config_vol = defaults
+                .persistence
+                .volumes
+                .iter_mut()
+                .find(|v| v.name == "config")
+                .ok_or_else(|| "Maintainerr defaults must have a 'config' volume".to_string())?;
+            config_vol.mount_path = "/opt/data".to_string();
             // Issue #138: Maintainerr needs higher memory for large library scans
             defaults.resources = std_resources("1", "2Gi", "100m", "512Mi");
         }
@@ -117,61 +123,7 @@ impl AppDefaults {
     }
 
     pub fn for_app(app: &super::AppType) -> Result<Self, String> {
-        let app_name = app.to_string();
-        let img = image_defaults(&app_name)
-            .ok_or_else(|| format!("no image defaults for app: {app_name}"))?;
-
-        let mut defaults = match img.security {
-            "linuxserver" => Self::linuxserver_base(img.port, img.downloads, img.probe_path),
-            "nonroot" => Self::nonroot_base(img.port, img.downloads, img.probe_path),
-            "sshd" => Self::sshd_base(img.port),
-            other => {
-                return Err(format!(
-                    "unknown security profile in image-defaults.toml: {other}"
-                ));
-            }
-        };
-
-        // Override probes for TCP probe type
-        if img.probe_type == "tcp" {
-            defaults.probes = tcp_probes(30, 10);
-        }
-
-        defaults.image = image(img.repository, img.tag);
-
-        // App-specific config
-        if matches!(app, super::AppType::Transmission) {
-            defaults.app_config =
-                Some(AppConfig::Transmission(super::TransmissionConfig::default()));
-        }
-
-        if matches!(app, super::AppType::Subgen) {
-            defaults
-                .persistence
-                .volumes
-                .push(pvc("models", "/subgen/models", "10Gi"));
-            defaults.env.extend([
-                EnvVar {
-                    name: "TRANSCRIBE_DEVICE".into(),
-                    value: "cpu".into(),
-                },
-                EnvVar {
-                    name: "WHISPER_MODEL".into(),
-                    value: "medium".into(),
-                },
-            ]);
-        }
-
-        if matches!(app, super::AppType::Maintainerr) {
-            // Issue #131: Maintainerr v3 expects /opt/data, not /config
-            if let Some(config_vol) = defaults.persistence.volumes.iter_mut().find(|v| v.name == "config") {
-                config_vol.mount_path = "/opt/data".to_string();
-            }
-            // Issue #138: Maintainerr needs higher memory for large library scans
-            defaults.resources = std_resources("1", "2Gi", "100m", "512Mi");
-        }
-
-        Ok(defaults)
+        Self::try_for_app(app)
     }
 
     fn linuxserver_base(port: i32, downloads: bool, probe_path: &str) -> Self {
