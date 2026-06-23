@@ -82,7 +82,7 @@ impl MaintainerrClient {
 
         let mut headers = reqwest::header::HeaderMap::new();
         headers.insert(
-            "X-Api-Key",
+            reqwest::header::HeaderName::from_static("x-api-key"),
             reqwest::header::HeaderValue::from_str(api_key).map_err(|_| ApiError::InvalidApiKey)?,
         );
 
@@ -90,7 +90,7 @@ impl MaintainerrClient {
             .default_headers(headers)
             .timeout(std::time::Duration::from_secs(30))
             .build()
-            .map_err(|e| ApiError::Request(e))?;
+            .map_err(ApiError::Request)?;
 
         Ok(Self { base_url, client })
     }
@@ -113,13 +113,16 @@ impl MaintainerrClient {
             .json(&body)
             .send()
             .await
-            .map_err(|e| ApiError::Request(e))?;
+            .map_err(ApiError::Request)?;
 
         if resp.status().is_success() {
-            resp.json().await.map_err(|e| ApiError::Request(e))
+            resp.json().await.map_err(ApiError::Request)
         } else {
             let status = resp.status().as_u16();
-            let body = resp.text().await.unwrap_or_else(|_| String::new());
+            let body = resp.text().await.unwrap_or_else(|e| {
+                tracing::debug!(error = %e, "failed to read Maintainerr error response body");
+                String::new()
+            });
             Err(ApiError::ApiResponse { status, body })
         }
     }
@@ -138,13 +141,16 @@ impl MaintainerrClient {
             .json(&settings)
             .send()
             .await
-            .map_err(|e| ApiError::Request(e))?;
+            .map_err(ApiError::Request)?;
 
         if resp.status().is_success() {
-            resp.json().await.map_err(|e| ApiError::Request(e))
+            resp.json().await.map_err(ApiError::Request)
         } else {
             let status = resp.status().as_u16();
-            let body = resp.text().await.unwrap_or_else(|_| String::new());
+            let body = resp.text().await.unwrap_or_else(|e| {
+                tracing::debug!(error = %e, "failed to read Maintainerr error response body");
+                String::new()
+            });
             Err(ApiError::ApiResponse { status, body })
         }
     }
@@ -158,13 +164,16 @@ impl MaintainerrClient {
             .get(&endpoint)
             .send()
             .await
-            .map_err(|e| ApiError::Request(e))?;
+            .map_err(ApiError::Request)?;
 
         if resp.status().is_success() {
-            resp.json().await.map_err(|e| ApiError::Request(e))
+            resp.json().await.map_err(ApiError::Request)
         } else {
             let status = resp.status().as_u16();
-            let body = resp.text().await.unwrap_or_else(|_| String::new());
+            let body = resp.text().await.unwrap_or_else(|e| {
+                tracing::debug!(error = %e, "failed to read Maintainerr error response body");
+                String::new()
+            });
             Err(ApiError::ApiResponse { status, body })
         }
     }
@@ -178,13 +187,16 @@ impl MaintainerrClient {
             .delete(&endpoint)
             .send()
             .await
-            .map_err(|e| ApiError::Request(e))?;
+            .map_err(ApiError::Request)?;
 
         if resp.status().is_success() {
             Ok(())
         } else {
             let status = resp.status().as_u16();
-            let body = resp.text().await.unwrap_or_else(|_| String::new());
+            let body = resp.text().await.unwrap_or_else(|e| {
+                tracing::debug!(error = %e, "failed to read Maintainerr error response body");
+                String::new()
+            });
             Err(ApiError::ApiResponse { status, body })
         }
     }
@@ -207,13 +219,16 @@ impl MaintainerrClient {
             .json(&body)
             .send()
             .await
-            .map_err(|e| ApiError::Request(e))?;
+            .map_err(ApiError::Request)?;
 
         if resp.status().is_success() {
-            resp.json().await.map_err(|e| ApiError::Request(e))
+            resp.json().await.map_err(ApiError::Request)
         } else {
             let status = resp.status().as_u16();
-            let body = resp.text().await.unwrap_or_else(|_| String::new());
+            let body = resp.text().await.unwrap_or_else(|e| {
+                tracing::debug!(error = %e, "failed to read Maintainerr error response body");
+                String::new()
+            });
             Err(ApiError::ApiResponse { status, body })
         }
     }
@@ -232,13 +247,16 @@ impl MaintainerrClient {
             .json(&settings)
             .send()
             .await
-            .map_err(|e| ApiError::Request(e))?;
+            .map_err(ApiError::Request)?;
 
         if resp.status().is_success() {
-            resp.json().await.map_err(|e| ApiError::Request(e))
+            resp.json().await.map_err(ApiError::Request)
         } else {
             let status = resp.status().as_u16();
-            let body = resp.text().await.unwrap_or_else(|_| String::new());
+            let body = resp.text().await.unwrap_or_else(|e| {
+                tracing::debug!(error = %e, "failed to read Maintainerr error response body");
+                String::new()
+            });
             Err(ApiError::ApiResponse { status, body })
         }
     }
@@ -252,13 +270,16 @@ impl MaintainerrClient {
             .get(&endpoint)
             .send()
             .await
-            .map_err(|e| ApiError::Request(e))?;
+            .map_err(ApiError::Request)?;
 
         if resp.status().is_success() {
-            resp.json().await.map_err(|e| ApiError::Request(e))
+            resp.json().await.map_err(ApiError::Request)
         } else {
             let status = resp.status().as_u16();
-            let body = resp.text().await.unwrap_or_else(|_| String::new());
+            let body = resp.text().await.unwrap_or_else(|e| {
+                tracing::debug!(error = %e, "failed to read Maintainerr error response body");
+                String::new()
+            });
             Err(ApiError::ApiResponse { status, body })
         }
     }
@@ -272,13 +293,16 @@ impl MaintainerrClient {
             .delete(&endpoint)
             .send()
             .await
-            .map_err(|e| ApiError::Request(e))?;
+            .map_err(ApiError::Request)?;
 
         if resp.status().is_success() {
             Ok(())
         } else {
             let status = resp.status().as_u16();
-            let body = resp.text().await.unwrap_or_else(|_| String::new());
+            let body = resp.text().await.unwrap_or_else(|e| {
+                tracing::debug!(error = %e, "failed to read Maintainerr error response body");
+                String::new()
+            });
             Err(ApiError::ApiResponse { status, body })
         }
     }
@@ -296,13 +320,16 @@ impl MaintainerrClient {
             .json(&body)
             .send()
             .await
-            .map_err(|e| ApiError::Request(e))?;
+            .map_err(ApiError::Request)?;
 
         if resp.status().is_success() {
             Ok(())
         } else {
             let status = resp.status().as_u16();
-            let body = resp.text().await.unwrap_or_else(|_| String::new());
+            let body = resp.text().await.unwrap_or_else(|e| {
+                tracing::debug!(error = %e, "failed to read Maintainerr error response body");
+                String::new()
+            });
             Err(ApiError::ApiResponse { status, body })
         }
     }
@@ -320,13 +347,16 @@ impl MaintainerrClient {
             .json(&body)
             .send()
             .await
-            .map_err(|e| ApiError::Request(e))?;
+            .map_err(ApiError::Request)?;
 
         if resp.status().is_success() {
             Ok(())
         } else {
             let status = resp.status().as_u16();
-            let body = resp.text().await.unwrap_or_else(|_| String::new());
+            let body = resp.text().await.unwrap_or_else(|e| {
+                tracing::debug!(error = %e, "failed to read Maintainerr error response body");
+                String::new()
+            });
             Err(ApiError::ApiResponse { status, body })
         }
     }
@@ -344,13 +374,16 @@ impl MaintainerrClient {
             .json(&body)
             .send()
             .await
-            .map_err(|e| ApiError::Request(e))?;
+            .map_err(ApiError::Request)?;
 
         if resp.status().is_success() {
             Ok(())
         } else {
             let status = resp.status().as_u16();
-            let body = resp.text().await.unwrap_or_else(|_| String::new());
+            let body = resp.text().await.unwrap_or_else(|e| {
+                tracing::debug!(error = %e, "failed to read Maintainerr error response body");
+                String::new()
+            });
             Err(ApiError::ApiResponse { status, body })
         }
     }
@@ -375,13 +408,16 @@ impl MaintainerrClient {
             .json(&body)
             .send()
             .await
-            .map_err(|e| ApiError::Request(e))?;
+            .map_err(ApiError::Request)?;
 
         if resp.status().is_success() {
             Ok(())
         } else {
             let status = resp.status().as_u16();
-            let body = resp.text().await.unwrap_or_else(|_| String::new());
+            let body = resp.text().await.unwrap_or_else(|e| {
+                tracing::debug!(error = %e, "failed to read Maintainerr error response body");
+                String::new()
+            });
             Err(ApiError::ApiResponse { status, body })
         }
     }
@@ -390,6 +426,35 @@ impl MaintainerrClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn server_response_accepts_servername_key() {
+        // Maintainerr returns the canonical `serverName` key.
+        let json = r#"{"id":1,"serverName":"Sonarr","url":"http://sonarr:8989"}"#;
+        let parsed: ServerResponse = serde_json::from_str(json).expect("should parse serverName");
+        assert_eq!(parsed.name, "Sonarr");
+    }
+
+    #[test]
+    fn server_response_accepts_name_alias() {
+        // The `name` alias must also deserialize, since list endpoints vary.
+        let json = r#"{"id":2,"name":"Radarr","url":"http://radarr:7878"}"#;
+        let parsed: ServerResponse = serde_json::from_str(json).expect("should parse name alias");
+        assert_eq!(parsed.name, "Radarr");
+    }
+
+    #[test]
+    fn server_response_serializes_to_servername() {
+        // Re-serialization must always emit `serverName`, never the alias.
+        let resp = ServerResponse {
+            id: Some(3),
+            name: "Lidarr".to_string(),
+            url: "http://lidarr:8686".to_string(),
+        };
+        let json = serde_json::to_string(&resp).expect("should serialize");
+        assert!(json.contains("\"serverName\":\"Lidarr\""), "got: {json}");
+        assert!(!json.contains("\"name\""), "alias leaked into output: {json}");
+    }
 
     #[test]
     fn maintainerr_client_new_constructs() {

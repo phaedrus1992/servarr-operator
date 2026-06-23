@@ -688,7 +688,7 @@ pub struct SubgenSyncSpec {
 /// When enabled on a Maintainerr-type ServarrApp, the operator discovers
 /// Sonarr, Radarr, Overseerr, Tautulli, and Plex instances in the target
 /// namespace and registers them in Maintainerr for media management.
-#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema)]
+#[derive(Serialize, Deserialize, Clone, Debug, Default, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct MaintainerrSyncSpec {
     /// Enable Maintainerr cross-app sync.
@@ -697,15 +697,6 @@ pub struct MaintainerrSyncSpec {
     /// Namespace to discover companion apps in. Defaults to Maintainerr's own namespace.
     #[serde(default)]
     pub namespace_scope: Option<String>,
-}
-
-impl Default for MaintainerrSyncSpec {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            namespace_scope: None,
-        }
-    }
 }
 
 /// Configuration for the in-cluster NFS server deployed by the MediaStack operator.

@@ -669,3 +669,31 @@ fn gateway_spec_merge_with_tls_cert_issuer() {
     // enabled should come from user
     assert!(merged_tls.enabled);
 }
+
+// MaintainerrSyncSpec serde coverage (#132): camelCase key stability and
+// default injection for the new cross-app sync spec.
+#[test]
+fn maintainerr_sync_spec_roundtrip_and_camel_case() {
+    let spec = MaintainerrSyncSpec {
+        enabled: true,
+        namespace_scope: Some("media".to_string()),
+    };
+    let json = serde_json::to_string(&spec).expect("serialize");
+    // namespace_scope must render as camelCase namespaceScope
+    assert!(json.contains("\"namespaceScope\":\"media\""), "got: {json}");
+    assert!(!json.contains("namespace_scope"), "snake_case leaked: {json}");
+    // roundtrip preserves the JSON representation
+    let back: MaintainerrSyncSpec = serde_json::from_str(&json).expect("deserialize");
+    assert_eq!(
+        serde_json::to_value(&spec).unwrap(),
+        serde_json::to_value(&back).unwrap(),
+    );
+}
+
+#[test]
+fn maintainerr_sync_spec_defaults_inject() {
+    // An empty object must deserialize to the documented defaults.
+    let spec: MaintainerrSyncSpec = serde_json::from_str("{}").expect("deserialize empty");
+    assert!(!spec.enabled, "enabled should default to false");
+    assert_eq!(spec.namespace_scope, None);
+}
