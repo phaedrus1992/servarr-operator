@@ -48,21 +48,6 @@ struct TautulliSetRequest<'a> {
     api_key: &'a str,
 }
 
-/// Request body for setting Plex token.
-#[derive(Serialize)]
-struct PlexTokenRequest<'a> {
-    token: &'a str,
-}
-
-/// Request body for setting Plex with hostname, port, and optional token.
-#[derive(Serialize)]
-struct PlexSetRequest<'a> {
-    hostname: &'a str,
-    port: u16,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    token: Option<&'a str>,
-}
-
 /// Generic API response for server listings.
 #[derive(Deserialize, Serialize, Debug, Clone, PartialEq, Eq)]
 pub struct ServerResponse {
@@ -127,34 +112,6 @@ impl MaintainerrClient {
         }
     }
 
-    /// Update an existing Sonarr server.
-    pub async fn update_sonarr(
-        &self,
-        id: i32,
-        settings: ServerResponse,
-    ) -> Result<ServerResponse, ApiError> {
-        let endpoint = format!("{}/api/settings/sonarr/{}", self.base_url, id);
-
-        let resp = self
-            .client
-            .put(&endpoint)
-            .json(&settings)
-            .send()
-            .await
-            .map_err(ApiError::Request)?;
-
-        if resp.status().is_success() {
-            resp.json().await.map_err(ApiError::Request)
-        } else {
-            let status = resp.status().as_u16();
-            let body = resp.text().await.unwrap_or_else(|e| {
-                tracing::debug!(error = %e, "failed to read Maintainerr error response body");
-                String::new()
-            });
-            Err(ApiError::ApiResponse { status, body })
-        }
-    }
-
     /// List all Sonarr servers.
     pub async fn list_sonarr(&self) -> Result<Vec<ServerResponse>, ApiError> {
         let endpoint = format!("{}/api/settings/sonarr", self.base_url);
@@ -168,29 +125,6 @@ impl MaintainerrClient {
 
         if resp.status().is_success() {
             resp.json().await.map_err(ApiError::Request)
-        } else {
-            let status = resp.status().as_u16();
-            let body = resp.text().await.unwrap_or_else(|e| {
-                tracing::debug!(error = %e, "failed to read Maintainerr error response body");
-                String::new()
-            });
-            Err(ApiError::ApiResponse { status, body })
-        }
-    }
-
-    /// Delete a Sonarr server by ID.
-    pub async fn delete_sonarr(&self, id: i32) -> Result<(), ApiError> {
-        let endpoint = format!("{}/api/settings/sonarr/{}", self.base_url, id);
-
-        let resp = self
-            .client
-            .delete(&endpoint)
-            .send()
-            .await
-            .map_err(ApiError::Request)?;
-
-        if resp.status().is_success() {
-            Ok(())
         } else {
             let status = resp.status().as_u16();
             let body = resp.text().await.unwrap_or_else(|e| {
@@ -233,34 +167,6 @@ impl MaintainerrClient {
         }
     }
 
-    /// Update an existing Radarr server.
-    pub async fn update_radarr(
-        &self,
-        id: i32,
-        settings: ServerResponse,
-    ) -> Result<ServerResponse, ApiError> {
-        let endpoint = format!("{}/api/settings/radarr/{}", self.base_url, id);
-
-        let resp = self
-            .client
-            .put(&endpoint)
-            .json(&settings)
-            .send()
-            .await
-            .map_err(ApiError::Request)?;
-
-        if resp.status().is_success() {
-            resp.json().await.map_err(ApiError::Request)
-        } else {
-            let status = resp.status().as_u16();
-            let body = resp.text().await.unwrap_or_else(|e| {
-                tracing::debug!(error = %e, "failed to read Maintainerr error response body");
-                String::new()
-            });
-            Err(ApiError::ApiResponse { status, body })
-        }
-    }
-
     /// List all Radarr servers.
     pub async fn list_radarr(&self) -> Result<Vec<ServerResponse>, ApiError> {
         let endpoint = format!("{}/api/settings/radarr", self.base_url);
@@ -274,29 +180,6 @@ impl MaintainerrClient {
 
         if resp.status().is_success() {
             resp.json().await.map_err(ApiError::Request)
-        } else {
-            let status = resp.status().as_u16();
-            let body = resp.text().await.unwrap_or_else(|e| {
-                tracing::debug!(error = %e, "failed to read Maintainerr error response body");
-                String::new()
-            });
-            Err(ApiError::ApiResponse { status, body })
-        }
-    }
-
-    /// Delete a Radarr server by ID.
-    pub async fn delete_radarr(&self, id: i32) -> Result<(), ApiError> {
-        let endpoint = format!("{}/api/settings/radarr/{}", self.base_url, id);
-
-        let resp = self
-            .client
-            .delete(&endpoint)
-            .send()
-            .await
-            .map_err(ApiError::Request)?;
-
-        if resp.status().is_success() {
-            Ok(())
         } else {
             let status = resp.status().as_u16();
             let body = resp.text().await.unwrap_or_else(|e| {
@@ -340,67 +223,6 @@ impl MaintainerrClient {
     pub async fn set_tautulli(&self, url: &str, api_key: &str) -> Result<(), ApiError> {
         let endpoint = format!("{}/api/settings/tautulli", self.base_url);
         let body = TautulliSetRequest { url, api_key };
-
-        let resp = self
-            .client
-            .post(&endpoint)
-            .json(&body)
-            .send()
-            .await
-            .map_err(ApiError::Request)?;
-
-        if resp.status().is_success() {
-            Ok(())
-        } else {
-            let status = resp.status().as_u16();
-            let body = resp.text().await.unwrap_or_else(|e| {
-                tracing::debug!(error = %e, "failed to read Maintainerr error response body");
-                String::new()
-            });
-            Err(ApiError::ApiResponse { status, body })
-        }
-    }
-
-    // ===== Plex Methods =====
-
-    /// Set Plex token.
-    pub async fn set_plex_token(&self, token: &str) -> Result<(), ApiError> {
-        let endpoint = format!("{}/api/settings/plex/token", self.base_url);
-        let body = PlexTokenRequest { token };
-
-        let resp = self
-            .client
-            .post(&endpoint)
-            .json(&body)
-            .send()
-            .await
-            .map_err(ApiError::Request)?;
-
-        if resp.status().is_success() {
-            Ok(())
-        } else {
-            let status = resp.status().as_u16();
-            let body = resp.text().await.unwrap_or_else(|e| {
-                tracing::debug!(error = %e, "failed to read Maintainerr error response body");
-                String::new()
-            });
-            Err(ApiError::ApiResponse { status, body })
-        }
-    }
-
-    /// Set Plex with hostname, port, and optional token.
-    pub async fn set_plex(
-        &self,
-        hostname: &str,
-        port: u16,
-        token: Option<&str>,
-    ) -> Result<(), ApiError> {
-        let endpoint = format!("{}/api/settings", self.base_url);
-        let body = PlexSetRequest {
-            hostname,
-            port,
-            token,
-        };
 
         let resp = self
             .client
@@ -563,53 +385,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn delete_sonarr_calls_correct_endpoint() {
-        use wiremock::matchers::{method, path};
-        use wiremock::{Mock, MockServer, ResponseTemplate};
-
-        let server = MockServer::start().await;
-        Mock::given(method("DELETE"))
-            .and(path("/api/settings/sonarr/1"))
-            .respond_with(ResponseTemplate::new(200))
-            .expect(1)
-            .mount(&server)
-            .await;
-
-        let client = MaintainerrClient::new(&server.uri(), "test-key").expect("should construct");
-        let result = client.delete_sonarr(1).await;
-
-        assert!(result.is_ok());
-    }
-
-    #[tokio::test]
-    async fn update_sonarr_calls_correct_endpoint() {
-        use wiremock::matchers::{method, path};
-        use wiremock::{Mock, MockServer, ResponseTemplate};
-
-        let server = MockServer::start().await;
-        Mock::given(method("PUT"))
-            .and(path("/api/settings/sonarr/1"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "id": 1,
-                "serverName": "Sonarr1Updated",
-                "url": "http://sonarr2:8989"
-            })))
-            .expect(1)
-            .mount(&server)
-            .await;
-
-        let client = MaintainerrClient::new(&server.uri(), "test-key").expect("should construct");
-        let settings = ServerResponse {
-            id: Some(1),
-            name: "Sonarr1Updated".to_string(),
-            url: "http://sonarr2:8989".to_string(),
-        };
-        let result = client.update_sonarr(1, settings).await;
-
-        assert!(result.is_ok());
-    }
-
-    #[tokio::test]
     async fn add_radarr_calls_correct_endpoint() {
         use wiremock::matchers::{method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -663,53 +438,6 @@ mod tests {
         let servers = result.unwrap();
         assert_eq!(servers.len(), 1);
         assert_eq!(servers[0].name, "Radarr1");
-    }
-
-    #[tokio::test]
-    async fn delete_radarr_calls_correct_endpoint() {
-        use wiremock::matchers::{method, path};
-        use wiremock::{Mock, MockServer, ResponseTemplate};
-
-        let server = MockServer::start().await;
-        Mock::given(method("DELETE"))
-            .and(path("/api/settings/radarr/1"))
-            .respond_with(ResponseTemplate::new(200))
-            .expect(1)
-            .mount(&server)
-            .await;
-
-        let client = MaintainerrClient::new(&server.uri(), "test-key").expect("should construct");
-        let result = client.delete_radarr(1).await;
-
-        assert!(result.is_ok());
-    }
-
-    #[tokio::test]
-    async fn update_radarr_calls_correct_endpoint() {
-        use wiremock::matchers::{method, path};
-        use wiremock::{Mock, MockServer, ResponseTemplate};
-
-        let server = MockServer::start().await;
-        Mock::given(method("PUT"))
-            .and(path("/api/settings/radarr/1"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "id": 1,
-                "serverName": "Radarr1Updated",
-                "url": "http://radarr2:7878"
-            })))
-            .expect(1)
-            .mount(&server)
-            .await;
-
-        let client = MaintainerrClient::new(&server.uri(), "test-key").expect("should construct");
-        let settings = ServerResponse {
-            id: Some(1),
-            name: "Radarr1Updated".to_string(),
-            url: "http://radarr2:7878".to_string(),
-        };
-        let result = client.update_radarr(1, settings).await;
-
-        assert!(result.is_ok());
     }
 
     #[tokio::test]
@@ -789,107 +517,6 @@ mod tests {
 
         let client = MaintainerrClient::new(&server.uri(), "test-key").expect("should construct");
         let err = client.set_tautulli("invalid", "key").await.unwrap_err();
-
-        match err {
-            ApiError::ApiResponse { status, .. } => assert_eq!(status, 400),
-            other => panic!("expected ApiResponse, got: {other}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn set_plex_token_calls_correct_endpoint() {
-        use wiremock::matchers::{method, path};
-        use wiremock::{Mock, MockServer, ResponseTemplate};
-
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/api/settings/plex/token"))
-            .respond_with(ResponseTemplate::new(200))
-            .expect(1)
-            .mount(&server)
-            .await;
-
-        let client = MaintainerrClient::new(&server.uri(), "test-key").expect("should construct");
-        let result = client.set_plex_token("plex-token-123").await;
-
-        assert!(result.is_ok());
-    }
-
-    #[tokio::test]
-    async fn set_plex_token_returns_error_on_failure() {
-        use wiremock::matchers::{method, path};
-        use wiremock::{Mock, MockServer, ResponseTemplate};
-
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/api/settings/plex/token"))
-            .respond_with(ResponseTemplate::new(401).set_body_string("Invalid token"))
-            .mount(&server)
-            .await;
-
-        let client = MaintainerrClient::new(&server.uri(), "test-key").expect("should construct");
-        let err = client.set_plex_token("invalid").await.unwrap_err();
-
-        match err {
-            ApiError::ApiResponse { status, .. } => assert_eq!(status, 401),
-            other => panic!("expected ApiResponse, got: {other}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn set_plex_calls_correct_endpoint() {
-        use wiremock::matchers::{method, path};
-        use wiremock::{Mock, MockServer, ResponseTemplate};
-
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/api/settings"))
-            .respond_with(ResponseTemplate::new(200))
-            .expect(1)
-            .mount(&server)
-            .await;
-
-        let client = MaintainerrClient::new(&server.uri(), "test-key").expect("should construct");
-        let result = client
-            .set_plex("localhost", 32400, Some("plex-token"))
-            .await;
-
-        assert!(result.is_ok());
-    }
-
-    #[tokio::test]
-    async fn set_plex_without_token_calls_correct_endpoint() {
-        use wiremock::matchers::{method, path};
-        use wiremock::{Mock, MockServer, ResponseTemplate};
-
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/api/settings"))
-            .respond_with(ResponseTemplate::new(200))
-            .expect(1)
-            .mount(&server)
-            .await;
-
-        let client = MaintainerrClient::new(&server.uri(), "test-key").expect("should construct");
-        let result = client.set_plex("localhost", 32400, None).await;
-
-        assert!(result.is_ok());
-    }
-
-    #[tokio::test]
-    async fn set_plex_returns_error_on_failure() {
-        use wiremock::matchers::{method, path};
-        use wiremock::{Mock, MockServer, ResponseTemplate};
-
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/api/settings"))
-            .respond_with(ResponseTemplate::new(400).set_body_string("Invalid port"))
-            .mount(&server)
-            .await;
-
-        let client = MaintainerrClient::new(&server.uri(), "test-key").expect("should construct");
-        let err = client.set_plex("localhost", 0, None).await.unwrap_err();
 
         match err {
             ApiError::ApiResponse { status, .. } => assert_eq!(status, 400),
