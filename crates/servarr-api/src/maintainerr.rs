@@ -64,7 +64,7 @@ struct PlexSetRequest<'a> {
 }
 
 /// Generic API response for server listings.
-#[derive(Deserialize, Serialize, Debug, Clone)]
+#[derive(Deserialize, Serialize, Debug, Clone, PartialEq, Eq)]
 pub struct ServerResponse {
     pub id: Option<i32>,
     #[serde(rename = "serverName", alias = "name")]
@@ -126,7 +126,7 @@ impl MaintainerrClient {
                 .map_err(|e| ApiError::Request(e))
         } else {
             let status = resp.status().as_u16();
-            let body = resp.text().await.unwrap_or_default();
+            let body = resp.text().await.unwrap_or_else(|_| String::new());
             Err(ApiError::ApiResponse { status, body })
         }
     }
@@ -153,7 +153,7 @@ impl MaintainerrClient {
                 .map_err(|e| ApiError::Request(e))
         } else {
             let status = resp.status().as_u16();
-            let body = resp.text().await.unwrap_or_default();
+            let body = resp.text().await.unwrap_or_else(|_| String::new());
             Err(ApiError::ApiResponse { status, body })
         }
     }
@@ -175,7 +175,7 @@ impl MaintainerrClient {
                 .map_err(|e| ApiError::Request(e))
         } else {
             let status = resp.status().as_u16();
-            let body = resp.text().await.unwrap_or_default();
+            let body = resp.text().await.unwrap_or_else(|_| String::new());
             Err(ApiError::ApiResponse { status, body })
         }
     }
@@ -195,7 +195,7 @@ impl MaintainerrClient {
             Ok(())
         } else {
             let status = resp.status().as_u16();
-            let body = resp.text().await.unwrap_or_default();
+            let body = resp.text().await.unwrap_or_else(|_| String::new());
             Err(ApiError::ApiResponse { status, body })
         }
     }
@@ -230,7 +230,7 @@ impl MaintainerrClient {
                 .map_err(|e| ApiError::Request(e))
         } else {
             let status = resp.status().as_u16();
-            let body = resp.text().await.unwrap_or_default();
+            let body = resp.text().await.unwrap_or_else(|_| String::new());
             Err(ApiError::ApiResponse { status, body })
         }
     }
@@ -257,7 +257,7 @@ impl MaintainerrClient {
                 .map_err(|e| ApiError::Request(e))
         } else {
             let status = resp.status().as_u16();
-            let body = resp.text().await.unwrap_or_default();
+            let body = resp.text().await.unwrap_or_else(|_| String::new());
             Err(ApiError::ApiResponse { status, body })
         }
     }
@@ -279,7 +279,7 @@ impl MaintainerrClient {
                 .map_err(|e| ApiError::Request(e))
         } else {
             let status = resp.status().as_u16();
-            let body = resp.text().await.unwrap_or_default();
+            let body = resp.text().await.unwrap_or_else(|_| String::new());
             Err(ApiError::ApiResponse { status, body })
         }
     }
@@ -299,7 +299,7 @@ impl MaintainerrClient {
             Ok(())
         } else {
             let status = resp.status().as_u16();
-            let body = resp.text().await.unwrap_or_default();
+            let body = resp.text().await.unwrap_or_else(|_| String::new());
             Err(ApiError::ApiResponse { status, body })
         }
     }
@@ -323,7 +323,7 @@ impl MaintainerrClient {
             Ok(())
         } else {
             let status = resp.status().as_u16();
-            let body = resp.text().await.unwrap_or_default();
+            let body = resp.text().await.unwrap_or_else(|_| String::new());
             Err(ApiError::ApiResponse { status, body })
         }
     }
@@ -347,7 +347,7 @@ impl MaintainerrClient {
             Ok(())
         } else {
             let status = resp.status().as_u16();
-            let body = resp.text().await.unwrap_or_default();
+            let body = resp.text().await.unwrap_or_else(|_| String::new());
             Err(ApiError::ApiResponse { status, body })
         }
     }
@@ -371,7 +371,7 @@ impl MaintainerrClient {
             Ok(())
         } else {
             let status = resp.status().as_u16();
-            let body = resp.text().await.unwrap_or_default();
+            let body = resp.text().await.unwrap_or_else(|_| String::new());
             Err(ApiError::ApiResponse { status, body })
         }
     }
@@ -402,7 +402,7 @@ impl MaintainerrClient {
             Ok(())
         } else {
             let status = resp.status().as_u16();
-            let body = resp.text().await.unwrap_or_default();
+            let body = resp.text().await.unwrap_or_else(|_| String::new());
             Err(ApiError::ApiResponse { status, body })
         }
     }
