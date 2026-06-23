@@ -2643,9 +2643,19 @@ async fn sync_maintainerr_servers(
     // Read Plex token if configured
     let plex_token = if let Some(sync_spec) = &maintainerr.spec.maintainerr_sync {
         if let Some(secret_name) = &sync_spec.plex_token_secret {
-            servarr_api::read_secret_key(client, &ns, secret_name, "plex-token")
-                .await
-                .ok()
+            match servarr_api::read_secret_key(client, &ns, secret_name, "plex-token").await {
+                Ok(token) => Some(token),
+                Err(e) => {
+                    warn!(
+                        maintainerr = %maintainerr_name,
+                        secret = %secret_name,
+                        namespace = %ns,
+                        error = %e,
+                        "failed to read Plex token secret; Plex will not be configured in Maintainerr"
+                    );
+                    None
+                }
+            }
         } else {
             None
         }
@@ -2653,8 +2663,24 @@ async fn sync_maintainerr_servers(
         None
     };
 
-    // Discover apps in the target namespace
+    // Discover apps in the target namespace (excludes Plex since it uses plex.tv auth, not api_key_secret)
     let discovered = discover_namespace_apps(client, target_ns).await?;
+
+    // Lookup Plex separately (discover_namespace_apps filters it out due to missing api_key_secret)
+    let plex_app = if plex_token.is_some() {
+        let all_apps = Api::<ServarrApp>::namespaced(client.clone(), target_ns);
+        all_apps
+            .list(&kube::api::ListParams::default())
+            .await
+            .ok()
+            .and_then(|list| {
+                list.items
+                    .into_iter()
+                    .find(|app| app.spec.app == AppType::Plex)
+            })
+    } else {
+        None
+    };
 
     // List already-registered servers so re-registration is idempotent (#132).
     let existing_sonarr: std::collections::HashSet<String> = maintainerr_client
@@ -2738,25 +2764,36 @@ async fn sync_maintainerr_servers(
                     }
                 }
             }
-            AppType::Plex if !plex_configured && plex_token.is_some() => {
-                info!(maintainerr = %maintainerr_name, plex = %app.name, "syncing Plex into Maintainerr");
-                let plex_port = app.port as u16;
-                if let Err(e) = maintainerr_client.set_plex(&app.host, plex_port).await {
-                    warn!(maintainerr = %maintainerr_name, plex = %app.name, error = %e,
+            _ => {}
+        }
+    }
+
+    // Sync Plex if discovered and token is available (Plex lookup done separately above)
+    if !plex_configured {
+        if let (Some(plex), Some(token)) = (&plex_app, &plex_token) {
+            let plex_name = plex.name_any();
+            let plex_ns = plex.namespace().unwrap_or_else(|| "default".into());
+            let plex_defaults = servarr_crds::AppDefaults::for_app(&plex.spec.app)
+                .map(|d| d.service)
+                .unwrap_or_default();
+            let plex_svc_spec = plex.spec.service.as_ref().unwrap_or(&plex_defaults);
+            if let Some(plex_port) = plex_svc_spec.ports.first().map(|p| p.port as u16) {
+                let plex_svc_name = servarr_resources::common::service_name(plex);
+                let plex_host = format!("{}.{}.svc", plex_svc_name, plex_ns);
+
+                info!(maintainerr = %maintainerr_name, plex = %plex_name, "syncing Plex into Maintainerr");
+                if let Err(e) = maintainerr_client.set_plex(&plex_host, plex_port).await {
+                    warn!(maintainerr = %maintainerr_name, plex = %plex_name, error = %e,
                         "failed to set Plex hostname/port in Maintainerr");
                     failures += 1;
-                } else if let Err(e) = maintainerr_client
-                    .set_plex_token(plex_token.as_ref().unwrap())
-                    .await
-                {
-                    warn!(maintainerr = %maintainerr_name, plex = %app.name, error = %e,
+                } else if let Err(e) = maintainerr_client.set_plex_token(token).await {
+                    warn!(maintainerr = %maintainerr_name, plex = %plex_name, error = %e,
                         "failed to set Plex token in Maintainerr");
                     failures += 1;
                 } else {
                     plex_configured = true;
                 }
             }
-            _ => {}
         }
     }
 
