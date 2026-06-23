@@ -90,7 +90,7 @@ fn test_deployment_builder_maintainerr_nonroot() {
 
     assert_eq!(
         container.image.as_deref(),
-        Some("ghcr.io/jorenn92/maintainerr:2.19.0")
+        Some("ghcr.io/maintainerr/maintainerr:3.15.2")
     );
 
     let sec = container.security_context.as_ref().unwrap();

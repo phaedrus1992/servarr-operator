@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased] - ReleaseDate
 
+### Fixed
+
+- Fix SSH bastion `restricted-rsync` wrapper rejecting paths containing parentheses
+  (e.g. `Show (2024)/`). rsync always escapes parentheses as `\(` and `\)` in the
+  remote command; the metacharacter guard now uses an ERE check to distinguish
+  rsync-escaped parens from bare subshell injection attempts (e.g. `$(id)` or `(id)`).
+
 ## [1.0.3] - 2026-06-21
 
 ### Fixed
