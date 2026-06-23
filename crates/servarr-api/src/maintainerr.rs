@@ -83,8 +83,7 @@ impl MaintainerrClient {
         let mut headers = reqwest::header::HeaderMap::new();
         headers.insert(
             "X-Api-Key",
-            reqwest::header::HeaderValue::from_str(api_key)
-                .map_err(|_| ApiError::InvalidApiKey)?,
+            reqwest::header::HeaderValue::from_str(api_key).map_err(|_| ApiError::InvalidApiKey)?,
         );
 
         let client = reqwest::Client::builder()
@@ -106,11 +105,7 @@ impl MaintainerrClient {
         api_key: &str,
     ) -> Result<ServerResponse, ApiError> {
         let endpoint = format!("{}/api/settings/sonarr", self.base_url);
-        let body = SonarrAddRequest {
-            name,
-            url,
-            api_key,
-        };
+        let body = SonarrAddRequest { name, url, api_key };
 
         let resp = self
             .client
@@ -121,9 +116,7 @@ impl MaintainerrClient {
             .map_err(|e| ApiError::Request(e))?;
 
         if resp.status().is_success() {
-            resp.json()
-                .await
-                .map_err(|e| ApiError::Request(e))
+            resp.json().await.map_err(|e| ApiError::Request(e))
         } else {
             let status = resp.status().as_u16();
             let body = resp.text().await.unwrap_or_else(|_| String::new());
@@ -148,9 +141,7 @@ impl MaintainerrClient {
             .map_err(|e| ApiError::Request(e))?;
 
         if resp.status().is_success() {
-            resp.json()
-                .await
-                .map_err(|e| ApiError::Request(e))
+            resp.json().await.map_err(|e| ApiError::Request(e))
         } else {
             let status = resp.status().as_u16();
             let body = resp.text().await.unwrap_or_else(|_| String::new());
@@ -170,9 +161,7 @@ impl MaintainerrClient {
             .map_err(|e| ApiError::Request(e))?;
 
         if resp.status().is_success() {
-            resp.json()
-                .await
-                .map_err(|e| ApiError::Request(e))
+            resp.json().await.map_err(|e| ApiError::Request(e))
         } else {
             let status = resp.status().as_u16();
             let body = resp.text().await.unwrap_or_else(|_| String::new());
@@ -210,11 +199,7 @@ impl MaintainerrClient {
         api_key: &str,
     ) -> Result<ServerResponse, ApiError> {
         let endpoint = format!("{}/api/settings/radarr", self.base_url);
-        let body = RadarrAddRequest {
-            name,
-            url,
-            api_key,
-        };
+        let body = RadarrAddRequest { name, url, api_key };
 
         let resp = self
             .client
@@ -225,9 +210,7 @@ impl MaintainerrClient {
             .map_err(|e| ApiError::Request(e))?;
 
         if resp.status().is_success() {
-            resp.json()
-                .await
-                .map_err(|e| ApiError::Request(e))
+            resp.json().await.map_err(|e| ApiError::Request(e))
         } else {
             let status = resp.status().as_u16();
             let body = resp.text().await.unwrap_or_else(|_| String::new());
@@ -252,9 +235,7 @@ impl MaintainerrClient {
             .map_err(|e| ApiError::Request(e))?;
 
         if resp.status().is_success() {
-            resp.json()
-                .await
-                .map_err(|e| ApiError::Request(e))
+            resp.json().await.map_err(|e| ApiError::Request(e))
         } else {
             let status = resp.status().as_u16();
             let body = resp.text().await.unwrap_or_else(|_| String::new());
@@ -274,9 +255,7 @@ impl MaintainerrClient {
             .map_err(|e| ApiError::Request(e))?;
 
         if resp.status().is_success() {
-            resp.json()
-                .await
-                .map_err(|e| ApiError::Request(e))
+            resp.json().await.map_err(|e| ApiError::Request(e))
         } else {
             let status = resp.status().as_u16();
             let body = resp.text().await.unwrap_or_else(|_| String::new());
@@ -414,15 +393,15 @@ mod tests {
 
     #[test]
     fn maintainerr_client_new_constructs() {
-        let client = MaintainerrClient::new("http://localhost:6246", "test-key")
-            .expect("should construct");
+        let client =
+            MaintainerrClient::new("http://localhost:6246", "test-key").expect("should construct");
         assert_eq!(client.base_url, "http://localhost:6246");
     }
 
     #[test]
     fn maintainerr_client_new_trims_trailing_slash() {
-        let client = MaintainerrClient::new("http://localhost:6246/", "test-key")
-            .expect("should construct");
+        let client =
+            MaintainerrClient::new("http://localhost:6246/", "test-key").expect("should construct");
         assert_eq!(client.base_url, "http://localhost:6246");
     }
 
@@ -699,10 +678,7 @@ mod tests {
             .await;
 
         let client = MaintainerrClient::new(&server.uri(), "test-key").expect("should construct");
-        let err = client
-            .set_overseerr("invalid", "key")
-            .await
-            .unwrap_err();
+        let err = client.set_overseerr("invalid", "key").await.unwrap_err();
 
         match err {
             ApiError::ApiResponse { status, .. } => assert_eq!(status, 400),

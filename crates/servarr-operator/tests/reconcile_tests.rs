@@ -2589,7 +2589,9 @@ async fn test_maintainerr_sync_discovers_sonarr_and_radarr() {
     });
 
     Mock::given(method("GET"))
-        .and(path_regex(r"^/apis/servarr\.dev/v1alpha1/namespaces/test/servarrapps.*"))
+        .and(path_regex(
+            r"^/apis/servarr\.dev/v1alpha1/namespaces/test/servarrapps.*",
+        ))
         .respond_with(ResponseTemplate::new(200).set_body_json(&apps_list_json))
         .mount_as_scoped(&server)
         .await;
@@ -2623,14 +2625,18 @@ async fn test_maintainerr_sync_discovers_sonarr_and_radarr() {
 
     // Mock Maintainerr API calls to add Sonarr and Radarr
     Mock::given(method("POST"))
-        .and(path_regex(r"^http://maintainerr\.test\.svc:\d+/api/v1/integrations/sonarr.*"))
+        .and(path_regex(
+            r"^http://maintainerr\.test\.svc:\d+/api/v1/integrations/sonarr.*",
+        ))
         .respond_with(ResponseTemplate::new(200))
         .expect_at_least(1)
         .mount_as_scoped(&server)
         .await;
 
     Mock::given(method("POST"))
-        .and(path_regex(r"^http://maintainerr\.test\.svc:\d+/api/v1/integrations/radarr.*"))
+        .and(path_regex(
+            r"^http://maintainerr\.test\.svc:\d+/api/v1/integrations/radarr.*",
+        ))
         .respond_with(ResponseTemplate::new(200))
         .expect_at_least(1)
         .mount_as_scoped(&server)

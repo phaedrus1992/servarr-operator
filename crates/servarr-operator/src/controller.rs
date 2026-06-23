@@ -1974,8 +1974,12 @@ pub(crate) async fn discover_namespace_apps(
         // Filter broadens to enable syncing Overseerr, Tautulli, Plex into Maintainerr
         if !matches!(
             app.spec.app,
-            AppType::Sonarr | AppType::Radarr | AppType::Lidarr |
-            AppType::Overseerr | AppType::Tautulli | AppType::Plex
+            AppType::Sonarr
+                | AppType::Radarr
+                | AppType::Lidarr
+                | AppType::Overseerr
+                | AppType::Tautulli
+                | AppType::Plex
         ) {
             continue;
         }
@@ -2607,11 +2611,16 @@ async fn sync_maintainerr_servers(
     let maintainerr_app_name = servarr_resources::common::service_name(maintainerr);
     let defaults = servarr_crds::AppDefaults::for_app(&maintainerr.spec.app)
         .map_err(|e| anyhow::anyhow!("failed to load app defaults: {e}"))?;
-    let svc_spec = maintainerr.spec.service.as_ref().unwrap_or(&defaults.service);
+    let svc_spec = maintainerr
+        .spec
+        .service
+        .as_ref()
+        .unwrap_or(&defaults.service);
     let port = svc_spec.ports.first().map(|p| p.port).unwrap_or(80);
     let maintainerr_url = format!("http://{maintainerr_app_name}.{ns}.svc:{port}");
 
-    let maintainerr_client = servarr_api::MaintainerrClient::new(&maintainerr_url, &maintainerr_key)?;
+    let maintainerr_client =
+        servarr_api::MaintainerrClient::new(&maintainerr_url, &maintainerr_key)?;
 
     // Discover Sonarr and Radarr apps in the target namespace
     let discovered = discover_namespace_apps(client, target_ns).await?;
