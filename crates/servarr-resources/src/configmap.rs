@@ -38,7 +38,10 @@ pub fn build_ssh_bastion_restricted_rsync(app: &ServarrApp) -> Option<ConfigMap>
             .map(|rr| {
                 rr.allowed_paths
                     .iter()
-                    .map(|p| format!("      \"{p}\""))
+                    .map(|p| {
+                        let escaped = p.replace('"', "\\\"");
+                        format!("      \"{escaped}\"")
+                    })
                     .collect::<Vec<_>>()
                     .join("\n")
             })
@@ -588,4 +591,130 @@ echo "bazarr-init: wrote $CONFIG"
         )])),
         ..Default::default()
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use servarr_crds::{RestrictedRsyncConfig, SshBastionConfig, SshUser};
+
+    fn minimal_ssh_bastion_app() -> ServarrApp {
+        let mut metadata = ObjectMeta::default();
+        metadata.name = Some("test-app".into());
+        metadata.namespace = Some("default".into());
+        metadata.uid = Some("12345-67890".into());
+
+        ServarrApp {
+            metadata,
+            spec: servarr_crds::ServarrAppSpec {
+                app: AppType::SshBastion,
+                app_config: Some(AppConfig::SshBastion(SshBastionConfig::default())),
+                ..Default::default()
+            },
+            status: None,
+        }
+    }
+
+    #[test]
+    fn ssh_bastion_restricted_rsync_escapes_quotes_in_paths() {
+        let mut app = minimal_ssh_bastion_app();
+        app.spec.app_config = Some(AppConfig::SshBastion(SshBastionConfig {
+            users: vec![SshUser {
+                name: "alice".into(),
+                uid: 1000,
+                gid: 1000,
+                mode: SshMode::RestrictedRsync,
+                restricted_rsync: Some(RestrictedRsyncConfig {
+                    allowed_paths: vec![
+                        "/media/shows".into(),
+                        "/data/\"secret\"".into(), // path with embedded quotes
+                    ],
+                }),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }));
+
+        let cm = build_ssh_bastion_restricted_rsync(&app).expect("should generate configmap");
+        let script = cm
+            .data
+            .as_ref()
+            .and_then(|d| d.get("restricted-rsync-alice.sh"))
+            .expect("should have alice's script");
+
+        // Check that quotes are escaped in the bash script
+        assert!(
+            script.contains(r#""/data/\"secret\"""#),
+            "quotes should be escaped in allowed paths: {}",
+            script
+        );
+    }
+
+    #[test]
+    fn ssh_bastion_restricted_rsync_includes_logging_fallback() {
+        let mut app = minimal_ssh_bastion_app();
+        app.spec.app_config = Some(AppConfig::SshBastion(SshBastionConfig {
+            users: vec![SshUser {
+                name: "bob".into(),
+                uid: 1001,
+                gid: 1001,
+                mode: SshMode::RestrictedRsync,
+                restricted_rsync: Some(RestrictedRsyncConfig {
+                    allowed_paths: vec!["/backup".into()],
+                }),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }));
+
+        let cm = build_ssh_bastion_restricted_rsync(&app).expect("should generate configmap");
+        let script = cm
+            .data
+            .as_ref()
+            .and_then(|d| d.get("restricted-rsync-bob.sh"))
+            .expect("should have bob's script");
+
+        // Check that rejection logging has stderr fallback
+        assert!(
+            script.contains("logger -t restricted-rsync -p auth.warning")
+                && script.contains("|| echo"),
+            "rejection logging should have stderr fallback"
+        );
+
+        // Check that acceptance logging has stderr fallback
+        assert!(
+            script.contains(r#"logger -t restricted-rsync -p auth.info"#)
+                && script.contains(r#"ALLOWED: user=$USER"#),
+            "acceptance logging should be present and have fallback"
+        );
+    }
+
+    #[test]
+    fn ssh_bastion_restricted_rsync_no_paths() {
+        let mut app = minimal_ssh_bastion_app();
+        app.spec.app_config = Some(AppConfig::SshBastion(SshBastionConfig {
+            users: vec![SshUser {
+                name: "charlie".into(),
+                uid: 1002,
+                gid: 1002,
+                mode: SshMode::Rsync,
+                restricted_rsync: None,
+                ..Default::default()
+            }],
+            ..Default::default()
+        }));
+
+        let cm = build_ssh_bastion_restricted_rsync(&app).expect("should generate configmap");
+        let script = cm
+            .data
+            .as_ref()
+            .and_then(|d| d.get("restricted-rsync-charlie.sh"))
+            .expect("should have charlie's script");
+
+        // Rsync mode (no path restriction) should have empty ALLOWED_PATHS
+        assert!(
+            script.contains("ALLOWED_PATHS=("),
+            "rsync mode should have ALLOWED_PATHS array"
+        );
+    }
 }
