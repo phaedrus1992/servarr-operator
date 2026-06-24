@@ -3840,3 +3840,106 @@ fn test_config_checksum_changes_on_rsync_flag_change() {
         "checksum must change when allowed rsync flags change"
     );
 }
+
+// ============================================================
+// Config Checksum Audit Tests (#160)
+// ============================================================
+
+#[test]
+fn test_config_checksum_includes_sabnzbd_tar_unpack_configmap() {
+    // Test: tar-unpack ConfigMap should trigger checksum changes (used by init container).
+    let app_with_tar = ServarrApp {
+        metadata: ObjectMeta {
+            name: Some("sabnzbd".into()),
+            namespace: Some("media".into()),
+            uid: Some("uid-checksum-tar".into()),
+            ..Default::default()
+        },
+        spec: ServarrAppSpec {
+            app: AppType::Sabnzbd,
+            app_config: Some(AppConfig::Sabnzbd(SabnzbdConfig {
+                host_whitelist: vec![],
+                tar_unpack: true,
+            })),
+            ..Default::default()
+        },
+        status: None,
+    };
+
+    let app_no_tar = ServarrApp {
+        metadata: ObjectMeta {
+            name: Some("sabnzbd".into()),
+            namespace: Some("media".into()),
+            uid: Some("uid-checksum-no-tar".into()),
+            ..Default::default()
+        },
+        spec: ServarrAppSpec {
+            app: AppType::Sabnzbd,
+            app_config: Some(AppConfig::Sabnzbd(SabnzbdConfig {
+                host_whitelist: vec![],
+                tar_unpack: false,
+            })),
+            ..Default::default()
+        },
+        status: None,
+    };
+
+    let checksum_with_tar = servarr_resources::deployment::config_checksum(&app_with_tar);
+    let checksum_no_tar = servarr_resources::deployment::config_checksum(&app_no_tar);
+
+    // tar_unpack ConfigMap is processed by init container and should trigger a restart.
+    assert_ne!(
+        checksum_with_tar, checksum_no_tar,
+        "checksum must change when tar_unpack toggles"
+    );
+}
+
+#[test]
+fn test_config_checksum_includes_sabnzbd_host_whitelist_configmap() {
+    // Test: host-whitelist ConfigMap should trigger checksum changes (processed by init container).
+    let app_with_whitelist = ServarrApp {
+        metadata: ObjectMeta {
+            name: Some("sabnzbd".into()),
+            namespace: Some("media".into()),
+            uid: Some("uid-checksum-wl".into()),
+            ..Default::default()
+        },
+        spec: ServarrAppSpec {
+            app: AppType::Sabnzbd,
+            app_config: Some(AppConfig::Sabnzbd(SabnzbdConfig {
+                host_whitelist: vec!["example.com".into()],
+                tar_unpack: false,
+            })),
+            ..Default::default()
+        },
+        status: None,
+    };
+
+    let app_no_whitelist = ServarrApp {
+        metadata: ObjectMeta {
+            name: Some("sabnzbd".into()),
+            namespace: Some("media".into()),
+            uid: Some("uid-checksum-no-wl".into()),
+            ..Default::default()
+        },
+        spec: ServarrAppSpec {
+            app: AppType::Sabnzbd,
+            app_config: Some(AppConfig::Sabnzbd(SabnzbdConfig {
+                host_whitelist: vec![],
+                tar_unpack: false,
+            })),
+            ..Default::default()
+        },
+        status: None,
+    };
+
+    let checksum_with_whitelist =
+        servarr_resources::deployment::config_checksum(&app_with_whitelist);
+    let checksum_no_whitelist = servarr_resources::deployment::config_checksum(&app_no_whitelist);
+
+    // host-whitelist ConfigMap is covered by build(app) and should affect the checksum.
+    assert_ne!(
+        checksum_with_whitelist, checksum_no_whitelist,
+        "checksum must change when host_whitelist changes"
+    );
+}
