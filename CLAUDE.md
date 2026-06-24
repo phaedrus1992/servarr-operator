@@ -13,9 +13,21 @@ number in `Cargo.toml` / `Cargo.lock` is off-limits for direct edits.
 
 ## Release Branch Workflow
 
-Work targeting milestone `X.Y` branches from and targets `release/X.Y.x`, not `main`. The
-`resolve-base-branch.sh` script in dev-sprint determines the correct base automatically. Never
-retarget a milestone-scoped PR to `main` without explicit user approval.
+Issues are milestoned by category, not version. The milestone determines the base branch:
+
+- **Bug Fixes** and **Small Enhancements** → branch from and target the newest `release/N.x`
+  line (currently `release/1.x`). These ship in patch/minor releases off that line.
+- **Large Features** → branch from and target `main`.
+
+The "newest `release/N.x`" is the highest-major release line on the remote (`release/1.x` today,
+`release/2.x` once it exists). Branches are long-lived per major series, not per patch — there is
+no `release/1.0.x`.
+
+Note: dev-sprint's `resolve-base-branch.sh` only auto-resolves a base when the milestone title
+carries a version token (e.g. `1.0`). Category milestones have none, so it falls back to `main`.
+For category milestones, pick the base by the rule above — do not trust the auto-resolver.
+
+Never retarget a milestone-scoped PR to a different base without explicit user approval.
 
 ## CI Toolchain Note
 
