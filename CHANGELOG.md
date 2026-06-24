@@ -20,6 +20,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Fix Maintainerr default data path and memory. Maintainerr v3 stores data at `/opt/data`
+  (not `/config`), and large library scans need more headroom — the memory limit is raised
+  from 512Mi to 2Gi (#131, #138).
+- Fix Subgen running out of memory during transcription. The Whisper `medium` model needs
+  2Gi; the default memory limit is raised from 512Mi to 2Gi.
 - Fix SSH bastion `restricted-rsync` wrapper rejecting paths containing parentheses
   (e.g. `Show (2024)/`). rsync always escapes parentheses as `\(` and `\)` in the
   remote command; the metacharacter guard now uses an ERE check to distinguish
