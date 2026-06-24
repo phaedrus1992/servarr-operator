@@ -2782,13 +2782,15 @@ async fn sync_maintainerr_servers(
             let plex_host = format!("{plex_svc_name}.{plex_ns}.svc");
 
             info!(maintainerr = %maintainerr_name, plex = %plex_name, "syncing Plex into Maintainerr");
-            if let Err(e) = maintainerr_client.set_plex(&plex_host, plex_port).await {
-                warn!(maintainerr = %maintainerr_name, plex = %plex_name, error = %e,
-                    "failed to set Plex hostname/port in Maintainerr");
-                failures += 1;
-            } else if let Err(e) = maintainerr_client.set_plex_token(token).await {
+            // Token must be set before hostname/port: Maintainerr rejects Plex server
+            // settings until an auth token is present (#156).
+            if let Err(e) = maintainerr_client.set_plex_token(token).await {
                 warn!(maintainerr = %maintainerr_name, plex = %plex_name, error = %e,
                     "failed to set Plex token in Maintainerr");
+                failures += 1;
+            } else if let Err(e) = maintainerr_client.set_plex(&plex_host, plex_port).await {
+                warn!(maintainerr = %maintainerr_name, plex = %plex_name, error = %e,
+                    "failed to set Plex hostname/port in Maintainerr");
                 failures += 1;
             } else {
                 plex_configured = true;
