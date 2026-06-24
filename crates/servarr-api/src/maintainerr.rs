@@ -1,3 +1,4 @@
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 use crate::client::ApiError;
@@ -114,7 +115,6 @@ impl MaintainerrClient {
     ) -> Result<ServerResponse, ApiError> {
         let endpoint = format!("{}/api/settings/sonarr", self.base_url);
         let body = SonarrAddRequest { name, url, api_key };
-
         let resp = self
             .client
             .post(&endpoint)
@@ -122,17 +122,7 @@ impl MaintainerrClient {
             .send()
             .await
             .map_err(ApiError::Request)?;
-
-        if resp.status().is_success() {
-            resp.json().await.map_err(ApiError::Request)
-        } else {
-            let status = resp.status().as_u16();
-            let body = resp.text().await.unwrap_or_else(|e| {
-                tracing::debug!(error = %e, "failed to read Maintainerr error response body");
-                String::new()
-            });
-            Err(ApiError::ApiResponse { status, body })
-        }
+        Self::check_envelope_json(resp).await
     }
 
     /// List all Sonarr servers.
@@ -169,7 +159,6 @@ impl MaintainerrClient {
     ) -> Result<ServerResponse, ApiError> {
         let endpoint = format!("{}/api/settings/radarr", self.base_url);
         let body = RadarrAddRequest { name, url, api_key };
-
         let resp = self
             .client
             .post(&endpoint)
@@ -177,17 +166,7 @@ impl MaintainerrClient {
             .send()
             .await
             .map_err(ApiError::Request)?;
-
-        if resp.status().is_success() {
-            resp.json().await.map_err(ApiError::Request)
-        } else {
-            let status = resp.status().as_u16();
-            let body = resp.text().await.unwrap_or_else(|e| {
-                tracing::debug!(error = %e, "failed to read Maintainerr error response body");
-                String::new()
-            });
-            Err(ApiError::ApiResponse { status, body })
-        }
+        Self::check_envelope_json(resp).await
     }
 
     /// List all Radarr servers.
@@ -313,6 +292,41 @@ impl MaintainerrClient {
             _ => Ok(()),
         }
     }
+
+    /// Like [`check_envelope`](Self::check_envelope) but for endpoints that return a
+    /// JSON object on success. Maintainerr answers the `add_*` endpoints with HTTP 200
+    /// and a `{ status: "NOK" }` envelope on failure rather than the created object, so
+    /// the envelope is inspected before deserializing the success type `T` (#156).
+    async fn check_envelope_json<T: DeserializeOwned>(
+        resp: reqwest::Response,
+    ) -> Result<T, ApiError> {
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_else(|e| {
+                tracing::debug!(error = %e, "failed to read Maintainerr error response body");
+                String::new()
+            });
+            return Err(ApiError::ApiResponse { status, body });
+        }
+
+        let body = resp.text().await.unwrap_or_else(|e| {
+            tracing::debug!(error = %e, "failed to read Maintainerr response body");
+            String::new()
+        });
+        if let Ok(envelope) = serde_json::from_str::<StatusEnvelope>(&body)
+            && envelope.status.eq_ignore_ascii_case("NOK")
+        {
+            return Err(ApiError::OperationFailed {
+                message: envelope
+                    .message
+                    .unwrap_or_else(|| "Maintainerr reported failure".to_string()),
+            });
+        }
+        serde_json::from_str::<T>(&body).map_err(|e| ApiError::ApiResponse {
+            status: 200,
+            body: format!("failed to decode Maintainerr response: {e}"),
+        })
+    }
 }
 
 #[cfg(test)]
@@ -423,6 +437,39 @@ mod tests {
         match err {
             ApiError::ApiResponse { status, .. } => assert_eq!(status, 400),
             other => panic!("expected ApiResponse, got: {other}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn add_sonarr_rejects_nok_envelope() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        // The add_* endpoints return HTTP 200 with a NOK envelope on failure rather
+        // than the created server object; that must surface as OperationFailed, not a
+        // decode error or a silent success (#156).
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/settings/sonarr"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "status": "NOK",
+                "code": 0,
+                "message": "Sonarr URL is not reachable"
+            })))
+            .mount(&server)
+            .await;
+
+        let client = MaintainerrClient::new(&server.uri(), "test-key").expect("should construct");
+        let err = client
+            .add_sonarr("Sonarr1", "http://sonarr:8989", "key")
+            .await
+            .unwrap_err();
+
+        match err {
+            ApiError::OperationFailed { message } => {
+                assert!(message.contains("not reachable"), "got: {message}");
+            }
+            other => panic!("expected OperationFailed, got: {other}"),
         }
     }
 
