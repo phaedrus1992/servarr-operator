@@ -350,6 +350,19 @@ mod tests {
         }
     }
 
+    #[test]
+    fn plex_set_request_serializes_correctly() {
+        let req = PlexSetRequest {
+            plex_hostname: "plex.example.com",
+            plex_port: 32400,
+        };
+        let json = serde_json::to_value(&req).expect("should serialize");
+        assert_eq!(json["plexHostname"], "plex.example.com");
+        assert_eq!(json["plexPort"], 32400);
+        // Ensure no unexpected fields
+        assert_eq!(json.as_object().unwrap().len(), 2);
+    }
+
     #[tokio::test]
     async fn add_sonarr_calls_correct_endpoint() {
         use wiremock::matchers::{method, path};
