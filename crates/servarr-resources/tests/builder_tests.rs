@@ -3842,7 +3842,7 @@ fn test_config_checksum_changes_on_rsync_flag_change() {
 }
 
 // ============================================================
-// Config Checksum Audit Tests (#120)
+// Config Checksum Audit Tests (#160)
 // ============================================================
 
 #[test]
@@ -3885,11 +3885,12 @@ fn test_config_checksum_includes_sabnzbd_tar_unpack_configmap() {
     };
 
     let checksum_with_tar = servarr_resources::deployment::config_checksum(&app_with_tar);
+    let checksum_no_tar = servarr_resources::deployment::config_checksum(&app_no_tar);
 
     // tar_unpack ConfigMap is processed by init container and should trigger a restart.
-    assert!(
-        checksum_with_tar.is_some(),
-        "tar_unpack ConfigMap should trigger a checksum"
+    assert_ne!(
+        checksum_with_tar, checksum_no_tar,
+        "checksum must change when tar_unpack toggles"
     );
 }
 
@@ -3914,12 +3915,30 @@ fn test_config_checksum_includes_sabnzbd_host_whitelist_configmap() {
         status: None,
     };
 
-    let checksum = servarr_resources::deployment::config_checksum(&app_with_whitelist);
+    let app_no_whitelist = ServarrApp {
+        metadata: ObjectMeta {
+            name: Some("sabnzbd".into()),
+            namespace: Some("media".into()),
+            uid: Some("uid-checksum-no-wl".into()),
+            ..Default::default()
+        },
+        spec: ServarrAppSpec {
+            app: AppType::Sabnzbd,
+            app_config: Some(AppConfig::Sabnzbd(SabnzbdConfig {
+                host_whitelist: vec![],
+                tar_unpack: false,
+            })),
+            ..Default::default()
+        },
+        status: None,
+    };
 
-    // This test will FAIL initially because host-whitelist ConfigMap is NOT in checksum.
-    // After audit/implementation, it should be added.
-    assert!(
-        checksum.is_some(),
-        "AUDIT: host-whitelist ConfigMap should trigger a checksum (currently fails — needs audit)"
+    let checksum_with_whitelist = servarr_resources::deployment::config_checksum(&app_with_whitelist);
+    let checksum_no_whitelist = servarr_resources::deployment::config_checksum(&app_no_whitelist);
+
+    // host-whitelist ConfigMap is covered by build(app) and should affect the checksum.
+    assert_ne!(
+        checksum_with_whitelist, checksum_no_whitelist,
+        "checksum must change when host_whitelist changes"
     );
 }
