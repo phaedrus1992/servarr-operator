@@ -51,7 +51,6 @@ struct TautulliSetRequest<'a> {
 /// Request body for setting Plex token.
 #[derive(Serialize)]
 struct PlexTokenSetRequest<'a> {
-    #[serde(rename = "access_token")]
     access_token: &'a str,
 }
 
