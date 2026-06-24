@@ -20,6 +20,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `maintainerrSync` spec field and a `MaintainerrSyncReady` status condition.
   (Plex sync is not yet supported — it needs a plex.tv token source, tracked in #148.)
 
+### Changed
+
+- Update default Maintainerr image to `3.15.2` (from `2.19.0`) and move its repository
+  from `ghcr.io/jorenn92/maintainerr` to `ghcr.io/maintainerr/maintainerr`. Upstream v3
+  adds Jellyfin support, unifies Overseerr/Jellyseerr handling, and reports collection
+  sizes on the dashboard. **Note:** v3's database schema is not backward compatible with
+  2.x — existing Maintainerr data is migrated forward on first start and cannot be rolled
+  back. Combined with the new `/opt/data` path and 2Gi memory default (see Fixed).
+- Update default Jackett image to `0.24.2075` (from `0.24.2057`), rolling up upstream
+  indexer-definition updates.
+
 ### Fixed
 
 - Fix Maintainerr default data path and memory. Maintainerr v3 stores data at `/opt/data`
