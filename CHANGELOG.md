@@ -27,7 +27,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   Overseerr, and Tautulli instances into Maintainerr (including split4k variants),
   replacing the manual API workaround. Registration is idempotent. Adds the
   `maintainerrSync` spec field and a `MaintainerrSyncReady` status condition.
-  (Plex sync is not yet supported — it needs a plex.tv token source, tracked in #148.)
+- Auto-configure Plex in Maintainerr. Set the optional `maintainerrSync.plexTokenSecret`
+  field to a Secret holding a plex.tv token under the key `plex-token`, and the operator
+  injects Plex's hostname, port, and auth token into Maintainerr alongside the other apps.
+  When the field is unset, Plex is skipped — no change for existing stacks. Overseerr's
+  successor, Seerr, is configured through the same settings endpoint as Overseerr.
 
 ### Fixed
 

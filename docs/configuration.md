@@ -918,14 +918,16 @@ Configures Maintainerr cross-app synchronization. Only applies to `Maintainerr`-
 |---|---|---|
 | `enabled` | `bool` | `false` |
 | `namespaceScope` | `string` | Same namespace as the Maintainerr CR |
+| `plexTokenSecret` | `string` | -- |
 
-Plex is not yet auto-configured: Plex uses plex.tv account authentication rather than an operator-managed API key, so the operator has no token to inject (tracked in [#148](https://github.com/phaedrus1992/servarr-operator/issues/148)).
+`plexTokenSecret` is optional. Plex uses plex.tv account authentication rather than an operator-managed API key, so the operator cannot derive a token on its own. Point this field at a Secret containing the token under the key `plex-token`, and the operator will configure Plex (hostname, port, and auth token) in Maintainerr alongside the other apps. When the field is unset, Plex is skipped. Overseerr's successor, Seerr, shares Overseerr's settings endpoint and is configured through the same path.
 
 ```yaml
 spec:
   app: Maintainerr
   maintainerrSync:
     enabled: true
+    plexTokenSecret: plex-token   # optional; Secret with key `plex-token`
 ```
 
 ---
