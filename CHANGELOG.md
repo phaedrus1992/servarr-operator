@@ -20,6 +20,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 <!-- 1.0 next-header -->
 
+## [1.1.0] - 2026-06-24
+
 ### Added
 
 - Auto-configure Maintainerr. When a Maintainerr `ServarrApp` sets
@@ -29,8 +31,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `maintainerrSync` spec field and a `MaintainerrSyncReady` status condition.
   (Plex sync is not yet supported — it needs a plex.tv token source, tracked in #148.)
 
+### Changed
+
+- Update default Maintainerr image to `3.15.2` (from `2.19.0`) and move its repository
+  from `ghcr.io/jorenn92/maintainerr` to `ghcr.io/maintainerr/maintainerr`. Upstream v3
+  adds Jellyfin support, unifies Overseerr/Jellyseerr handling, and reports collection
+  sizes on the dashboard. **Note:** v3's database schema is not backward compatible with
+  2.x — existing Maintainerr data is migrated forward on first start and cannot be rolled
+  back. Combined with the new `/opt/data` path and 2Gi memory default (see Fixed).
+- Update default Jackett image to `0.24.2075` (from `0.24.2057`), rolling up upstream
+  indexer-definition updates.
+
 ### Fixed
 
+- Fix Maintainerr default data path and memory. Maintainerr v3 stores data at `/opt/data`
+  (not `/config`), and large library scans need more headroom — the memory limit is raised
+  from 512Mi to 2Gi (#131, #138).
+- Fix Subgen running out of memory during transcription. The Whisper `medium` model needs
+  2Gi; the default memory limit is raised from 512Mi to 2Gi.
 - Fix SSH bastion `restricted-rsync` wrapper rejecting paths containing parentheses
   (e.g. `Show (2024)/`). rsync always escapes parentheses as `\(` and `\)` in the
   remote command; the metacharacter guard now uses an ERE check to distinguish
@@ -166,7 +184,8 @@ lifecycle: deployment, storage, networking, backups, and cross-app integration.
   on each `v*` tag.
 
 <!-- next-url -->
-[Unreleased]: https://github.com/phaedrus1992/servarr-operator/compare/v1.0.3...HEAD
+[Unreleased]: https://github.com/phaedrus1992/servarr-operator/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/phaedrus1992/servarr-operator/compare/v1.0.3...v1.1.0
 [1.0.3]: https://github.com/phaedrus1992/servarr-operator/compare/v1.0.2...v1.0.3
 [1.0.2]: https://github.com/phaedrus1992/servarr-operator/compare/v1.0.1...v1.0.2
 [1.0.1]: https://github.com/phaedrus1992/servarr-operator/compare/v1.0.0...v1.0.1
