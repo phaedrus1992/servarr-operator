@@ -3935,8 +3935,7 @@ fn test_config_checksum_includes_sabnzbd_host_whitelist_configmap() {
 
     let checksum_with_whitelist =
         servarr_resources::deployment::config_checksum(&app_with_whitelist);
-    let checksum_no_whitelist =
-        servarr_resources::deployment::config_checksum(&app_no_whitelist);
+    let checksum_no_whitelist = servarr_resources::deployment::config_checksum(&app_no_whitelist);
 
     // host-whitelist ConfigMap is covered by build(app) and should affect the checksum.
     assert_ne!(
