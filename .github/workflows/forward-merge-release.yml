@@ -155,7 +155,10 @@ jobs:
             if git push origin HEAD:"$TARGET" 2>/dev/null; then
               echo "Pushed directly to $TARGET"
             else
-              git checkout -B "$MERGE_BRANCH" "origin/$TARGET"
+              # HEAD currently holds the merge commit built above; create the PR
+              # branch from it directly. Resetting to origin/$TARGET here would
+              # discard the merge and open a zero-diff PR.
+              git checkout -B "$MERGE_BRANCH"
               git push origin "$MERGE_BRANCH" --force-with-lease
 
               gh pr create --base "$TARGET" --head "$MERGE_BRANCH" \
