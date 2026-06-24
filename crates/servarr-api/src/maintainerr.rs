@@ -1,3 +1,4 @@
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 use crate::client::ApiError;
@@ -48,11 +49,11 @@ struct TautulliSetRequest<'a> {
     api_key: &'a str,
 }
 
-/// Request body for setting Plex token.
+/// Request body for setting Plex token. Maintainerr's `/api/settings/plex/token`
+/// handler reads the `plex_auth_token` field (#156).
 #[derive(Serialize)]
 struct PlexTokenSetRequest<'a> {
-    #[serde(rename = "access_token")]
-    access_token: &'a str,
+    plex_auth_token: &'a str,
 }
 
 /// Request body for setting Plex hostname and port.
@@ -60,6 +61,15 @@ struct PlexTokenSetRequest<'a> {
 struct PlexSettingsRequest<'a> {
     plex_hostname: &'a str,
     plex_port: u16,
+}
+
+/// Maintainerr's status envelope for mutating endpoints. Returned with HTTP 200
+/// even when the operation was rejected (`status == "NOK"`), so the body must be
+/// inspected rather than trusting the HTTP status alone (#156).
+#[derive(Deserialize)]
+struct StatusEnvelope {
+    status: String,
+    message: Option<String>,
 }
 
 /// Generic API response for server listings.
@@ -105,7 +115,6 @@ impl MaintainerrClient {
     ) -> Result<ServerResponse, ApiError> {
         let endpoint = format!("{}/api/settings/sonarr", self.base_url);
         let body = SonarrAddRequest { name, url, api_key };
-
         let resp = self
             .client
             .post(&endpoint)
@@ -113,17 +122,7 @@ impl MaintainerrClient {
             .send()
             .await
             .map_err(ApiError::Request)?;
-
-        if resp.status().is_success() {
-            resp.json().await.map_err(ApiError::Request)
-        } else {
-            let status = resp.status().as_u16();
-            let body = resp.text().await.unwrap_or_else(|e| {
-                tracing::debug!(error = %e, "failed to read Maintainerr error response body");
-                String::new()
-            });
-            Err(ApiError::ApiResponse { status, body })
-        }
+        Self::check_envelope_json(resp).await
     }
 
     /// List all Sonarr servers.
@@ -160,7 +159,6 @@ impl MaintainerrClient {
     ) -> Result<ServerResponse, ApiError> {
         let endpoint = format!("{}/api/settings/radarr", self.base_url);
         let body = RadarrAddRequest { name, url, api_key };
-
         let resp = self
             .client
             .post(&endpoint)
@@ -168,17 +166,7 @@ impl MaintainerrClient {
             .send()
             .await
             .map_err(ApiError::Request)?;
-
-        if resp.status().is_success() {
-            resp.json().await.map_err(ApiError::Request)
-        } else {
-            let status = resp.status().as_u16();
-            let body = resp.text().await.unwrap_or_else(|e| {
-                tracing::debug!(error = %e, "failed to read Maintainerr error response body");
-                String::new()
-            });
-            Err(ApiError::ApiResponse { status, body })
-        }
+        Self::check_envelope_json(resp).await
     }
 
     /// List all Radarr servers.
@@ -210,7 +198,6 @@ impl MaintainerrClient {
     pub async fn set_overseerr(&self, url: &str, api_key: &str) -> Result<(), ApiError> {
         let endpoint = format!("{}/api/settings/overseerr", self.base_url);
         let body = OverseerrSetRequest { url, api_key };
-
         let resp = self
             .client
             .post(&endpoint)
@@ -218,17 +205,7 @@ impl MaintainerrClient {
             .send()
             .await
             .map_err(ApiError::Request)?;
-
-        if resp.status().is_success() {
-            Ok(())
-        } else {
-            let status = resp.status().as_u16();
-            let body = resp.text().await.unwrap_or_else(|e| {
-                tracing::debug!(error = %e, "failed to read Maintainerr error response body");
-                String::new()
-            });
-            Err(ApiError::ApiResponse { status, body })
-        }
+        Self::check_envelope(resp).await
     }
 
     // ===== Tautulli Methods =====
@@ -237,7 +214,6 @@ impl MaintainerrClient {
     pub async fn set_tautulli(&self, url: &str, api_key: &str) -> Result<(), ApiError> {
         let endpoint = format!("{}/api/settings/tautulli", self.base_url);
         let body = TautulliSetRequest { url, api_key };
-
         let resp = self
             .client
             .post(&endpoint)
@@ -245,28 +221,20 @@ impl MaintainerrClient {
             .send()
             .await
             .map_err(ApiError::Request)?;
-
-        if resp.status().is_success() {
-            Ok(())
-        } else {
-            let status = resp.status().as_u16();
-            let body = resp.text().await.unwrap_or_else(|e| {
-                tracing::debug!(error = %e, "failed to read Maintainerr error response body");
-                String::new()
-            });
-            Err(ApiError::ApiResponse { status, body })
-        }
+        Self::check_envelope(resp).await
     }
 
     // ===== Plex Methods =====
 
     /// Set Plex authentication token.
+    ///
+    /// Must be called before [`set_plex`](Self::set_plex): Maintainerr refuses to
+    /// save Plex server settings until an auth token is present (#156).
     pub async fn set_plex_token(&self, token: &str) -> Result<(), ApiError> {
         let endpoint = format!("{}/api/settings/plex/token", self.base_url);
         let body = PlexTokenSetRequest {
-            access_token: token,
+            plex_auth_token: token,
         };
-
         let resp = self
             .client
             .post(&endpoint)
@@ -274,27 +242,17 @@ impl MaintainerrClient {
             .send()
             .await
             .map_err(ApiError::Request)?;
-
-        if resp.status().is_success() {
-            Ok(())
-        } else {
-            let status = resp.status().as_u16();
-            let body = resp.text().await.unwrap_or_else(|e| {
-                tracing::debug!(error = %e, "failed to read Maintainerr error response body");
-                String::new()
-            });
-            Err(ApiError::ApiResponse { status, body })
-        }
+        Self::check_envelope(resp).await
     }
 
-    /// Set Plex hostname and port.
+    /// Set Plex hostname and port. Requires an auth token to already be saved via
+    /// [`set_plex_token`](Self::set_plex_token) (#156).
     pub async fn set_plex(&self, hostname: &str, port: u16) -> Result<(), ApiError> {
         let endpoint = format!("{}/api/settings", self.base_url);
         let body = PlexSettingsRequest {
             plex_hostname: hostname,
             plex_port: port,
         };
-
         let resp = self
             .client
             .post(&endpoint)
@@ -302,17 +260,57 @@ impl MaintainerrClient {
             .send()
             .await
             .map_err(ApiError::Request)?;
+        Self::check_envelope(resp).await
+    }
 
-        if resp.status().is_success() {
-            Ok(())
-        } else {
+    /// Read a Maintainerr mutating response into its body, mapping failures to errors.
+    /// A non-2xx status maps to [`ApiError::ApiResponse`]; a 2xx carrying a
+    /// `{ status: "NOK" }` envelope maps to [`ApiError::OperationFailed`] so silent
+    /// failures aren't recorded (#156). Otherwise the raw body is returned for the
+    /// caller to interpret (empty or non-envelope bodies are treated as success).
+    async fn envelope_body(resp: reqwest::Response) -> Result<String, ApiError> {
+        if !resp.status().is_success() {
             let status = resp.status().as_u16();
             let body = resp.text().await.unwrap_or_else(|e| {
                 tracing::debug!(error = %e, "failed to read Maintainerr error response body");
                 String::new()
             });
-            Err(ApiError::ApiResponse { status, body })
+            return Err(ApiError::ApiResponse { status, body });
         }
+
+        let body = resp.text().await.unwrap_or_else(|e| {
+            tracing::debug!(error = %e, "failed to read Maintainerr response body");
+            String::new()
+        });
+        if let Ok(envelope) = serde_json::from_str::<StatusEnvelope>(&body)
+            && envelope.status.eq_ignore_ascii_case("NOK")
+        {
+            return Err(ApiError::OperationFailed {
+                message: envelope
+                    .message
+                    .unwrap_or_else(|| "Maintainerr reported failure".to_string()),
+            });
+        }
+        Ok(body)
+    }
+
+    /// Validate a Maintainerr response from an endpoint that returns no body of
+    /// interest on success (the setters). See [`envelope_body`](Self::envelope_body).
+    async fn check_envelope(resp: reqwest::Response) -> Result<(), ApiError> {
+        Self::envelope_body(resp).await.map(|_| ())
+    }
+
+    /// Validate a Maintainerr response from an endpoint that returns a JSON object on
+    /// success (the `add_*` endpoints), inspecting the envelope before deserializing
+    /// the success type `T`. See [`envelope_body`](Self::envelope_body).
+    async fn check_envelope_json<T: DeserializeOwned>(
+        resp: reqwest::Response,
+    ) -> Result<T, ApiError> {
+        let body = Self::envelope_body(resp).await?;
+        serde_json::from_str::<T>(&body).map_err(|e| ApiError::ApiResponse {
+            status: 200,
+            body: format!("failed to decode Maintainerr response: {e}"),
+        })
     }
 }
 
@@ -424,6 +422,39 @@ mod tests {
         match err {
             ApiError::ApiResponse { status, .. } => assert_eq!(status, 400),
             other => panic!("expected ApiResponse, got: {other}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn add_sonarr_rejects_nok_envelope() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        // The add_* endpoints return HTTP 200 with a NOK envelope on failure rather
+        // than the created server object; that must surface as OperationFailed, not a
+        // decode error or a silent success (#156).
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/settings/sonarr"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "status": "NOK",
+                "code": 0,
+                "message": "Sonarr URL is not reachable"
+            })))
+            .mount(&server)
+            .await;
+
+        let client = MaintainerrClient::new(&server.uri(), "test-key").expect("should construct");
+        let err = client
+            .add_sonarr("Sonarr1", "http://sonarr:8989", "key")
+            .await
+            .unwrap_err();
+
+        match err {
+            ApiError::OperationFailed { message } => {
+                assert!(message.contains("not reachable"), "got: {message}");
+            }
+            other => panic!("expected OperationFailed, got: {other}"),
         }
     }
 
@@ -597,12 +628,17 @@ mod tests {
 
     #[tokio::test]
     async fn set_plex_token_calls_correct_endpoint() {
-        use wiremock::matchers::{method, path};
+        use wiremock::matchers::{body_partial_json, method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
         let server = MockServer::start().await;
+        // Maintainerr's POST /api/settings/plex/token reads the `plex_auth_token`
+        // field; matching on it guards against a regression to `access_token` (#156).
         Mock::given(method("POST"))
             .and(path("/api/settings/plex/token"))
+            .and(body_partial_json(
+                serde_json::json!({ "plex_auth_token": "plex-auth-token" }),
+            ))
             .respond_with(ResponseTemplate::new(200))
             .expect(1)
             .mount(&server)
@@ -612,6 +648,36 @@ mod tests {
         let result = client.set_plex_token("plex-auth-token").await;
 
         assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn set_plex_rejects_nok_envelope() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        // Maintainerr returns HTTP 200 with a `{ status: "NOK" }` envelope on failure
+        // (e.g. saving Plex server settings before authenticating). A 200 must not be
+        // treated as success when the envelope reports NOK (#156).
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/settings"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "status": "NOK",
+                "code": 0,
+                "message": "Authenticate with Plex before saving Plex server settings."
+            })))
+            .mount(&server)
+            .await;
+
+        let client = MaintainerrClient::new(&server.uri(), "test-key").expect("should construct");
+        let err = client.set_plex("plex-hostname", 32400).await.unwrap_err();
+
+        match err {
+            ApiError::OperationFailed { message } => {
+                assert!(message.contains("Authenticate with Plex"), "got: {message}");
+            }
+            other => panic!("expected OperationFailed, got: {other}"),
+        }
     }
 
     #[tokio::test]

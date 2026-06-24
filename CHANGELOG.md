@@ -18,6 +18,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   constructor. Renovate now groups `kube`/`k8s-openapi` even on major updates so they never
   split into separate, individually-broken PRs again.
 
+### Fixed
+
+- Fix Maintainerr auto-sync silently failing against Maintainerr v3. The Plex auth token
+  was sent under the wrong field name and before the hostname/port (which v3 refuses until
+  a token is present), and Maintainerr's HTTP-200 `{status:"NOK"}` failure envelope was
+  treated as success. The token is now set first, and `NOK` responses surface as errors
+  across the Sonarr, Radarr, Overseerr, Tautulli, and Plex Maintainerr calls. (#156)
+
 <!-- 1.0 next-header -->
 
 ## [1.1.0] - 2026-06-24
@@ -29,7 +37,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   Overseerr, and Tautulli instances into Maintainerr (including split4k variants),
   replacing the manual API workaround. Registration is idempotent. Adds the
   `maintainerrSync` spec field and a `MaintainerrSyncReady` status condition.
-  (Plex sync is not yet supported — it needs a plex.tv token source, tracked in #148.)
 
 ### Changed
 
