@@ -23,6 +23,7 @@ pub fn config_checksum(app: &ServarrApp) -> Option<String> {
         crate::configmap::build_prowlarr_definitions(app),
         // ponytail: sub_path mounts are not auto-updated by kubelet; restart required
         crate::configmap::build_ssh_bastion_restricted_rsync(app),
+        crate::configmap::build_tar_unpack(app),
     ];
 
     let mut hasher = Sha256::new();
