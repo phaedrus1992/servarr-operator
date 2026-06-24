@@ -2768,31 +2768,30 @@ async fn sync_maintainerr_servers(
         }
     }
 
-    // Sync Plex if discovered and token is available (Plex lookup done separately above)
-    if !plex_configured {
-        if let (Some(plex), Some(token)) = (&plex_app, &plex_token) {
-            let plex_name = plex.name_any();
-            let plex_ns = plex.namespace().unwrap_or_else(|| "default".into());
-            let plex_defaults = servarr_crds::AppDefaults::for_app(&plex.spec.app)
-                .map(|d| d.service)
-                .unwrap_or_default();
-            let plex_svc_spec = plex.spec.service.as_ref().unwrap_or(&plex_defaults);
-            if let Some(plex_port) = plex_svc_spec.ports.first().map(|p| p.port as u16) {
-                let plex_svc_name = servarr_resources::common::service_name(plex);
-                let plex_host = format!("{}.{}.svc", plex_svc_name, plex_ns);
+    // Sync Plex if discovered and token is available (Plex lookup done separately above).
+    // No `plex_configured` guard needed: this is the only place Plex is configured.
+    if let (Some(plex), Some(token)) = (&plex_app, &plex_token) {
+        let plex_name = plex.name_any();
+        let plex_ns = plex.namespace().unwrap_or_else(|| "default".into());
+        let plex_defaults = servarr_crds::AppDefaults::for_app(&plex.spec.app)
+            .map(|d| d.service)
+            .unwrap_or_default();
+        let plex_svc_spec = plex.spec.service.as_ref().unwrap_or(&plex_defaults);
+        if let Some(plex_port) = plex_svc_spec.ports.first().map(|p| p.port as u16) {
+            let plex_svc_name = servarr_resources::common::service_name(plex);
+            let plex_host = format!("{plex_svc_name}.{plex_ns}.svc");
 
-                info!(maintainerr = %maintainerr_name, plex = %plex_name, "syncing Plex into Maintainerr");
-                if let Err(e) = maintainerr_client.set_plex(&plex_host, plex_port).await {
-                    warn!(maintainerr = %maintainerr_name, plex = %plex_name, error = %e,
-                        "failed to set Plex hostname/port in Maintainerr");
-                    failures += 1;
-                } else if let Err(e) = maintainerr_client.set_plex_token(token).await {
-                    warn!(maintainerr = %maintainerr_name, plex = %plex_name, error = %e,
-                        "failed to set Plex token in Maintainerr");
-                    failures += 1;
-                } else {
-                    plex_configured = true;
-                }
+            info!(maintainerr = %maintainerr_name, plex = %plex_name, "syncing Plex into Maintainerr");
+            if let Err(e) = maintainerr_client.set_plex(&plex_host, plex_port).await {
+                warn!(maintainerr = %maintainerr_name, plex = %plex_name, error = %e,
+                    "failed to set Plex hostname/port in Maintainerr");
+                failures += 1;
+            } else if let Err(e) = maintainerr_client.set_plex_token(token).await {
+                warn!(maintainerr = %maintainerr_name, plex = %plex_name, error = %e,
+                    "failed to set Plex token in Maintainerr");
+                failures += 1;
+            } else {
+                plex_configured = true;
             }
         }
     }
