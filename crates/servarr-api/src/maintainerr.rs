@@ -48,6 +48,15 @@ struct TautulliSetRequest<'a> {
     api_key: &'a str,
 }
 
+/// Request body for setting Plex configuration.
+#[derive(Serialize)]
+struct PlexSetRequest<'a> {
+    #[serde(rename = "plexHostname")]
+    plex_hostname: &'a str,
+    #[serde(rename = "plexPort")]
+    plex_port: u16,
+}
+
 /// Generic API response for server listings.
 #[derive(Deserialize, Serialize, Debug, Clone, PartialEq, Eq)]
 pub struct ServerResponse {
@@ -223,6 +232,43 @@ impl MaintainerrClient {
     pub async fn set_tautulli(&self, url: &str, api_key: &str) -> Result<(), ApiError> {
         let endpoint = format!("{}/api/settings/tautulli", self.base_url);
         let body = TautulliSetRequest { url, api_key };
+
+        let resp = self
+            .client
+            .post(&endpoint)
+            .json(&body)
+            .send()
+            .await
+            .map_err(ApiError::Request)?;
+
+        if resp.status().is_success() {
+            Ok(())
+        } else {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_else(|e| {
+                tracing::debug!(error = %e, "failed to read Maintainerr error response body");
+                String::new()
+            });
+            Err(ApiError::ApiResponse { status, body })
+        }
+    }
+
+    // ===== Plex Methods =====
+
+    /// Set Plex configuration via `POST /api/settings`.
+    ///
+    /// **Safety note (#152):** Maintainerr's `POST /api/settings` semantics (merge vs. replace)
+    /// must be confirmed. If it performs a full-document replace, this call will zero out
+    /// unrelated settings (Sonarr/Radarr/Overseerr/Tautulli URLs and keys). Assumption:
+    /// the endpoint is merge-aware and only updates the Plex fields.
+    /// If this assumption is invalidated, switch to a Plex-specific endpoint or use
+    /// fetch-then-patch (read all settings, merge Plex fields, write back).
+    pub async fn set_plex(&self, hostname: &str, port: u16) -> Result<(), ApiError> {
+        let endpoint = format!("{}/api/settings", self.base_url);
+        let body = PlexSetRequest {
+            plex_hostname: hostname,
+            plex_port: port,
+        };
 
         let resp = self
             .client
@@ -517,6 +563,46 @@ mod tests {
 
         let client = MaintainerrClient::new(&server.uri(), "test-key").expect("should construct");
         let err = client.set_tautulli("invalid", "key").await.unwrap_err();
+
+        match err {
+            ApiError::ApiResponse { status, .. } => assert_eq!(status, 400),
+            other => panic!("expected ApiResponse, got: {other}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn set_plex_calls_correct_endpoint() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/settings"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = MaintainerrClient::new(&server.uri(), "test-key").expect("should construct");
+        let result = client.set_plex("plex.example.com", 32400).await;
+
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn set_plex_returns_error_on_failure() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/settings"))
+            .respond_with(ResponseTemplate::new(400).set_body_string("Invalid Plex config"))
+            .mount(&server)
+            .await;
+
+        let client = MaintainerrClient::new(&server.uri(), "test-key").expect("should construct");
+        let err = client.set_plex("invalid", 0).await.unwrap_err();
 
         match err {
             ApiError::ApiResponse { status, .. } => assert_eq!(status, 400),
