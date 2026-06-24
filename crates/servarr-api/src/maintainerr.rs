@@ -263,43 +263,12 @@ impl MaintainerrClient {
         Self::check_envelope(resp).await
     }
 
-    /// Validate a Maintainerr mutating response. A non-2xx status maps to
-    /// [`ApiError::ApiResponse`]; a 2xx carrying a `{ status: "NOK" }` envelope maps
-    /// to [`ApiError::OperationFailed`] so silent failures aren't recorded (#156).
-    /// A 2xx with an empty or non-envelope body is treated as success.
-    async fn check_envelope(resp: reqwest::Response) -> Result<(), ApiError> {
-        if !resp.status().is_success() {
-            let status = resp.status().as_u16();
-            let body = resp.text().await.unwrap_or_else(|e| {
-                tracing::debug!(error = %e, "failed to read Maintainerr error response body");
-                String::new()
-            });
-            return Err(ApiError::ApiResponse { status, body });
-        }
-
-        let body = resp.text().await.unwrap_or_else(|e| {
-            tracing::debug!(error = %e, "failed to read Maintainerr response body");
-            String::new()
-        });
-        match serde_json::from_str::<StatusEnvelope>(&body) {
-            Ok(envelope) if envelope.status.eq_ignore_ascii_case("NOK") => {
-                Err(ApiError::OperationFailed {
-                    message: envelope
-                        .message
-                        .unwrap_or_else(|| "Maintainerr reported failure".to_string()),
-                })
-            }
-            _ => Ok(()),
-        }
-    }
-
-    /// Like [`check_envelope`](Self::check_envelope) but for endpoints that return a
-    /// JSON object on success. Maintainerr answers the `add_*` endpoints with HTTP 200
-    /// and a `{ status: "NOK" }` envelope on failure rather than the created object, so
-    /// the envelope is inspected before deserializing the success type `T` (#156).
-    async fn check_envelope_json<T: DeserializeOwned>(
-        resp: reqwest::Response,
-    ) -> Result<T, ApiError> {
+    /// Read a Maintainerr mutating response into its body, mapping failures to errors.
+    /// A non-2xx status maps to [`ApiError::ApiResponse`]; a 2xx carrying a
+    /// `{ status: "NOK" }` envelope maps to [`ApiError::OperationFailed`] so silent
+    /// failures aren't recorded (#156). Otherwise the raw body is returned for the
+    /// caller to interpret (empty or non-envelope bodies are treated as success).
+    async fn envelope_body(resp: reqwest::Response) -> Result<String, ApiError> {
         if !resp.status().is_success() {
             let status = resp.status().as_u16();
             let body = resp.text().await.unwrap_or_else(|e| {
@@ -322,6 +291,22 @@ impl MaintainerrClient {
                     .unwrap_or_else(|| "Maintainerr reported failure".to_string()),
             });
         }
+        Ok(body)
+    }
+
+    /// Validate a Maintainerr response from an endpoint that returns no body of
+    /// interest on success (the setters). See [`envelope_body`](Self::envelope_body).
+    async fn check_envelope(resp: reqwest::Response) -> Result<(), ApiError> {
+        Self::envelope_body(resp).await.map(|_| ())
+    }
+
+    /// Validate a Maintainerr response from an endpoint that returns a JSON object on
+    /// success (the `add_*` endpoints), inspecting the envelope before deserializing
+    /// the success type `T`. See [`envelope_body`](Self::envelope_body).
+    async fn check_envelope_json<T: DeserializeOwned>(
+        resp: reqwest::Response,
+    ) -> Result<T, ApiError> {
+        let body = Self::envelope_body(resp).await?;
         serde_json::from_str::<T>(&body).map_err(|e| ApiError::ApiResponse {
             status: 200,
             body: format!("failed to decode Maintainerr response: {e}"),
