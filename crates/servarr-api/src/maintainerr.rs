@@ -48,6 +48,20 @@ struct TautulliSetRequest<'a> {
     api_key: &'a str,
 }
 
+/// Request body for setting Plex token.
+#[derive(Serialize)]
+struct PlexTokenSetRequest<'a> {
+    #[serde(rename = "access_token")]
+    access_token: &'a str,
+}
+
+/// Request body for setting Plex hostname and port.
+#[derive(Serialize)]
+struct PlexSettingsRequest<'a> {
+    plex_hostname: &'a str,
+    plex_port: u16,
+}
+
 /// Generic API response for server listings.
 #[derive(Deserialize, Serialize, Debug, Clone, PartialEq, Eq)]
 pub struct ServerResponse {
@@ -223,6 +237,63 @@ impl MaintainerrClient {
     pub async fn set_tautulli(&self, url: &str, api_key: &str) -> Result<(), ApiError> {
         let endpoint = format!("{}/api/settings/tautulli", self.base_url);
         let body = TautulliSetRequest { url, api_key };
+
+        let resp = self
+            .client
+            .post(&endpoint)
+            .json(&body)
+            .send()
+            .await
+            .map_err(ApiError::Request)?;
+
+        if resp.status().is_success() {
+            Ok(())
+        } else {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_else(|e| {
+                tracing::debug!(error = %e, "failed to read Maintainerr error response body");
+                String::new()
+            });
+            Err(ApiError::ApiResponse { status, body })
+        }
+    }
+
+    // ===== Plex Methods =====
+
+    /// Set Plex authentication token.
+    pub async fn set_plex_token(&self, token: &str) -> Result<(), ApiError> {
+        let endpoint = format!("{}/api/settings/plex/token", self.base_url);
+        let body = PlexTokenSetRequest {
+            access_token: token,
+        };
+
+        let resp = self
+            .client
+            .post(&endpoint)
+            .json(&body)
+            .send()
+            .await
+            .map_err(ApiError::Request)?;
+
+        if resp.status().is_success() {
+            Ok(())
+        } else {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_else(|e| {
+                tracing::debug!(error = %e, "failed to read Maintainerr error response body");
+                String::new()
+            });
+            Err(ApiError::ApiResponse { status, body })
+        }
+    }
+
+    /// Set Plex hostname and port.
+    pub async fn set_plex(&self, hostname: &str, port: u16) -> Result<(), ApiError> {
+        let endpoint = format!("{}/api/settings", self.base_url);
+        let body = PlexSettingsRequest {
+            plex_hostname: hostname,
+            plex_port: port,
+        };
 
         let resp = self
             .client
@@ -517,6 +588,86 @@ mod tests {
 
         let client = MaintainerrClient::new(&server.uri(), "test-key").expect("should construct");
         let err = client.set_tautulli("invalid", "key").await.unwrap_err();
+
+        match err {
+            ApiError::ApiResponse { status, .. } => assert_eq!(status, 400),
+            other => panic!("expected ApiResponse, got: {other}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn set_plex_token_calls_correct_endpoint() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/settings/plex/token"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = MaintainerrClient::new(&server.uri(), "test-key").expect("should construct");
+        let result = client.set_plex_token("plex-auth-token").await;
+
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn set_plex_token_returns_error_on_failure() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/settings/plex/token"))
+            .respond_with(ResponseTemplate::new(400).set_body_string("Invalid token"))
+            .mount(&server)
+            .await;
+
+        let client = MaintainerrClient::new(&server.uri(), "test-key").expect("should construct");
+        let err = client.set_plex_token("invalid").await.unwrap_err();
+
+        match err {
+            ApiError::ApiResponse { status, .. } => assert_eq!(status, 400),
+            other => panic!("expected ApiResponse, got: {other}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn set_plex_calls_correct_endpoint() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/settings"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = MaintainerrClient::new(&server.uri(), "test-key").expect("should construct");
+        let result = client.set_plex("plex-hostname", 32400).await;
+
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn set_plex_returns_error_on_failure() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/settings"))
+            .respond_with(ResponseTemplate::new(400).set_body_string("Invalid hostname"))
+            .mount(&server)
+            .await;
+
+        let client = MaintainerrClient::new(&server.uri(), "test-key").expect("should construct");
+        let err = client.set_plex("invalid", 32400).await.unwrap_err();
 
         match err {
             ApiError::ApiResponse { status, .. } => assert_eq!(status, 400),
