@@ -5084,4 +5084,240 @@ mod tests {
         .await;
         assert!(result.is_ok());
     }
+
+    // ---- maybe_run_backup tests ----
+
+    #[tokio::test]
+    async fn maybe_run_backup_no_backup_spec_returns_none() {
+        let mock_server = wiremock::MockServer::start().await;
+        let client = build_mock_client(&mock_server.uri()).await;
+        let app = make_test_app("my-sonarr", "test", AppType::Sonarr);
+        let recorder = make_recorder(&client);
+        let obj_ref = app.object_ref(&());
+
+        let result =
+            maybe_run_backup(&client, &app, "test", &recorder, &obj_ref, None).await;
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn maybe_run_backup_disabled_returns_none() {
+        use servarr_crds::BackupSpec;
+
+        let mock_server = wiremock::MockServer::start().await;
+        let client = build_mock_client(&mock_server.uri()).await;
+        let mut app = make_test_app("my-sonarr", "test", AppType::Sonarr);
+        app.spec.backup = Some(BackupSpec { enabled: false, schedule: "0 3 * * *".into(), ..Default::default() });
+        let recorder = make_recorder(&client);
+        let obj_ref = app.object_ref(&());
+
+        let result =
+            maybe_run_backup(&client, &app, "test", &recorder, &obj_ref, None).await;
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn maybe_run_backup_no_api_key_secret_returns_none() {
+        use servarr_crds::BackupSpec;
+
+        let mock_server = wiremock::MockServer::start().await;
+        let client = build_mock_client(&mock_server.uri()).await;
+        let mut app = make_test_app("my-sonarr", "test", AppType::Sonarr);
+        // enabled but no api_key_secret → ? propagates None
+        app.spec.backup = Some(BackupSpec { enabled: true, schedule: "0 3 * * *".into(), ..Default::default() });
+        app.spec.api_key_secret = None;
+        let recorder = make_recorder(&client);
+        let obj_ref = app.object_ref(&());
+
+        let result =
+            maybe_run_backup(&client, &app, "test", &recorder, &obj_ref, None).await;
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn maybe_run_backup_secret_read_error_returns_error_status() {
+        use servarr_crds::BackupSpec;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock_server = MockServer::start().await;
+        let client = build_mock_client(&mock_server.uri()).await;
+        let mut app = make_test_app("my-sonarr", "test", AppType::Sonarr);
+        app.spec.backup = Some(BackupSpec { enabled: true, schedule: "0 3 * * *".into(), ..Default::default() });
+        app.spec.api_key_secret = Some("missing-secret".into());
+
+        Mock::given(method("GET"))
+            .and(path("/api/v1/namespaces/test/secrets/missing-secret"))
+            .respond_with(ResponseTemplate::new(404).set_body_json(json!({
+                "kind": "Status", "apiVersion": "v1",
+                "status": "Failure", "reason": "NotFound", "code": 404
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let recorder = make_recorder(&client);
+        let obj_ref = app.object_ref(&());
+
+        let result =
+            maybe_run_backup(&client, &app, "test", &recorder, &obj_ref, None).await;
+        let status = result.expect("should return Some(BackupStatus) on secret read error");
+        let msg = status.last_backup_result.expect("should have error message");
+        assert!(msg.contains("secret read error"), "expected 'secret read error' in: {msg}");
+    }
+
+    #[tokio::test]
+    async fn maybe_run_backup_not_due_returns_existing_status() {
+        use servarr_crds::{BackupSpec, BackupStatus as CrdBackupStatus};
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock_server = MockServer::start().await;
+        let client = build_mock_client(&mock_server.uri()).await;
+        let mut app = make_test_app("my-sonarr", "test", AppType::Sonarr);
+        app.spec.backup = Some(BackupSpec { enabled: true, schedule: "0 3 * * *".into(), ..Default::default() });
+        app.spec.api_key_secret = Some("sonarr-key".into());
+        // last_backup_time far in the future → next scheduled after it is also in the future
+        let existing_status = CrdBackupStatus {
+            last_backup_time: Some("2099-01-01T00:00:00Z".into()),
+            last_backup_result: Some("success".into()),
+            backup_count: 2,
+        };
+        app.status = Some(servarr_crds::ServarrAppStatus {
+            backup_status: Some(existing_status.clone()),
+            ..Default::default()
+        });
+
+        Mock::given(method("GET"))
+            .and(path("/api/v1/namespaces/test/secrets/sonarr-key"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "apiVersion": "v1", "kind": "Secret",
+                "metadata": { "name": "sonarr-key", "namespace": "test" },
+                "data": { "api-key": "c29uYXJyLWtleQ==" }
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let recorder = make_recorder(&client);
+        let obj_ref = app.object_ref(&());
+
+        let result =
+            maybe_run_backup(&client, &app, "test", &recorder, &obj_ref, None).await;
+        let returned = result.expect("should return Some when backup not due");
+        assert_eq!(returned.last_backup_result.as_deref(), Some("success"));
+        assert_eq!(returned.backup_count, 2);
+    }
+
+    #[tokio::test]
+    async fn maybe_run_backup_success_never_backed_up() {
+        use servarr_crds::BackupSpec;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock_server = MockServer::start().await;
+        let client = build_mock_client(&mock_server.uri()).await;
+        let mut app = make_test_app("my-sonarr", "test", AppType::Sonarr);
+        app.spec.backup = Some(BackupSpec {
+            enabled: true,
+            schedule: "0 3 * * *".into(),
+            retention_count: 5,
+        });
+        app.spec.api_key_secret = Some("sonarr-key".into());
+        // No status → never backed up → is_due = true
+
+        Mock::given(method("GET"))
+            .and(path("/api/v1/namespaces/test/secrets/sonarr-key"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "apiVersion": "v1", "kind": "Secret",
+                "metadata": { "name": "sonarr-key", "namespace": "test" },
+                "data": { "api-key": "c29uYXJyLWtleQ==" }
+            })))
+            .mount(&mock_server)
+            .await;
+
+        // POST /api/v3/system/backup → returns new backup
+        Mock::given(method("POST"))
+            .and(path("/api/v3/system/backup"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": 1,
+                "name": "sonarr_backup.zip",
+                "path": "/config/Backups/sonarr_backup.zip",
+                "size": 1048576,
+                "time": "2026-06-25T03:00:00Z"
+            })))
+            .mount(&mock_server)
+            .await;
+
+        // GET /api/v3/system/backup → list (called twice: pruning + backup_count)
+        // 1 backup ≤ retention of 5 → no pruning needed
+        Mock::given(method("GET"))
+            .and(path("/api/v3/system/backup"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+                {
+                    "id": 1,
+                    "name": "sonarr_backup.zip",
+                    "path": "/config/Backups/sonarr_backup.zip",
+                    "size": 1048576,
+                    "time": "2026-06-25T03:00:00Z"
+                }
+            ])))
+            .mount(&mock_server)
+            .await;
+
+        let recorder = make_recorder(&client);
+        let obj_ref = app.object_ref(&());
+        let mock_uri = mock_server.uri();
+
+        let result =
+            maybe_run_backup(&client, &app, "test", &recorder, &obj_ref, Some(&mock_uri))
+                .await;
+        let status = result.expect("should return Some(BackupStatus) on success");
+        assert_eq!(status.last_backup_result.as_deref(), Some("success"));
+        assert!(status.last_backup_time.is_some());
+        assert_eq!(status.backup_count, 1);
+    }
+
+    #[tokio::test]
+    async fn maybe_run_backup_create_fails_returns_error_status() {
+        use servarr_crds::BackupSpec;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock_server = MockServer::start().await;
+        let client = build_mock_client(&mock_server.uri()).await;
+        let mut app = make_test_app("my-sonarr", "test", AppType::Sonarr);
+        app.spec.backup = Some(BackupSpec {
+            enabled: true,
+            schedule: "0 3 * * *".into(),
+            retention_count: 5,
+        });
+        app.spec.api_key_secret = Some("sonarr-key".into());
+
+        Mock::given(method("GET"))
+            .and(path("/api/v1/namespaces/test/secrets/sonarr-key"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "apiVersion": "v1", "kind": "Secret",
+                "metadata": { "name": "sonarr-key", "namespace": "test" },
+                "data": { "api-key": "c29uYXJyLWtleQ==" }
+            })))
+            .mount(&mock_server)
+            .await;
+
+        // POST /api/v3/system/backup → 500
+        Mock::given(method("POST"))
+            .and(path("/api/v3/system/backup"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("internal error"))
+            .mount(&mock_server)
+            .await;
+
+        let recorder = make_recorder(&client);
+        let obj_ref = app.object_ref(&());
+        let mock_uri = mock_server.uri();
+
+        let result =
+            maybe_run_backup(&client, &app, "test", &recorder, &obj_ref, Some(&mock_uri))
+                .await;
+        let status = result.expect("should return Some(BackupStatus) on failure");
+        let msg = status.last_backup_result.expect("should have error message");
+        assert!(msg.starts_with("error:"), "expected 'error:' prefix in: {msg}");
+    }
 }
