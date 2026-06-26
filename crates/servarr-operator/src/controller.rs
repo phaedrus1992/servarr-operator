@@ -4780,4 +4780,308 @@ mod tests {
                 .await;
         assert!(result.is_ok());
     }
+
+    // ---- try_restore ----
+
+    #[tokio::test]
+    async fn try_restore_no_api_key_secret_returns_err() {
+        let mock_server = wiremock::MockServer::start().await;
+        let client = build_mock_client(&mock_server.uri()).await;
+        let recorder = make_recorder(&client);
+
+        let sonarr = make_test_app("my-sonarr", "test", AppType::Sonarr);
+        // api_key_secret is None by default in make_test_app
+
+        let obj_ref = sonarr.object_ref(&());
+        let result = try_restore(
+            &client,
+            &sonarr,
+            "test",
+            "my-sonarr",
+            42,
+            &recorder,
+            &obj_ref,
+            None,
+        )
+        .await;
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("api_key_secret"),
+            "expected api_key_secret error, got: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn try_restore_success() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock_server = MockServer::start().await;
+        let client = build_mock_client(&mock_server.uri()).await;
+        let recorder = make_recorder(&client);
+
+        let mut sonarr = make_test_app("my-sonarr", "test", AppType::Sonarr);
+        sonarr.spec.api_key_secret = Some("sonarr-key".to_string());
+
+        Mock::given(method("GET"))
+            .and(path("/api/v1/namespaces/test/secrets/sonarr-key"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "apiVersion": "v1", "kind": "Secret",
+                "metadata": { "name": "sonarr-key", "namespace": "test" },
+                "data": { "api-key": "c29uYXJyLWtleQ==" }
+            })))
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/v3/system/backup/restore/42"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&mock_server)
+            .await;
+
+        let obj_ref = sonarr.object_ref(&());
+        let mock_uri = mock_server.uri();
+        let result =
+            try_restore(&client, &sonarr, "test", "my-sonarr", 42, &recorder, &obj_ref, Some(&mock_uri))
+                .await;
+        assert!(result.is_ok());
+    }
+
+    // ---- cleanup_prowlarr_registration ----
+
+    #[tokio::test]
+    async fn cleanup_prowlarr_registration_no_prowlarr_returns_ok() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock_server = MockServer::start().await;
+        let client = build_mock_client(&mock_server.uri()).await;
+        let recorder = make_recorder(&client);
+
+        let sonarr = make_test_app("my-sonarr", "test", AppType::Sonarr);
+
+        Mock::given(method("GET"))
+            .and(path("/apis/servarr.dev/v1alpha1/namespaces/test/servarrapps"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "apiVersion": "servarr.dev/v1alpha1",
+                "kind": "ServarrAppList",
+                "metadata": { "resourceVersion": "1" },
+                "items": []
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let obj_ref = sonarr.object_ref(&());
+        let mock_uri = mock_server.uri();
+        let result =
+            cleanup_prowlarr_registration(&client, &sonarr, "test", &recorder, &obj_ref, Some(&mock_uri))
+                .await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn cleanup_prowlarr_registration_deletes_registered_app() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock_server = MockServer::start().await;
+        let client = build_mock_client(&mock_server.uri()).await;
+        let recorder = make_recorder(&client);
+
+        // The Sonarr app being deleted — its URL is http://my-sonarr.test.svc:8989
+        let sonarr = make_test_app("my-sonarr", "test", AppType::Sonarr);
+
+        // Prowlarr CR in the namespace with sync enabled
+        Mock::given(method("GET"))
+            .and(path("/apis/servarr.dev/v1alpha1/namespaces/test/servarrapps"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "apiVersion": "servarr.dev/v1alpha1",
+                "kind": "ServarrAppList",
+                "metadata": { "resourceVersion": "1" },
+                "items": [{
+                    "apiVersion": "servarr.dev/v1alpha1",
+                    "kind": "ServarrApp",
+                    "metadata": { "name": "my-prowlarr", "namespace": "test",
+                                  "uid": "prowl-uid", "resourceVersion": "1" },
+                    "spec": {
+                        "app": "Prowlarr",
+                        "apiKeySecret": "my-prowlarr-api-key",
+                        "prowlarrSync": { "enabled": true }
+                    }
+                }]
+            })))
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/v1/namespaces/test/secrets/my-prowlarr-api-key"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "apiVersion": "v1", "kind": "Secret",
+                "metadata": { "name": "my-prowlarr-api-key", "namespace": "test" },
+                "data": { "api-key": "c29uYXJyLWtleQ==" }
+            })))
+            .mount(&mock_server)
+            .await;
+
+        // Prowlarr has the Sonarr app registered
+        Mock::given(method("GET"))
+            .and(path("/api/v1/applications"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!([{
+                "id": 42,
+                "name": "Sonarr",
+                "syncLevel": "fullSync",
+                "implementation": "Sonarr",
+                "configContract": "SonarrSettings",
+                "fields": [
+                    { "name": "baseUrl", "value": "http://my-sonarr.test.svc:8989" },
+                    { "name": "apiKey", "value": "sonarr-key" }
+                ],
+                "tags": []
+            }])))
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("DELETE"))
+            .and(path("/api/v1/applications/42"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&mock_server)
+            .await;
+
+        let obj_ref = sonarr.object_ref(&());
+        let mock_uri = mock_server.uri();
+        let result =
+            cleanup_prowlarr_registration(&client, &sonarr, "test", &recorder, &obj_ref, Some(&mock_uri))
+                .await;
+        assert!(result.is_ok());
+    }
+
+    // ---- cleanup_overseerr_registration ----
+
+    #[tokio::test]
+    async fn cleanup_overseerr_registration_no_overseerr_returns_ok() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock_server = MockServer::start().await;
+        let client = build_mock_client(&mock_server.uri()).await;
+        let recorder = make_recorder(&client);
+
+        let sonarr = make_test_app("my-sonarr", "test", AppType::Sonarr);
+
+        Mock::given(method("GET"))
+            .and(path("/apis/servarr.dev/v1alpha1/namespaces/test/servarrapps"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "apiVersion": "servarr.dev/v1alpha1",
+                "kind": "ServarrAppList",
+                "metadata": { "resourceVersion": "1" },
+                "items": []
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let obj_ref = sonarr.object_ref(&());
+        let mock_uri = mock_server.uri();
+        let result =
+            cleanup_overseerr_registration(&client, &sonarr, "test", &recorder, &obj_ref, Some(&mock_uri))
+                .await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn cleanup_overseerr_registration_sonarr_deletes_matching_server() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock_server = MockServer::start().await;
+        let client = build_mock_client(&mock_server.uri()).await;
+        let recorder = make_recorder(&client);
+
+        // Sonarr app being deleted — hostname my-sonarr.test.svc, port 8989
+        let sonarr = make_test_app("my-sonarr", "test", AppType::Sonarr);
+
+        // Overseerr CR in the namespace with sync enabled
+        Mock::given(method("GET"))
+            .and(path("/apis/servarr.dev/v1alpha1/namespaces/test/servarrapps"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "apiVersion": "servarr.dev/v1alpha1",
+                "kind": "ServarrAppList",
+                "metadata": { "resourceVersion": "1" },
+                "items": [{
+                    "apiVersion": "servarr.dev/v1alpha1",
+                    "kind": "ServarrApp",
+                    "metadata": { "name": "my-overseerr", "namespace": "test",
+                                  "uid": "over-uid", "resourceVersion": "1" },
+                    "spec": {
+                        "app": "Overseerr",
+                        "apiKeySecret": "my-overseerr-api-key",
+                        "overseerrSync": { "enabled": true }
+                    }
+                }]
+            })))
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/v1/namespaces/test/secrets/my-overseerr-api-key"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "apiVersion": "v1", "kind": "Secret",
+                "metadata": { "name": "my-overseerr-api-key", "namespace": "test" },
+                "data": { "api-key": "c29uYXJyLWtleQ==" }
+            })))
+            .mount(&mock_server)
+            .await;
+
+        // Overseerr has the Sonarr server registered
+        Mock::given(method("GET"))
+            .and(path("/settings/sonarr"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!([{
+                "id": 7,
+                "name": "Sonarr Main",
+                "hostname": "my-sonarr.test.svc",
+                "port": 8989,
+                "apiKey": "sonarr-key",
+                "useSsl": false,
+                "activeProfileId": 1,
+                "activeProfileName": "Any",
+                "activeDirectory": "/tv",
+                "is4k": false,
+                "enableSeasonFolders": true,
+                "isDefault": false
+            }])))
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("DELETE"))
+            .and(path("/settings/sonarr/7"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": 7,
+                "name": "Sonarr Main",
+                "hostname": "my-sonarr.test.svc",
+                "port": 8989,
+                "apiKey": "sonarr-key",
+                "useSsl": false,
+                "activeProfileId": 1,
+                "activeProfileName": "Any",
+                "activeDirectory": "/tv",
+                "is4k": false,
+                "enableSeasonFolders": true,
+                "isDefault": false
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let obj_ref = sonarr.object_ref(&());
+        let mock_uri = mock_server.uri();
+        let result = cleanup_overseerr_registration(
+            &client,
+            &sonarr,
+            "test",
+            &recorder,
+            &obj_ref,
+            Some(&mock_uri),
+        )
+        .await;
+        assert!(result.is_ok());
+    }
 }

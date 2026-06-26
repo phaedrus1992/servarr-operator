@@ -19,6 +19,9 @@ pub struct Context {
     /// set via the downward API). Set `WATCH_ALL_NAMESPACES=true` to opt into
     /// cluster-scoped mode.
     pub watch_namespace: Option<String>,
+    /// Override base URL for in-cluster app API calls. `None` in production (URLs
+    /// are built from `<name>.<ns>.svc:<port>`). Tests set this to a wiremock URI.
+    pub app_api_base_override: Option<String>,
 }
 
 impl Context {
@@ -68,6 +71,7 @@ impl Context {
             image_overrides,
             reporter,
             watch_namespace,
+            app_api_base_override: None,
         }
     }
 }

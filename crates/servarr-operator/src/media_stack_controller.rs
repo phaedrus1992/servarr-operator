@@ -605,4 +605,23 @@ mod tests {
         assert!(now.contains('T'), "should contain T separator: {now}");
         assert!(now.ends_with('Z'), "should end with Z: {now}");
     }
+
+    fn make_kube_api_err(code: u16) -> kube::Error {
+        let s = kube::core::Status {
+            code,
+            ..kube::core::Status::failure("test", "Test")
+        };
+        kube::Error::Api(Box::new(s))
+    }
+
+    #[test]
+    fn is_not_found_returns_true_for_404() {
+        assert!(is_not_found(&make_kube_api_err(404)));
+    }
+
+    #[test]
+    fn is_not_found_returns_false_for_403() {
+        assert!(!is_not_found(&make_kube_api_err(403)));
+    }
+
 }
