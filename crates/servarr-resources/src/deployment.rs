@@ -120,7 +120,7 @@ pub fn build(app: &ServarrApp, image_overrides: &HashMap<String, ImageSpec>) -> 
     let has_host_port = container_ports.iter().any(|p| p.host_port.is_some());
     let volume_mounts = build_volume_mounts(persistence, app);
     let volumes = build_volumes(app, persistence);
-    let env_vars = build_env_vars(app, &defaults, uid, gid);
+    let env_vars = build_env_vars(app, &defaults, uid, gid, persistence);
     let (container_security, pod_security) = build_security_contexts(security, uid, gid);
 
     // Auto-select exec probes for Transmission with auth enabled
@@ -681,7 +681,13 @@ fn build_volumes(app: &ServarrApp, persistence: &PersistenceSpec) -> Vec<Volume>
     volumes
 }
 
-fn build_env_vars(app: &ServarrApp, defaults: &AppDefaults, uid: i64, gid: i64) -> Vec<EnvVar> {
+fn build_env_vars(
+    app: &ServarrApp,
+    defaults: &AppDefaults,
+    uid: i64,
+    gid: i64,
+    persistence: &PersistenceSpec,
+) -> Vec<EnvVar> {
     let mut env = Vec::new();
 
     // LinuxServer PUID/PGID
@@ -710,6 +716,25 @@ fn build_env_vars(app: &ServarrApp, defaults: &AppDefaults, uid: i64, gid: i64) 
         env.push(EnvVar {
             name: e.name.clone(),
             value: Some(e.value.clone()),
+            ..Default::default()
+        });
+    }
+
+    // Placed before the user env loop so spec.env can override DATA_DIR if needed.
+    if matches!(app.spec.app, AppType::Maintainerr) {
+        let config_vol = persistence.volumes.iter().find(|v| v.name == "config");
+        if config_vol.is_none() && !persistence.volumes.is_empty() {
+            tracing::warn!(
+                app = %app.spec.app,
+                "no persistence volume named 'config' found; \
+                 defaulting DATA_DIR=/opt/data — set DATA_DIR via spec.env to override"
+            );
+        }
+        let data_dir = config_vol.map_or("/opt/data", |v| v.mount_path.as_str());
+        env.retain(|e| e.name != "DATA_DIR");
+        env.push(EnvVar {
+            name: "DATA_DIR".into(),
+            value: Some(data_dir.to_string()),
             ..Default::default()
         });
     }
