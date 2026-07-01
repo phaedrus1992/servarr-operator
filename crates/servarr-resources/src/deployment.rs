@@ -720,16 +720,18 @@ fn build_env_vars(
         });
     }
 
-    // Maintainerr uses DATA_DIR (not /config) for its data directory.
-    // Default to /opt/data (the image default) or mirror the user's config
-    // volume mountPath so the two stay in sync. Placed before the user env
-    // loop so spec.env can override if needed.
+    // Placed before the user env loop so spec.env can override DATA_DIR if needed.
     if matches!(app.spec.app, AppType::Maintainerr) {
-        let data_dir = persistence
-            .volumes
-            .iter()
-            .find(|v| v.name == "config")
-            .map_or("/opt/data", |v| v.mount_path.as_str());
+        let config_vol = persistence.volumes.iter().find(|v| v.name == "config");
+        if config_vol.is_none() && !persistence.volumes.is_empty() {
+            tracing::warn!(
+                app = %app.spec.app,
+                "no persistence volume named 'config' found; \
+                 defaulting DATA_DIR=/opt/data — set DATA_DIR via spec.env to override"
+            );
+        }
+        let data_dir = config_vol.map_or("/opt/data", |v| v.mount_path.as_str());
+        env.retain(|e| e.name != "DATA_DIR");
         env.push(EnvVar {
             name: "DATA_DIR".into(),
             value: Some(data_dir.to_string()),

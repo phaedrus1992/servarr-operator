@@ -120,7 +120,7 @@ fn test_deployment_builder_maintainerr_data_dir_follows_mount() {
             persistence: Some(PersistenceSpec {
                 volumes: vec![PvcVolume {
                     name: "config".into(),
-                    mount_path: "/opt/data".into(),
+                    mount_path: "/custom/data".into(),
                     existing_claim_name: Some("maintainerr-config".into()),
                     access_mode: "ReadWriteOnce".into(),
                     storage_class: String::new(),
@@ -136,7 +136,7 @@ fn test_deployment_builder_maintainerr_data_dir_follows_mount() {
     let container = &deploy.spec.unwrap().template.spec.unwrap().containers[0];
     let env = container.env.as_ref().unwrap();
     let data_dir = env.iter().find(|e| e.name == "DATA_DIR").unwrap();
-    assert_eq!(data_dir.value.as_deref(), Some("/opt/data"));
+    assert_eq!(data_dir.value.as_deref(), Some("/custom/data"));
 }
 
 #[test]
