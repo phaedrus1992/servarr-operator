@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased] - ReleaseDate
 
+### Fixed
+
+- Fix Maintainerr `DATA_DIR` not being wired to the config volume mount path. The operator
+  now auto-injects `DATA_DIR` for Maintainerr equal to the `config` volume's `mountPath`
+  (defaulting to `/opt/data`). Previously, users who mounted their PVC at `/config`
+  (following the convention for other apps) would see a fresh empty database on every
+  restart because Maintainerr reads from `DATA_DIR`, not `/config`. **Migration:** if your
+  CR has `mountPath: /config` for the Maintainerr config volume, change it to
+  `mountPath: /opt/data`; the files on the PVC do not need to move. You can also keep
+  `mountPath: /config` and add `DATA_DIR: /config` to `spec.env` as an alternative.
+
 ### Changed
 
 - Upgrade `kube` 3.1 → 4.0 and `k8s-openapi` 0.27 → 0.28 together. The two crates are
