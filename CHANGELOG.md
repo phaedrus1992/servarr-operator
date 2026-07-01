@@ -20,6 +20,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `mountPath: /opt/data`; the files on the PVC do not need to move. You can also keep
   `mountPath: /config` and add `DATA_DIR: /config` to `spec.env` as an alternative.
 
+## [1.1.1] - 2026-07-01
+
 ### Changed
 
 - Update default Radarr image to `6.1.1` (from `6.0.4`).
@@ -192,7 +194,8 @@ lifecycle: deployment, storage, networking, backups, and cross-app integration.
   on each `v*` tag.
 
 <!-- next-url -->
-[Unreleased]: https://github.com/phaedrus1992/servarr-operator/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/phaedrus1992/servarr-operator/compare/v1.1.1...HEAD
+[1.1.1]: https://github.com/phaedrus1992/servarr-operator/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/phaedrus1992/servarr-operator/compare/v1.0.3...v1.1.0
 [1.0.3]: https://github.com/phaedrus1992/servarr-operator/compare/v1.0.2...v1.0.3
 [1.0.2]: https://github.com/phaedrus1992/servarr-operator/compare/v1.0.1...v1.0.2
