@@ -21,7 +21,7 @@ downloads = true
 
 [radarr]
 repository = "linuxserver/radarr"
-tag = "6.0.4"
+tag = "6.1.1"
 port = 7878
 security = "linuxserver"
 downloads = true
@@ -56,7 +56,7 @@ downloads = true
 
 [tautulli]
 repository = "linuxserver/tautulli"
-tag = "2.16.1"
+tag = "2.17.1"
 port = 8181
 security = "linuxserver"
 downloads = false
@@ -78,7 +78,7 @@ downloads = false
 
 [jackett]
 repository = "linuxserver/jackett"
-tag = "0.24.2110"
+tag = "0.24.2116"
 port = 9117
 security = "linuxserver"
 downloads = false
@@ -94,7 +94,7 @@ probe_path = "/api/system/ping"
 
 [subgen]
 repository = "mccloud/subgen"
-tag = "2026.04.3"
+tag = "2026.06.3"
 port = 9000
 security = "nonroot"
 downloads = false
