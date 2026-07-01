@@ -3967,5 +3967,8 @@ fn test_build_api_key_with_secret_name_returns_secret() {
     assert_eq!(secret.type_.as_deref(), Some("Opaque"));
 
     let string_data = secret.string_data.expect("string_data must be set");
-    assert_eq!(string_data.get("api-key").map(String::as_str), Some("deadbeef"));
+    assert_eq!(
+        string_data.get("api-key").map(String::as_str),
+        Some("deadbeef")
+    );
 }

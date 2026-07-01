@@ -158,14 +158,28 @@ pub async fn reconcile(app: Arc<ServarrApp>, ctx: Arc<Context>) -> Result<Action
     ) {
         if app.metadata.deletion_timestamp.is_some() {
             // App is being deleted — clean up Prowlarr registration
-            if let Err(e) =
-                cleanup_prowlarr_registration(client, &app, &ns, &recorder, &obj_ref, ctx.app_api_base_override.as_deref()).await
+            if let Err(e) = cleanup_prowlarr_registration(
+                client,
+                &app,
+                &ns,
+                &recorder,
+                &obj_ref,
+                ctx.app_api_base_override.as_deref(),
+            )
+            .await
             {
                 warn!(%name, error = %e, "failed to clean up Prowlarr registration");
             }
             // App is being deleted — clean up Overseerr registration
-            if let Err(e) =
-                cleanup_overseerr_registration(client, &app, &ns, &recorder, &obj_ref, ctx.app_api_base_override.as_deref()).await
+            if let Err(e) = cleanup_overseerr_registration(
+                client,
+                &app,
+                &ns,
+                &recorder,
+                &obj_ref,
+                ctx.app_api_base_override.as_deref(),
+            )
+            .await
             {
                 warn!(%name, error = %e, "failed to clean up Overseerr registration");
             }
@@ -240,8 +254,16 @@ pub async fn reconcile(app: Arc<ServarrApp>, ctx: Arc<Context>) -> Result<Action
         .cloned()
     {
         let now = chrono_now();
-        let result =
-            maybe_restore_backup(client, &app, &ns, &name, &restore_id, &recorder, &obj_ref, ctx.app_api_base_override.as_deref()).await;
+        let result = maybe_restore_backup(
+            client,
+            &app,
+            &ns,
+            &restore_id,
+            &recorder,
+            &obj_ref,
+            ctx.app_api_base_override.as_deref(),
+        )
+        .await;
         Some(result_to_condition(
             result,
             ConditionSpec {
@@ -512,10 +534,12 @@ pub async fn reconcile(app: Arc<ServarrApp>, ctx: Arc<Context>) -> Result<Action
     }
 
     // API health check and update check (non-blocking)
-    let (health_condition, update_condition) = check_api_health(client, &app, &ns, ctx.app_api_base_override.as_deref()).await;
+    let (health_condition, update_condition) =
+        check_api_health(client, &app, &ns, ctx.app_api_base_override.as_deref()).await;
 
     // Admin credential sync via live API (SABnzbd, Transmission, Jellyfin, Tautulli, Overseerr)
-    let admin_creds_condition = sync_admin_credentials(client, &app, &ns, ctx.app_api_base_override.as_deref()).await;
+    let admin_creds_condition =
+        sync_admin_credentials(client, &app, &ns, ctx.app_api_base_override.as_deref()).await;
     // If sync failed (app not ready yet), requeue sooner than the default 300s so
     // credentials are applied once the app becomes healthy.
     let admin_creds_pending = admin_creds_condition
@@ -524,7 +548,15 @@ pub async fn reconcile(app: Arc<ServarrApp>, ctx: Arc<Context>) -> Result<Action
         .unwrap_or(false);
 
     // Backup scheduling (non-blocking)
-    let backup_status = maybe_run_backup(client, &app, &ns, &recorder, &obj_ref, ctx.app_api_base_override.as_deref()).await;
+    let backup_status = maybe_run_backup(
+        client,
+        &app,
+        &ns,
+        &recorder,
+        &obj_ref,
+        ctx.app_api_base_override.as_deref(),
+    )
+    .await;
 
     // Prowlarr cross-app sync (only for Prowlarr-type apps with sync enabled)
     let prowlarr_sync_condition = if app.spec.app == AppType::Prowlarr
@@ -533,7 +565,15 @@ pub async fn reconcile(app: Arc<ServarrApp>, ctx: Arc<Context>) -> Result<Action
     {
         let target_ns = sync_spec.namespace_scope.as_deref().unwrap_or(&ns);
         let now = chrono_now();
-        let result = sync_prowlarr_apps(client, &app, target_ns, &recorder, &obj_ref, ctx.app_api_base_override.as_deref()).await;
+        let result = sync_prowlarr_apps(
+            client,
+            &app,
+            target_ns,
+            &recorder,
+            &obj_ref,
+            ctx.app_api_base_override.as_deref(),
+        )
+        .await;
         Some(result_to_condition(
             result,
             ConditionSpec {
@@ -557,7 +597,15 @@ pub async fn reconcile(app: Arc<ServarrApp>, ctx: Arc<Context>) -> Result<Action
     {
         let target_ns = sync_spec.namespace_scope.as_deref().unwrap_or(&ns);
         let now = chrono_now();
-        let result = sync_overseerr_servers(client, &app, target_ns, &recorder, &obj_ref, ctx.app_api_base_override.as_deref()).await;
+        let result = sync_overseerr_servers(
+            client,
+            &app,
+            target_ns,
+            &recorder,
+            &obj_ref,
+            ctx.app_api_base_override.as_deref(),
+        )
+        .await;
         Some(result_to_condition(
             result,
             ConditionSpec {
@@ -581,7 +629,13 @@ pub async fn reconcile(app: Arc<ServarrApp>, ctx: Arc<Context>) -> Result<Action
     {
         let target_ns = sync_spec.namespace_scope.as_deref().unwrap_or(&ns);
         let now = chrono_now();
-        let result = sync_bazarr_apps(client, &app, target_ns, ctx.app_api_base_override.as_deref()).await;
+        let result = sync_bazarr_apps(
+            client,
+            &app,
+            target_ns,
+            ctx.app_api_base_override.as_deref(),
+        )
+        .await;
         Some(result_to_condition(
             result,
             ConditionSpec {
@@ -605,7 +659,13 @@ pub async fn reconcile(app: Arc<ServarrApp>, ctx: Arc<Context>) -> Result<Action
     {
         let target_ns = sync_spec.namespace_scope.as_deref().unwrap_or(&ns);
         let now = chrono_now();
-        let result = sync_subgen_jellyfin(client, &app, target_ns, ctx.app_api_base_override.as_deref()).await;
+        let result = sync_subgen_jellyfin(
+            client,
+            &app,
+            target_ns,
+            ctx.app_api_base_override.as_deref(),
+        )
+        .await;
         Some(result_to_condition(
             result,
             ConditionSpec {
@@ -629,7 +689,13 @@ pub async fn reconcile(app: Arc<ServarrApp>, ctx: Arc<Context>) -> Result<Action
     {
         let target_ns = sync_spec.namespace_scope.as_deref().unwrap_or(&ns);
         let now = chrono_now();
-        let result = sync_maintainerr_servers(client, &app, target_ns, ctx.app_api_base_override.as_deref()).await;
+        let result = sync_maintainerr_servers(
+            client,
+            &app,
+            target_ns,
+            ctx.app_api_base_override.as_deref(),
+        )
+        .await;
         Some(result_to_condition(
             result,
             ConditionSpec {
@@ -1758,12 +1824,12 @@ pub(crate) async fn maybe_restore_backup(
     client: &Client,
     app: &ServarrApp,
     ns: &str,
-    name: &str,
     restore_id: &str,
     recorder: &Recorder,
     obj_ref: &k8s_openapi::api::core::v1::ObjectReference,
     base_url_override: Option<&str>,
 ) -> Result<(), anyhow::Error> {
+    let name = app.name_any();
     // Only Servarr v3 apps support backup/restore API
     if !matches!(
         app.spec.app,
@@ -1802,14 +1868,14 @@ pub(crate) async fn maybe_restore_backup(
             "spec": { "replicas": 0 }
         });
         deploy_api
-            .patch(name, &PatchParams::default(), &Patch::Merge(scale_down))
+            .patch(&name, &PatchParams::default(), &Patch::Merge(scale_down))
             .await
             .map_err(|e| anyhow::anyhow!("failed to scale down for restore: {e}"))?;
 
         // Wait for pods to terminate (poll for up to 60 seconds)
         for _ in 0..12 {
             tokio::time::sleep(Duration::from_secs(5)).await;
-            match deploy_api.get(name).await {
+            match deploy_api.get(&name).await {
                 Ok(d) => {
                     let ready = d
                         .status
@@ -1832,7 +1898,16 @@ pub(crate) async fn maybe_restore_backup(
 
     // Step 2: Build API client and call restore; always attempt scale-up on failure.
     let restore_outcome = if scale_down_outcome.is_ok() {
-        try_restore(client, app, ns, name, backup_id, recorder, obj_ref, base_url_override).await
+        try_restore(
+            client,
+            app,
+            ns,
+            backup_id,
+            recorder,
+            obj_ref,
+            base_url_override,
+        )
+        .await
     } else {
         scale_down_outcome
     };
@@ -1840,7 +1915,7 @@ pub(crate) async fn maybe_restore_backup(
     // Step 3: Scale the deployment back up (always runs, even on restore failure).
     let scale_up = serde_json::json!({ "spec": { "replicas": 1 } });
     if let Err(se) = deploy_api
-        .patch(name, &PatchParams::default(), &Patch::Merge(scale_up))
+        .patch(&name, &PatchParams::default(), &Patch::Merge(scale_up))
         .await
     {
         warn!(%name, error = %se, "failed to scale back up after restore; deployment may be at zero replicas");
@@ -1861,7 +1936,7 @@ pub(crate) async fn maybe_restore_backup(
     });
     servarr_api_resource
         .patch(
-            name,
+            &name,
             &PatchParams::default(),
             &Patch::Merge(remove_annotation),
         )
@@ -1879,12 +1954,12 @@ pub(crate) async fn try_restore(
     client: &Client,
     app: &ServarrApp,
     ns: &str,
-    name: &str,
     backup_id: i64,
     recorder: &Recorder,
     obj_ref: &k8s_openapi::api::core::v1::ObjectReference,
     base_url_override: Option<&str>,
 ) -> Result<(), anyhow::Error> {
+    let name = app.name_any();
     let secret_name = app
         .spec
         .api_key_secret
@@ -3015,9 +3090,9 @@ pub(crate) async fn cleanup_overseerr_registration(
         .as_ref()
         .unwrap_or(&overseerr_defaults.service);
     let overseerr_port = overseerr_svc.ports.first().map(|p| p.port).unwrap_or(80);
-    let overseerr_url = base_url_override
-        .map(str::to_owned)
-        .unwrap_or_else(|| format!("http://{overseerr_app_name}.{overseerr_ns}.svc:{overseerr_port}"));
+    let overseerr_url = base_url_override.map(str::to_owned).unwrap_or_else(|| {
+        format!("http://{overseerr_app_name}.{overseerr_ns}.svc:{overseerr_port}")
+    });
 
     let overseerr_client = servarr_api::OverseerrClient::new(&overseerr_url, &overseerr_key);
 
@@ -4031,7 +4106,10 @@ mod tests {
         let mock_server = wiremock::MockServer::start().await;
         let client = build_mock_client(&mock_server.uri()).await;
         let mut app = make_test_app("my-sonarr", "test", AppType::Sonarr);
-        app.spec.api_health_check = Some(ApiHealthCheckSpec { enabled: true, interval_seconds: None });
+        app.spec.api_health_check = Some(ApiHealthCheckSpec {
+            enabled: true,
+            interval_seconds: None,
+        });
         // api_key_secret still None → early return (None, None)
         let (h, u) = check_api_health(&client, &app, "test", None).await;
         assert!(h.is_none());
@@ -4048,7 +4126,10 @@ mod tests {
         let client = build_mock_client(&mock_server.uri()).await;
 
         let mut app = make_test_app("my-sonarr", "test", AppType::Sonarr);
-        app.spec.api_health_check = Some(ApiHealthCheckSpec { enabled: true, interval_seconds: None });
+        app.spec.api_health_check = Some(ApiHealthCheckSpec {
+            enabled: true,
+            interval_seconds: None,
+        });
         app.spec.api_key_secret = Some("sonarr-apikey".to_string());
 
         Mock::given(method("GET"))
@@ -4143,7 +4224,10 @@ mod tests {
         let result = sync_admin_credentials(&client, &app, "test", Some(&mock_uri)).await;
 
         let cond = result.expect("should return a condition");
-        assert_eq!(cond.status, "True", "credentials should be configured successfully");
+        assert_eq!(
+            cond.status, "True",
+            "credentials should be configured successfully"
+        );
         assert_eq!(cond.reason, "Configured");
     }
 
@@ -4157,7 +4241,10 @@ mod tests {
         let client = build_mock_client(&mock_server.uri()).await;
 
         let mut app = make_test_app("my-sonarr", "test", AppType::Sonarr);
-        app.spec.api_health_check = Some(ApiHealthCheckSpec { enabled: true, interval_seconds: None });
+        app.spec.api_health_check = Some(ApiHealthCheckSpec {
+            enabled: true,
+            interval_seconds: None,
+        });
         app.spec.api_key_secret = Some("sonarr-apikey".to_string());
 
         Mock::given(method("GET"))
@@ -4202,7 +4289,10 @@ mod tests {
         let client = build_mock_client(&mock_server.uri()).await;
 
         let mut app = make_test_app("my-sonarr", "test", AppType::Sonarr);
-        app.spec.api_health_check = Some(ApiHealthCheckSpec { enabled: true, interval_seconds: None });
+        app.spec.api_health_check = Some(ApiHealthCheckSpec {
+            enabled: true,
+            interval_seconds: None,
+        });
         app.spec.api_key_secret = Some("sonarr-apikey".to_string());
 
         Mock::given(method("GET"))
@@ -4247,7 +4337,10 @@ mod tests {
         use kube::runtime::events::Reporter;
         kube::runtime::events::Recorder::new(
             client.clone(),
-            Reporter { controller: "servarr-operator".into(), instance: None },
+            Reporter {
+                controller: "servarr-operator".into(),
+                instance: None,
+            },
         )
     }
 
@@ -4275,7 +4368,9 @@ mod tests {
 
         // Discover apps in target namespace → empty list
         Mock::given(method("GET"))
-            .and(path("/apis/servarr.dev/v1alpha1/namespaces/test/servarrapps"))
+            .and(path(
+                "/apis/servarr.dev/v1alpha1/namespaces/test/servarrapps",
+            ))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "apiVersion": "servarr.dev/v1alpha1",
                 "kind": "ServarrAppList",
@@ -4295,9 +4390,15 @@ mod tests {
         let recorder = make_recorder(&client);
         let obj_ref = prowlarr.object_ref(&());
         let mock_uri = mock_server.uri();
-        let result =
-            sync_prowlarr_apps(&client, &prowlarr, "test", &recorder, &obj_ref, Some(&mock_uri))
-                .await;
+        let result = sync_prowlarr_apps(
+            &client,
+            &prowlarr,
+            "test",
+            &recorder,
+            &obj_ref,
+            Some(&mock_uri),
+        )
+        .await;
         assert!(result.is_ok());
     }
 
@@ -4325,7 +4426,9 @@ mod tests {
 
         // Discover apps: one Sonarr with an API key secret
         Mock::given(method("GET"))
-            .and(path("/apis/servarr.dev/v1alpha1/namespaces/test/servarrapps"))
+            .and(path(
+                "/apis/servarr.dev/v1alpha1/namespaces/test/servarrapps",
+            ))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "apiVersion": "servarr.dev/v1alpha1",
                 "kind": "ServarrAppList",
@@ -4375,15 +4478,22 @@ mod tests {
                 "fields": [],
                 "tags": []
             })))
+            .expect(1)
             .mount(&mock_server)
             .await;
 
         let recorder = make_recorder(&client);
         let obj_ref = prowlarr.object_ref(&());
         let mock_uri = mock_server.uri();
-        let result =
-            sync_prowlarr_apps(&client, &prowlarr, "test", &recorder, &obj_ref, Some(&mock_uri))
-                .await;
+        let result = sync_prowlarr_apps(
+            &client,
+            &prowlarr,
+            "test",
+            &recorder,
+            &obj_ref,
+            Some(&mock_uri),
+        )
+        .await;
         assert!(result.is_ok());
     }
 
@@ -4410,7 +4520,9 @@ mod tests {
 
         // No apps discovered in namespace
         Mock::given(method("GET"))
-            .and(path("/apis/servarr.dev/v1alpha1/namespaces/test/servarrapps"))
+            .and(path(
+                "/apis/servarr.dev/v1alpha1/namespaces/test/servarrapps",
+            ))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "apiVersion": "servarr.dev/v1alpha1",
                 "kind": "ServarrAppList",
@@ -4439,15 +4551,22 @@ mod tests {
         Mock::given(method("DELETE"))
             .and(path_regex("/api/v1/applications/.*"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+            .expect(1)
             .mount(&mock_server)
             .await;
 
         let recorder = make_recorder(&client);
         let obj_ref = prowlarr.object_ref(&());
         let mock_uri = mock_server.uri();
-        let result =
-            sync_prowlarr_apps(&client, &prowlarr, "test", &recorder, &obj_ref, Some(&mock_uri))
-                .await;
+        let result = sync_prowlarr_apps(
+            &client,
+            &prowlarr,
+            "test",
+            &recorder,
+            &obj_ref,
+            Some(&mock_uri),
+        )
+        .await;
         assert!(result.is_ok());
     }
 
@@ -4475,7 +4594,9 @@ mod tests {
             .await;
 
         Mock::given(method("GET"))
-            .and(path("/apis/servarr.dev/v1alpha1/namespaces/test/servarrapps"))
+            .and(path(
+                "/apis/servarr.dev/v1alpha1/namespaces/test/servarrapps",
+            ))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "apiVersion": "servarr.dev/v1alpha1",
                 "kind": "ServarrAppList",
@@ -4518,7 +4639,9 @@ mod tests {
             .await;
 
         Mock::given(method("GET"))
-            .and(path("/apis/servarr.dev/v1alpha1/namespaces/test/servarrapps"))
+            .and(path(
+                "/apis/servarr.dev/v1alpha1/namespaces/test/servarrapps",
+            ))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "apiVersion": "servarr.dev/v1alpha1",
                 "kind": "ServarrAppList",
@@ -4573,7 +4696,9 @@ mod tests {
 
         // child_name(maintainerr, "api-key") = "my-maintainerr-api-key"
         Mock::given(method("GET"))
-            .and(path("/api/v1/namespaces/test/secrets/my-maintainerr-api-key"))
+            .and(path(
+                "/api/v1/namespaces/test/secrets/my-maintainerr-api-key",
+            ))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "apiVersion": "v1", "kind": "Secret",
                 "metadata": { "name": "my-maintainerr-api-key", "namespace": "test" },
@@ -4583,7 +4708,9 @@ mod tests {
             .await;
 
         Mock::given(method("GET"))
-            .and(path("/apis/servarr.dev/v1alpha1/namespaces/test/servarrapps"))
+            .and(path(
+                "/apis/servarr.dev/v1alpha1/namespaces/test/servarrapps",
+            ))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "apiVersion": "servarr.dev/v1alpha1",
                 "kind": "ServarrAppList",
@@ -4606,8 +4733,7 @@ mod tests {
             .await;
 
         let mock_uri = mock_server.uri();
-        let result =
-            sync_maintainerr_servers(&client, &maintainerr, "test", Some(&mock_uri)).await;
+        let result = sync_maintainerr_servers(&client, &maintainerr, "test", Some(&mock_uri)).await;
         assert!(result.is_ok());
     }
 
@@ -4624,7 +4750,9 @@ mod tests {
         let subgen = make_test_app("my-subgen", "test", AppType::Subgen);
 
         Mock::given(method("GET"))
-            .and(path("/apis/servarr.dev/v1alpha1/namespaces/test/servarrapps"))
+            .and(path(
+                "/apis/servarr.dev/v1alpha1/namespaces/test/servarrapps",
+            ))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "apiVersion": "servarr.dev/v1alpha1",
                 "kind": "ServarrAppList",
@@ -4638,7 +4766,10 @@ mod tests {
         let result = sync_subgen_jellyfin(&client, &subgen, "test", Some(&mock_uri)).await;
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
-        assert!(msg.contains("no Jellyfin CR found"), "expected Jellyfin error, got: {msg}");
+        assert!(
+            msg.contains("no Jellyfin CR found"),
+            "expected Jellyfin error, got: {msg}"
+        );
     }
 
     #[tokio::test]
@@ -4653,7 +4784,9 @@ mod tests {
 
         // Jellyfin CR in target namespace
         Mock::given(method("GET"))
-            .and(path("/apis/servarr.dev/v1alpha1/namespaces/test/servarrapps"))
+            .and(path(
+                "/apis/servarr.dev/v1alpha1/namespaces/test/servarrapps",
+            ))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "apiVersion": "servarr.dev/v1alpha1",
                 "kind": "ServarrAppList",
@@ -4719,12 +4852,21 @@ mod tests {
 
         let obj_ref = overseerr.object_ref(&());
         let mock_uri = mock_server.uri();
-        let result =
-            sync_overseerr_servers(&client, &overseerr, "test", &recorder, &obj_ref, Some(&mock_uri))
-                .await;
+        let result = sync_overseerr_servers(
+            &client,
+            &overseerr,
+            "test",
+            &recorder,
+            &obj_ref,
+            Some(&mock_uri),
+        )
+        .await;
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
-        assert!(msg.contains("api_key_secret"), "expected api_key_secret error, got: {msg}");
+        assert!(
+            msg.contains("api_key_secret"),
+            "expected api_key_secret error, got: {msg}"
+        );
     }
 
     #[tokio::test]
@@ -4750,7 +4892,9 @@ mod tests {
             .await;
 
         Mock::given(method("GET"))
-            .and(path("/apis/servarr.dev/v1alpha1/namespaces/test/servarrapps"))
+            .and(path(
+                "/apis/servarr.dev/v1alpha1/namespaces/test/servarrapps",
+            ))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "apiVersion": "servarr.dev/v1alpha1",
                 "kind": "ServarrAppList",
@@ -4775,9 +4919,15 @@ mod tests {
 
         let obj_ref = overseerr.object_ref(&());
         let mock_uri = mock_server.uri();
-        let result =
-            sync_overseerr_servers(&client, &overseerr, "test", &recorder, &obj_ref, Some(&mock_uri))
-                .await;
+        let result = sync_overseerr_servers(
+            &client,
+            &overseerr,
+            "test",
+            &recorder,
+            &obj_ref,
+            Some(&mock_uri),
+        )
+        .await;
         assert!(result.is_ok());
     }
 
@@ -4793,17 +4943,7 @@ mod tests {
         // api_key_secret is None by default in make_test_app
 
         let obj_ref = sonarr.object_ref(&());
-        let result = try_restore(
-            &client,
-            &sonarr,
-            "test",
-            "my-sonarr",
-            42,
-            &recorder,
-            &obj_ref,
-            None,
-        )
-        .await;
+        let result = try_restore(&client, &sonarr, "test", 42, &recorder, &obj_ref, None).await;
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
         assert!(
@@ -4837,14 +4977,22 @@ mod tests {
         Mock::given(method("POST"))
             .and(path("/api/v3/system/backup/restore/42"))
             .respond_with(ResponseTemplate::new(200))
+            .expect(1)
             .mount(&mock_server)
             .await;
 
         let obj_ref = sonarr.object_ref(&());
         let mock_uri = mock_server.uri();
-        let result =
-            try_restore(&client, &sonarr, "test", "my-sonarr", 42, &recorder, &obj_ref, Some(&mock_uri))
-                .await;
+        let result = try_restore(
+            &client,
+            &sonarr,
+            "test",
+            42,
+            &recorder,
+            &obj_ref,
+            Some(&mock_uri),
+        )
+        .await;
         assert!(result.is_ok());
     }
 
@@ -4862,7 +5010,9 @@ mod tests {
         let sonarr = make_test_app("my-sonarr", "test", AppType::Sonarr);
 
         Mock::given(method("GET"))
-            .and(path("/apis/servarr.dev/v1alpha1/namespaces/test/servarrapps"))
+            .and(path(
+                "/apis/servarr.dev/v1alpha1/namespaces/test/servarrapps",
+            ))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "apiVersion": "servarr.dev/v1alpha1",
                 "kind": "ServarrAppList",
@@ -4874,9 +5024,15 @@ mod tests {
 
         let obj_ref = sonarr.object_ref(&());
         let mock_uri = mock_server.uri();
-        let result =
-            cleanup_prowlarr_registration(&client, &sonarr, "test", &recorder, &obj_ref, Some(&mock_uri))
-                .await;
+        let result = cleanup_prowlarr_registration(
+            &client,
+            &sonarr,
+            "test",
+            &recorder,
+            &obj_ref,
+            Some(&mock_uri),
+        )
+        .await;
         assert!(result.is_ok());
     }
 
@@ -4894,7 +5050,9 @@ mod tests {
 
         // Prowlarr CR in the namespace with sync enabled
         Mock::given(method("GET"))
-            .and(path("/apis/servarr.dev/v1alpha1/namespaces/test/servarrapps"))
+            .and(path(
+                "/apis/servarr.dev/v1alpha1/namespaces/test/servarrapps",
+            ))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "apiVersion": "servarr.dev/v1alpha1",
                 "kind": "ServarrAppList",
@@ -4945,14 +5103,21 @@ mod tests {
         Mock::given(method("DELETE"))
             .and(path("/api/v1/applications/42"))
             .respond_with(ResponseTemplate::new(200))
+            .expect(1)
             .mount(&mock_server)
             .await;
 
         let obj_ref = sonarr.object_ref(&());
         let mock_uri = mock_server.uri();
-        let result =
-            cleanup_prowlarr_registration(&client, &sonarr, "test", &recorder, &obj_ref, Some(&mock_uri))
-                .await;
+        let result = cleanup_prowlarr_registration(
+            &client,
+            &sonarr,
+            "test",
+            &recorder,
+            &obj_ref,
+            Some(&mock_uri),
+        )
+        .await;
         assert!(result.is_ok());
     }
 
@@ -4970,7 +5135,9 @@ mod tests {
         let sonarr = make_test_app("my-sonarr", "test", AppType::Sonarr);
 
         Mock::given(method("GET"))
-            .and(path("/apis/servarr.dev/v1alpha1/namespaces/test/servarrapps"))
+            .and(path(
+                "/apis/servarr.dev/v1alpha1/namespaces/test/servarrapps",
+            ))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "apiVersion": "servarr.dev/v1alpha1",
                 "kind": "ServarrAppList",
@@ -4982,9 +5149,15 @@ mod tests {
 
         let obj_ref = sonarr.object_ref(&());
         let mock_uri = mock_server.uri();
-        let result =
-            cleanup_overseerr_registration(&client, &sonarr, "test", &recorder, &obj_ref, Some(&mock_uri))
-                .await;
+        let result = cleanup_overseerr_registration(
+            &client,
+            &sonarr,
+            "test",
+            &recorder,
+            &obj_ref,
+            Some(&mock_uri),
+        )
+        .await;
         assert!(result.is_ok());
     }
 
@@ -5002,7 +5175,9 @@ mod tests {
 
         // Overseerr CR in the namespace with sync enabled
         Mock::given(method("GET"))
-            .and(path("/apis/servarr.dev/v1alpha1/namespaces/test/servarrapps"))
+            .and(path(
+                "/apis/servarr.dev/v1alpha1/namespaces/test/servarrapps",
+            ))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "apiVersion": "servarr.dev/v1alpha1",
                 "kind": "ServarrAppList",
@@ -5068,6 +5243,7 @@ mod tests {
                 "enableSeasonFolders": true,
                 "isDefault": false
             })))
+            .expect(1)
             .mount(&mock_server)
             .await;
 
@@ -5095,8 +5271,7 @@ mod tests {
         let recorder = make_recorder(&client);
         let obj_ref = app.object_ref(&());
 
-        let result =
-            maybe_run_backup(&client, &app, "test", &recorder, &obj_ref, None).await;
+        let result = maybe_run_backup(&client, &app, "test", &recorder, &obj_ref, None).await;
         assert!(result.is_none());
     }
 
@@ -5107,12 +5282,15 @@ mod tests {
         let mock_server = wiremock::MockServer::start().await;
         let client = build_mock_client(&mock_server.uri()).await;
         let mut app = make_test_app("my-sonarr", "test", AppType::Sonarr);
-        app.spec.backup = Some(BackupSpec { enabled: false, schedule: "0 3 * * *".into(), ..Default::default() });
+        app.spec.backup = Some(BackupSpec {
+            enabled: false,
+            schedule: "0 3 * * *".into(),
+            ..Default::default()
+        });
         let recorder = make_recorder(&client);
         let obj_ref = app.object_ref(&());
 
-        let result =
-            maybe_run_backup(&client, &app, "test", &recorder, &obj_ref, None).await;
+        let result = maybe_run_backup(&client, &app, "test", &recorder, &obj_ref, None).await;
         assert!(result.is_none());
     }
 
@@ -5124,13 +5302,16 @@ mod tests {
         let client = build_mock_client(&mock_server.uri()).await;
         let mut app = make_test_app("my-sonarr", "test", AppType::Sonarr);
         // enabled but no api_key_secret → ? propagates None
-        app.spec.backup = Some(BackupSpec { enabled: true, schedule: "0 3 * * *".into(), ..Default::default() });
+        app.spec.backup = Some(BackupSpec {
+            enabled: true,
+            schedule: "0 3 * * *".into(),
+            ..Default::default()
+        });
         app.spec.api_key_secret = None;
         let recorder = make_recorder(&client);
         let obj_ref = app.object_ref(&());
 
-        let result =
-            maybe_run_backup(&client, &app, "test", &recorder, &obj_ref, None).await;
+        let result = maybe_run_backup(&client, &app, "test", &recorder, &obj_ref, None).await;
         assert!(result.is_none());
     }
 
@@ -5143,7 +5324,11 @@ mod tests {
         let mock_server = MockServer::start().await;
         let client = build_mock_client(&mock_server.uri()).await;
         let mut app = make_test_app("my-sonarr", "test", AppType::Sonarr);
-        app.spec.backup = Some(BackupSpec { enabled: true, schedule: "0 3 * * *".into(), ..Default::default() });
+        app.spec.backup = Some(BackupSpec {
+            enabled: true,
+            schedule: "0 3 * * *".into(),
+            ..Default::default()
+        });
         app.spec.api_key_secret = Some("missing-secret".into());
 
         Mock::given(method("GET"))
@@ -5158,11 +5343,15 @@ mod tests {
         let recorder = make_recorder(&client);
         let obj_ref = app.object_ref(&());
 
-        let result =
-            maybe_run_backup(&client, &app, "test", &recorder, &obj_ref, None).await;
+        let result = maybe_run_backup(&client, &app, "test", &recorder, &obj_ref, None).await;
         let status = result.expect("should return Some(BackupStatus) on secret read error");
-        let msg = status.last_backup_result.expect("should have error message");
-        assert!(msg.contains("secret read error"), "expected 'secret read error' in: {msg}");
+        let msg = status
+            .last_backup_result
+            .expect("should have error message");
+        assert!(
+            msg.contains("secret read error"),
+            "expected 'secret read error' in: {msg}"
+        );
     }
 
     #[tokio::test]
@@ -5174,7 +5363,11 @@ mod tests {
         let mock_server = MockServer::start().await;
         let client = build_mock_client(&mock_server.uri()).await;
         let mut app = make_test_app("my-sonarr", "test", AppType::Sonarr);
-        app.spec.backup = Some(BackupSpec { enabled: true, schedule: "0 3 * * *".into(), ..Default::default() });
+        app.spec.backup = Some(BackupSpec {
+            enabled: true,
+            schedule: "0 3 * * *".into(),
+            ..Default::default()
+        });
         app.spec.api_key_secret = Some("sonarr-key".into());
         // last_backup_time far in the future → next scheduled after it is also in the future
         let existing_status = CrdBackupStatus {
@@ -5200,8 +5393,7 @@ mod tests {
         let recorder = make_recorder(&client);
         let obj_ref = app.object_ref(&());
 
-        let result =
-            maybe_run_backup(&client, &app, "test", &recorder, &obj_ref, None).await;
+        let result = maybe_run_backup(&client, &app, "test", &recorder, &obj_ref, None).await;
         let returned = result.expect("should return Some when backup not due");
         assert_eq!(returned.last_backup_result.as_deref(), Some("success"));
         assert_eq!(returned.backup_count, 2);
@@ -5268,8 +5460,7 @@ mod tests {
         let mock_uri = mock_server.uri();
 
         let result =
-            maybe_run_backup(&client, &app, "test", &recorder, &obj_ref, Some(&mock_uri))
-                .await;
+            maybe_run_backup(&client, &app, "test", &recorder, &obj_ref, Some(&mock_uri)).await;
         let status = result.expect("should return Some(BackupStatus) on success");
         assert_eq!(status.last_backup_result.as_deref(), Some("success"));
         assert!(status.last_backup_time.is_some());
@@ -5314,10 +5505,739 @@ mod tests {
         let mock_uri = mock_server.uri();
 
         let result =
-            maybe_run_backup(&client, &app, "test", &recorder, &obj_ref, Some(&mock_uri))
-                .await;
+            maybe_run_backup(&client, &app, "test", &recorder, &obj_ref, Some(&mock_uri)).await;
         let status = result.expect("should return Some(BackupStatus) on failure");
-        let msg = status.last_backup_result.expect("should have error message");
-        assert!(msg.starts_with("error:"), "expected 'error:' prefix in: {msg}");
+        let msg = status
+            .last_backup_result
+            .expect("should have error message");
+        assert!(
+            msg.starts_with("error:"),
+            "expected 'error:' prefix in: {msg}"
+        );
+    }
+
+    // ---- overseerr_sync_exists ----
+
+    #[tokio::test]
+    async fn overseerr_sync_exists_returns_true_when_overseerr_with_sync() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock_server = MockServer::start().await;
+        let client = build_mock_client(&mock_server.uri()).await;
+
+        Mock::given(method("GET"))
+            .and(path(
+                "/apis/servarr.dev/v1alpha1/namespaces/test/servarrapps",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "apiVersion": "servarr.dev/v1alpha1",
+                "kind": "ServarrAppList",
+                "metadata": {},
+                "items": [{
+                    "apiVersion": "servarr.dev/v1alpha1",
+                    "kind": "ServarrApp",
+                    "metadata": {
+                        "name": "overseerr",
+                        "namespace": "test",
+                        "uid": "over-uid",
+                        "resourceVersion": "1"
+                    },
+                    "spec": {
+                        "app": "Overseerr",
+                        "overseerrSync": { "enabled": true }
+                    }
+                }]
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let result = overseerr_sync_exists(&client, "test").await;
+        assert!(
+            result,
+            "should return true when Overseerr with sync.enabled exists"
+        );
+    }
+
+    #[tokio::test]
+    async fn overseerr_sync_exists_returns_false_when_no_overseerr() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock_server = MockServer::start().await;
+        let client = build_mock_client(&mock_server.uri()).await;
+
+        Mock::given(method("GET"))
+            .and(path(
+                "/apis/servarr.dev/v1alpha1/namespaces/test/servarrapps",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "apiVersion": "servarr.dev/v1alpha1",
+                "kind": "ServarrAppList",
+                "metadata": {},
+                "items": [{
+                    "apiVersion": "servarr.dev/v1alpha1",
+                    "kind": "ServarrApp",
+                    "metadata": {
+                        "name": "sonarr",
+                        "namespace": "test",
+                        "uid": "sonarr-uid",
+                        "resourceVersion": "1"
+                    },
+                    "spec": { "app": "Sonarr" }
+                }]
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let result = overseerr_sync_exists(&client, "test").await;
+        assert!(!result, "should return false when no Overseerr exists");
+    }
+
+    #[tokio::test]
+    async fn overseerr_sync_exists_returns_false_when_sync_disabled() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock_server = MockServer::start().await;
+        let client = build_mock_client(&mock_server.uri()).await;
+
+        Mock::given(method("GET"))
+            .and(path(
+                "/apis/servarr.dev/v1alpha1/namespaces/test/servarrapps",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "apiVersion": "servarr.dev/v1alpha1",
+                "kind": "ServarrAppList",
+                "metadata": {},
+                "items": [{
+                    "apiVersion": "servarr.dev/v1alpha1",
+                    "kind": "ServarrApp",
+                    "metadata": {
+                        "name": "overseerr",
+                        "namespace": "test",
+                        "uid": "over-uid",
+                        "resourceVersion": "1"
+                    },
+                    "spec": {
+                        "app": "Overseerr",
+                        "overseerrSync": { "enabled": false }
+                    }
+                }]
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let result = overseerr_sync_exists(&client, "test").await;
+        assert!(
+            !result,
+            "should return false when Overseerr sync is disabled"
+        );
+    }
+
+    #[tokio::test]
+    async fn overseerr_sync_exists_returns_false_on_api_error() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock_server = MockServer::start().await;
+        let client = build_mock_client(&mock_server.uri()).await;
+
+        Mock::given(method("GET"))
+            .and(path(
+                "/apis/servarr.dev/v1alpha1/namespaces/test/servarrapps",
+            ))
+            .respond_with(ResponseTemplate::new(500).set_body_json(json!({
+                "apiVersion": "v1",
+                "kind": "Status",
+                "metadata": {},
+                "status": "Failure",
+                "message": "internal error",
+                "reason": "InternalError",
+                "code": 500
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let result = overseerr_sync_exists(&client, "test").await;
+        assert!(!result, "should return false on API error");
+    }
+
+    // ---- maybe_restore_backup ----
+
+    #[tokio::test]
+    async fn maybe_restore_backup_unsupported_app_type_returns_ok() {
+        let mock_server = wiremock::MockServer::start().await;
+        let client = build_mock_client(&mock_server.uri()).await;
+        let recorder = make_recorder(&client);
+
+        // Overseerr is not in Sonarr|Radarr|Lidarr|Prowlarr → returns Ok immediately
+        let app = make_test_app("my-overseerr", "test", AppType::Overseerr);
+        let obj_ref = app.object_ref(&());
+        let mock_uri = mock_server.uri();
+
+        let result = maybe_restore_backup(
+            &client,
+            &app,
+            "test",
+            "42",
+            &recorder,
+            &obj_ref,
+            Some(&mock_uri),
+        )
+        .await;
+
+        assert!(result.is_ok(), "should return Ok for unsupported app type");
+        let requests = mock_server.received_requests().await.unwrap_or_default();
+        assert!(
+            requests.is_empty(),
+            "no HTTP calls expected for unsupported app type"
+        );
+    }
+
+    #[tokio::test]
+    async fn maybe_restore_backup_invalid_restore_id_returns_err() {
+        let mock_server = wiremock::MockServer::start().await;
+        let client = build_mock_client(&mock_server.uri()).await;
+        let recorder = make_recorder(&client);
+
+        let app = make_test_app("my-sonarr", "test", AppType::Sonarr);
+        let obj_ref = app.object_ref(&());
+        let mock_uri = mock_server.uri();
+
+        let result = maybe_restore_backup(
+            &client,
+            &app,
+            "test",
+            "not-a-number",
+            &recorder,
+            &obj_ref,
+            Some(&mock_uri),
+        )
+        .await;
+
+        assert!(
+            result.is_err(),
+            "should return Err for non-integer restore ID"
+        );
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("invalid restore-from value"),
+            "expected parse error message, got: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn maybe_restore_backup_success() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock_server = MockServer::start().await;
+        let client = build_mock_client(&mock_server.uri()).await;
+        let recorder = make_recorder(&client);
+
+        let mut app = make_test_app("my-sonarr", "test", AppType::Sonarr);
+        app.spec.api_key_secret = Some("sonarr-key".to_string());
+
+        let deploy_response = json!({
+            "apiVersion": "apps/v1", "kind": "Deployment",
+            "metadata": {
+                "name": "my-sonarr", "namespace": "test",
+                "uid": "deploy-uid", "resourceVersion": "101"
+            },
+            "spec": {
+                "selector": { "matchLabels": { "app": "my-sonarr" } },
+                "template": {
+                    "metadata": { "labels": { "app": "my-sonarr" } },
+                    "spec": { "containers": [{ "name": "sonarr", "image": "sonarr:latest" }] }
+                }
+            },
+            "status": { "readyReplicas": 0 }
+        });
+
+        // Scale down + scale up: both PATCH the same deployment path
+        Mock::given(method("PATCH"))
+            .and(path("/apis/apps/v1/namespaces/test/deployments/my-sonarr"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(deploy_response.clone()))
+            .expect(2)
+            .mount(&mock_server)
+            .await;
+
+        // Termination-wait GET — readyReplicas=0 breaks loop on first poll
+        Mock::given(method("GET"))
+            .and(path("/apis/apps/v1/namespaces/test/deployments/my-sonarr"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(deploy_response))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        // Secret for try_restore
+        Mock::given(method("GET"))
+            .and(path("/api/v1/namespaces/test/secrets/sonarr-key"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "apiVersion": "v1", "kind": "Secret",
+                "metadata": { "name": "sonarr-key", "namespace": "test" },
+                "data": { "api-key": "c29uYXJyLWtleQ==" }
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        // Restore API call
+        Mock::given(method("POST"))
+            .and(path("/api/v3/system/backup/restore/42"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        // Remove restore-from annotation on ServarrApp
+        Mock::given(method("PATCH"))
+            .and(path(
+                "/apis/servarr.dev/v1alpha1/namespaces/test/servarrapps/my-sonarr",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "apiVersion": "servarr.dev/v1alpha1", "kind": "ServarrApp",
+                "metadata": { "name": "my-sonarr", "namespace": "test", "resourceVersion": "2" },
+                "spec": { "app": "Sonarr" }
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let obj_ref = app.object_ref(&());
+        let mock_uri = mock_server.uri();
+
+        let result = maybe_restore_backup(
+            &client,
+            &app,
+            "test",
+            "42",
+            &recorder,
+            &obj_ref,
+            Some(&mock_uri),
+        )
+        .await;
+
+        assert!(
+            result.is_ok(),
+            "expected Ok from maybe_restore_backup, got: {:?}",
+            result
+        );
+    }
+
+    // ---- result_to_condition tests ----
+
+    #[test]
+    fn result_to_condition_error_branch() {
+        let spec = ConditionSpec {
+            condition_type: "AppHealthy",
+            ok_reason: "AllGood",
+            ok_message: "everything is fine",
+            fail_reason: "SomethingBroke",
+            fail_log: "reconcile failed",
+        };
+        let result: Result<(), String> = Err("boom goes the dynamite".to_string());
+        let cond = result_to_condition(result, spec, "my-app", "2024-01-01T00:00:00Z");
+        assert_eq!(cond.status, "False");
+        assert_eq!(cond.reason, "SomethingBroke");
+        assert!(
+            cond.message.contains("boom"),
+            "message should contain error: {}",
+            cond.message
+        );
+    }
+
+    // ---- sync_admin_credentials error paths ----
+
+    #[tokio::test]
+    async fn sync_admin_credentials_username_secret_not_found() {
+        use servarr_crds::AdminCredentialsSpec;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock_server = MockServer::start().await;
+        let client = build_mock_client(&mock_server.uri()).await;
+        let mut app = make_test_app("my-sonarr", "test", AppType::Sonarr);
+        app.spec.admin_credentials = Some(AdminCredentialsSpec {
+            secret_name: "admin-creds".into(),
+        });
+
+        Mock::given(method("GET"))
+            .and(path("/api/v1/namespaces/test/secrets/admin-creds"))
+            .respond_with(ResponseTemplate::new(404).set_body_json(json!({
+                "kind": "Status", "apiVersion": "v1",
+                "status": "Failure", "reason": "NotFound", "code": 404
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let result = sync_admin_credentials(&client, &app, "test", None).await;
+        let cond = result.expect("should return Some(Condition) on secret read error");
+        assert_eq!(cond.status, "Unknown");
+        assert_eq!(cond.reason, "SecretReadError");
+    }
+
+    #[tokio::test]
+    async fn sync_admin_credentials_password_key_missing() {
+        use servarr_crds::AdminCredentialsSpec;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock_server = MockServer::start().await;
+        let client = build_mock_client(&mock_server.uri()).await;
+        let mut app = make_test_app("my-sonarr", "test", AppType::Sonarr);
+        app.spec.admin_credentials = Some(AdminCredentialsSpec {
+            secret_name: "admin-creds".into(),
+        });
+
+        // Secret has "username" key but no "password" — second read_secret_key call fails
+        Mock::given(method("GET"))
+            .and(path("/api/v1/namespaces/test/secrets/admin-creds"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "apiVersion": "v1", "kind": "Secret",
+                "metadata": { "name": "admin-creds", "namespace": "test" },
+                "data": { "username": "dXNlcg==" }
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let result = sync_admin_credentials(&client, &app, "test", None).await;
+        let cond = result.expect("should return Some(Condition) when password key is missing");
+        assert_eq!(cond.status, "Unknown");
+        assert_eq!(cond.reason, "SecretReadError");
+    }
+
+    // ---- check_api_health error path ----
+
+    #[tokio::test]
+    async fn check_api_health_secret_not_found() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock_server = MockServer::start().await;
+        let client = build_mock_client(&mock_server.uri()).await;
+        let mut app = make_test_app("my-sonarr", "test", AppType::Sonarr);
+        app.spec.api_key_secret = Some("missing-api-key".into());
+        app.spec.api_health_check = Some(servarr_crds::ApiHealthCheckSpec {
+            enabled: true,
+            interval_seconds: None,
+        });
+
+        Mock::given(method("GET"))
+            .and(path("/api/v1/namespaces/test/secrets/missing-api-key"))
+            .respond_with(ResponseTemplate::new(404).set_body_json(json!({
+                "kind": "Status", "apiVersion": "v1",
+                "status": "Failure", "reason": "NotFound", "code": 404
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let (health_cond, update_cond) = check_api_health(&client, &app, "test", None).await;
+        let cond = health_cond.expect("should return Some(Condition) when secret not found");
+        assert_eq!(cond.status, "Unknown");
+        assert_eq!(cond.reason, "SecretReadError");
+        assert!(update_cond.is_none());
+    }
+
+    // ---- maybe_run_backup invalid cron ----
+
+    #[tokio::test]
+    async fn maybe_run_backup_invalid_cron_schedule() {
+        use servarr_crds::BackupSpec;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock_server = MockServer::start().await;
+        let client = build_mock_client(&mock_server.uri()).await;
+        let mut app = make_test_app("my-sonarr", "test", AppType::Sonarr);
+        app.spec.backup = Some(BackupSpec {
+            enabled: true,
+            schedule: "not-a-cron".into(),
+            ..Default::default()
+        });
+        app.spec.api_key_secret = Some("sonarr-key".into());
+
+        Mock::given(method("GET"))
+            .and(path("/api/v1/namespaces/test/secrets/sonarr-key"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "apiVersion": "v1", "kind": "Secret",
+                "metadata": { "name": "sonarr-key", "namespace": "test" },
+                "data": { "api-key": "c29uYXJyLWtleQ==" }
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let recorder = make_recorder(&client);
+        let obj_ref = app.object_ref(&());
+
+        let result = maybe_run_backup(&client, &app, "test", &recorder, &obj_ref, None).await;
+        let status = result.expect("should return Some(BackupStatus) on invalid schedule");
+        let msg = status
+            .last_backup_result
+            .expect("should have error message");
+        assert!(
+            msg.contains("invalid schedule"),
+            "expected 'invalid schedule' in: {msg}"
+        );
+    }
+
+    // ---- try_restore API failure ----
+
+    #[tokio::test]
+    async fn try_restore_api_call_fails() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock_server = MockServer::start().await;
+        let client = build_mock_client(&mock_server.uri()).await;
+        let mut app = make_test_app("my-sonarr", "test", AppType::Sonarr);
+        app.spec.api_key_secret = Some("sonarr-key".into());
+
+        Mock::given(method("GET"))
+            .and(path("/api/v1/namespaces/test/secrets/sonarr-key"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "apiVersion": "v1", "kind": "Secret",
+                "metadata": { "name": "sonarr-key", "namespace": "test" },
+                "data": { "api-key": "c29uYXJyLWtleQ==" }
+            })))
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/v3/system/backup/restore/42"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&mock_server)
+            .await;
+
+        let recorder = make_recorder(&client);
+        let obj_ref = app.object_ref(&());
+        let mock_uri = mock_server.uri();
+
+        let result = try_restore(
+            &client,
+            &app,
+            "test",
+            42,
+            &recorder,
+            &obj_ref,
+            Some(&mock_uri),
+        )
+        .await;
+
+        assert!(result.is_err(), "expected Err when restore API call fails");
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("restore API call failed"),
+            "got: {err_msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn sync_admin_credentials_transmission_success() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock_server = MockServer::start().await;
+        let client = build_mock_client(&mock_server.uri()).await;
+        let mut app = make_test_app("my-transmission", "test", AppType::Transmission);
+        app.spec.admin_credentials = Some(servarr_crds::AdminCredentialsSpec {
+            secret_name: "admin-creds".into(),
+        });
+
+        Mock::given(method("GET"))
+            .and(path("/api/v1/namespaces/test/secrets/admin-creds"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "apiVersion": "v1", "kind": "Secret",
+                "metadata": { "name": "admin-creds", "namespace": "test" },
+                "data": { "username": "dXNlcg==", "password": "cGFzcw==" }
+            })))
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(path("/transmission/rpc"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "result": "success",
+                "arguments": {}
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let mock_uri = mock_server.uri();
+        let result = sync_admin_credentials(&client, &app, "test", Some(&mock_uri)).await;
+
+        let cond = result.expect("expected Some(Condition)");
+        assert_eq!(cond.status, "True", "expected True but got {}", cond.status);
+    }
+
+    #[tokio::test]
+    async fn sync_admin_credentials_transmission_auth_already_enabled() {
+        use wiremock::matchers::{header_exists, method, path};
+        use wiremock::{Mock, MockServer, Request, ResponseTemplate};
+
+        let mock_server = MockServer::start().await;
+        let client = build_mock_client(&mock_server.uri()).await;
+        let mut app = make_test_app("my-transmission", "test", AppType::Transmission);
+        app.spec.admin_credentials = Some(servarr_crds::AdminCredentialsSpec {
+            secret_name: "admin-creds".into(),
+        });
+
+        Mock::given(method("GET"))
+            .and(path("/api/v1/namespaces/test/secrets/admin-creds"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "apiVersion": "v1", "kind": "Secret",
+                "metadata": { "name": "admin-creds", "namespace": "test" },
+                "data": { "username": "dXNlcg==", "password": "cGFzcw==" }
+            })))
+            .mount(&mock_server)
+            .await;
+
+        // Unauthenticated attempt (session-set) gets 401; must not also match the
+        // authenticated retry below, since wiremock picks the first matching mock.
+        Mock::given(method("POST"))
+            .and(path("/transmission/rpc"))
+            .and(|req: &Request| !req.headers.contains_key("authorization"))
+            .respond_with(ResponseTemplate::new(401))
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(path("/transmission/rpc"))
+            .and(header_exists("authorization"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "result": "success",
+                "arguments": {
+                    "version": "3.0.0", "rpc-version": 17,
+                    "rpc-version-minimum": 1, "download-dir": "/downloads",
+                    "config-dir": "/config"
+                }
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let mock_uri = mock_server.uri();
+        let result = sync_admin_credentials(&client, &app, "test", Some(&mock_uri)).await;
+
+        let cond = result.expect("expected Some(Condition)");
+        assert_eq!(cond.status, "True", "expected True but got {}", cond.status);
+    }
+
+    #[tokio::test]
+    async fn sync_admin_credentials_tautulli_success() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock_server = MockServer::start().await;
+        let client = build_mock_client(&mock_server.uri()).await;
+        let mut app = make_test_app("my-tautulli", "test", AppType::Tautulli);
+        app.spec.admin_credentials = Some(servarr_crds::AdminCredentialsSpec {
+            secret_name: "admin-creds".into(),
+        });
+
+        Mock::given(method("GET"))
+            .and(path("/api/v1/namespaces/test/secrets/admin-creds"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "apiVersion": "v1", "kind": "Secret",
+                "metadata": { "name": "admin-creds", "namespace": "test" },
+                "data": { "username": "dXNlcg==", "password": "cGFzcw==" }
+            })))
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/v2"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&mock_server)
+            .await;
+
+        let mock_uri = mock_server.uri();
+        let result = sync_admin_credentials(&client, &app, "test", Some(&mock_uri)).await;
+
+        let cond = result.expect("expected Some(Condition)");
+        assert_eq!(cond.status, "True", "expected True but got {}", cond.status);
+    }
+
+    #[tokio::test]
+    async fn sync_admin_credentials_sonarr_success() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock_server = MockServer::start().await;
+        let client = build_mock_client(&mock_server.uri()).await;
+        let mut app = make_test_app("my-sonarr", "test", AppType::Sonarr);
+        app.spec.admin_credentials = Some(servarr_crds::AdminCredentialsSpec {
+            secret_name: "admin-creds".into(),
+        });
+
+        Mock::given(method("GET"))
+            .and(path("/api/v1/namespaces/test/secrets/admin-creds"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "apiVersion": "v1", "kind": "Secret",
+                "metadata": { "name": "admin-creds", "namespace": "test" },
+                "data": { "username": "dXNlcg==", "password": "cGFzcw==" }
+            })))
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/v3/config/host"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": 1, "authenticationMethod": "none", "username": "", "password": ""
+            })))
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("PUT"))
+            .and(path("/api/v3/config/host/1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": 1, "authenticationMethod": "forms",
+                "username": "user", "password": "pass"
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let mock_uri = mock_server.uri();
+        let result = sync_admin_credentials(&client, &app, "test", Some(&mock_uri)).await;
+
+        let cond = result.expect("expected Some(Condition)");
+        assert_eq!(cond.status, "True", "expected True but got {}", cond.status);
+    }
+
+    #[tokio::test]
+    async fn sync_admin_credentials_sonarr_401_returns_none() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock_server = MockServer::start().await;
+        let client = build_mock_client(&mock_server.uri()).await;
+        let mut app = make_test_app("my-sonarr", "test", AppType::Sonarr);
+        app.spec.admin_credentials = Some(servarr_crds::AdminCredentialsSpec {
+            secret_name: "admin-creds".into(),
+        });
+
+        Mock::given(method("GET"))
+            .and(path("/api/v1/namespaces/test/secrets/admin-creds"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "apiVersion": "v1", "kind": "Secret",
+                "metadata": { "name": "admin-creds", "namespace": "test" },
+                "data": { "username": "dXNlcg==", "password": "cGFzcw==" }
+            })))
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/v3/config/host"))
+            .respond_with(ResponseTemplate::new(401))
+            .mount(&mock_server)
+            .await;
+
+        let mock_uri = mock_server.uri();
+        let result = sync_admin_credentials(&client, &app, "test", Some(&mock_uri)).await;
+
+        assert!(
+            result.is_none(),
+            "expected None when configure_admin returns 401"
+        );
     }
 }
