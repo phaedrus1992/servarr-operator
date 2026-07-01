@@ -100,6 +100,43 @@ fn test_deployment_builder_maintainerr_nonroot() {
     // NonRoot apps don't get PUID/PGID
     let env = container.env.as_ref().unwrap();
     assert!(!env.iter().any(|e| e.name == "PUID"));
+
+    // DATA_DIR defaults to /opt/data when no config volume is specified
+    let data_dir = env.iter().find(|e| e.name == "DATA_DIR").unwrap();
+    assert_eq!(data_dir.value.as_deref(), Some("/opt/data"));
+}
+
+#[test]
+fn test_deployment_builder_maintainerr_data_dir_follows_mount() {
+    let app = ServarrApp {
+        metadata: ObjectMeta {
+            name: Some("maintainerr".into()),
+            namespace: Some("media".into()),
+            uid: Some("test-uid-mtr".into()),
+            ..Default::default()
+        },
+        spec: ServarrAppSpec {
+            app: AppType::Maintainerr,
+            persistence: Some(PersistenceSpec {
+                volumes: vec![PvcVolume {
+                    name: "config".into(),
+                    mount_path: "/opt/data".into(),
+                    existing_claim_name: Some("maintainerr-config".into()),
+                    access_mode: "ReadWriteOnce".into(),
+                    storage_class: String::new(),
+                    size: String::new(),
+                }],
+                nfs_mounts: vec![],
+            }),
+            ..Default::default()
+        },
+        status: None,
+    };
+    let deploy = servarr_resources::deployment::build(&app, &std::collections::HashMap::new());
+    let container = &deploy.spec.unwrap().template.spec.unwrap().containers[0];
+    let env = container.env.as_ref().unwrap();
+    let data_dir = env.iter().find(|e| e.name == "DATA_DIR").unwrap();
+    assert_eq!(data_dir.value.as_deref(), Some("/opt/data"));
 }
 
 #[test]

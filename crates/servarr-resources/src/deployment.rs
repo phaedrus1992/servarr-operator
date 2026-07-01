@@ -120,7 +120,7 @@ pub fn build(app: &ServarrApp, image_overrides: &HashMap<String, ImageSpec>) -> 
     let has_host_port = container_ports.iter().any(|p| p.host_port.is_some());
     let volume_mounts = build_volume_mounts(persistence, app);
     let volumes = build_volumes(app, persistence);
-    let env_vars = build_env_vars(app, &defaults, uid, gid);
+    let env_vars = build_env_vars(app, &defaults, uid, gid, persistence);
     let (container_security, pod_security) = build_security_contexts(security, uid, gid);
 
     // Auto-select exec probes for Transmission with auth enabled
@@ -681,7 +681,13 @@ fn build_volumes(app: &ServarrApp, persistence: &PersistenceSpec) -> Vec<Volume>
     volumes
 }
 
-fn build_env_vars(app: &ServarrApp, defaults: &AppDefaults, uid: i64, gid: i64) -> Vec<EnvVar> {
+fn build_env_vars(
+    app: &ServarrApp,
+    defaults: &AppDefaults,
+    uid: i64,
+    gid: i64,
+    persistence: &PersistenceSpec,
+) -> Vec<EnvVar> {
     let mut env = Vec::new();
 
     // LinuxServer PUID/PGID
@@ -710,6 +716,23 @@ fn build_env_vars(app: &ServarrApp, defaults: &AppDefaults, uid: i64, gid: i64) 
         env.push(EnvVar {
             name: e.name.clone(),
             value: Some(e.value.clone()),
+            ..Default::default()
+        });
+    }
+
+    // Maintainerr uses DATA_DIR (not /config) for its data directory.
+    // Default to /opt/data (the image default) or mirror the user's config
+    // volume mountPath so the two stay in sync. Placed before the user env
+    // loop so spec.env can override if needed.
+    if matches!(app.spec.app, AppType::Maintainerr) {
+        let data_dir = persistence
+            .volumes
+            .iter()
+            .find(|v| v.name == "config")
+            .map_or("/opt/data", |v| v.mount_path.as_str());
+        env.push(EnvVar {
+            name: "DATA_DIR".into(),
+            value: Some(data_dir.to_string()),
             ..Default::default()
         });
     }
