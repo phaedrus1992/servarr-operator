@@ -68,6 +68,7 @@ fn test_context(client: kube::Client) -> Arc<Context> {
             instance: None,
         },
         watch_namespace: Some("test".into()),
+        app_api_base_override: None,
     })
 }
 

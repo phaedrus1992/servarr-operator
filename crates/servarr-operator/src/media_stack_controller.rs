@@ -605,4 +605,180 @@ mod tests {
         assert!(now.contains('T'), "should contain T separator: {now}");
         assert!(now.ends_with('Z'), "should end with Z: {now}");
     }
+
+    fn make_kube_api_err(code: u16) -> kube::Error {
+        let s = kube::core::Status {
+            code,
+            ..kube::core::Status::failure("test", "Test")
+        };
+        kube::Error::Api(Box::new(s))
+    }
+
+    #[test]
+    fn is_not_found_returns_true_for_404() {
+        assert!(is_not_found(&make_kube_api_err(404)));
+    }
+
+    #[test]
+    fn is_not_found_returns_false_for_403() {
+        assert!(!is_not_found(&make_kube_api_err(403)));
+    }
+
+    // ---- shared async helpers ----
+
+    async fn build_mock_client(server_uri: &str) -> Client {
+        use kube::config::{
+            AuthInfo, Cluster, Context as KubeContext, KubeConfigOptions, Kubeconfig,
+            NamedAuthInfo, NamedCluster, NamedContext,
+        };
+
+        let kubeconfig = Kubeconfig {
+            clusters: vec![NamedCluster {
+                name: "test".into(),
+                cluster: Some(Cluster {
+                    server: Some(server_uri.to_string()),
+                    insecure_skip_tls_verify: Some(true),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }],
+            contexts: vec![NamedContext {
+                name: "test".into(),
+                context: Some(KubeContext {
+                    cluster: "test".into(),
+                    user: Some("test".into()),
+                    namespace: Some("test".into()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }],
+            auth_infos: vec![NamedAuthInfo {
+                name: "test".into(),
+                auth_info: Some(AuthInfo::default()),
+                ..Default::default()
+            }],
+            current_context: Some("test".into()),
+            ..Default::default()
+        };
+
+        let config =
+            kube::Config::from_custom_kubeconfig(kubeconfig, &KubeConfigOptions::default())
+                .await
+                .unwrap();
+        Client::try_from(config).unwrap()
+    }
+
+    fn make_test_context(client: Client) -> Arc<Context> {
+        use kube::runtime::events::Reporter;
+        Arc::new(Context {
+            client,
+            image_overrides: Default::default(),
+            reporter: Reporter {
+                controller: "test".into(),
+                instance: None,
+            },
+            watch_namespace: None,
+            app_api_base_override: None,
+        })
+    }
+
+    // ---- error_policy ----
+
+    #[tokio::test]
+    async fn error_policy_requeues_after_60s() {
+        use servarr_crds::MediaStackSpec;
+        use wiremock::MockServer;
+
+        let mock_server = MockServer::start().await;
+        let client = build_mock_client(&mock_server.uri()).await;
+        let ctx = make_test_context(client);
+        let stack = Arc::new(MediaStack::new("test-stack", MediaStackSpec::default()));
+        let err = Error::Internal("test error");
+        let action = error_policy(Arc::clone(&stack), &err, ctx);
+        assert_eq!(action, Action::requeue(Duration::from_secs(60)));
+    }
+
+    // ---- patch_status ----
+
+    #[tokio::test]
+    async fn patch_status_patches_mediastack_status() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock_server = MockServer::start().await;
+        let client = build_mock_client(&mock_server.uri()).await;
+
+        Mock::given(method("PATCH"))
+            .and(path(
+                "/apis/servarr.dev/v1alpha1/namespaces/test/mediastacks/my-stack/status",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "apiVersion": "servarr.dev/v1alpha1",
+                "kind": "MediaStack",
+                "metadata": {
+                    "name": "my-stack",
+                    "namespace": "test",
+                    "uid": "uid-1",
+                    "resourceVersion": "2"
+                },
+                "spec": { "apps": [] }
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let status = MediaStackStatus {
+            phase: StackPhase::Pending,
+            ..Default::default()
+        };
+        let result = patch_status(&client, "test", "my-stack", &status).await;
+        assert!(result.is_ok(), "patch_status should succeed: {result:?}");
+    }
+
+    // ---- reconcile_nfs_server (no-NFS path) ----
+
+    #[tokio::test]
+    async fn reconcile_nfs_server_no_nfs_ignores_404() {
+        use servarr_crds::MediaStackSpec;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock_server = MockServer::start().await;
+        let client = build_mock_client(&mock_server.uri()).await;
+
+        let not_found = serde_json::json!({
+            "apiVersion": "v1",
+            "kind": "Status",
+            "code": 404,
+            "message": "not found",
+            "reason": "NotFound",
+            "status": "Failure"
+        });
+
+        Mock::given(method("DELETE"))
+            .and(path(
+                "/apis/apps/v1/namespaces/test/statefulsets/my-stack-nfs-server",
+            ))
+            .respond_with(ResponseTemplate::new(404).set_body_json(not_found.clone()))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("DELETE"))
+            .and(path("/api/v1/namespaces/test/services/my-stack-nfs-server"))
+            .respond_with(ResponseTemplate::new(404).set_body_json(not_found))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let mut stack = MediaStack::new("my-stack", MediaStackSpec::default());
+        stack.metadata.namespace = Some("test".into());
+        stack.metadata.uid = Some("uid-1".into());
+        stack.metadata.resource_version = Some("1".into());
+
+        let pp = PatchParams::apply(FIELD_MANAGER).force();
+        let result = reconcile_nfs_server(&stack, &client, "my-stack", "test", &pp).await;
+        assert!(result.is_ok(), "should succeed even on 404: {result:?}");
+        assert_eq!(result.unwrap(), None);
+    }
 }

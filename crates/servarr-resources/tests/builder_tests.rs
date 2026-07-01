@@ -3943,3 +3943,32 @@ fn test_config_checksum_includes_sabnzbd_host_whitelist_configmap() {
         "checksum must change when host_whitelist changes"
     );
 }
+
+// ---------------------------------------------------------------------------
+// secret::build_api_key tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_build_api_key_no_secret_name_returns_none() {
+    let app = make_app(AppType::Sonarr); // api_key_secret defaults to None
+    let result = servarr_resources::secret::build_api_key(&app, "abc123");
+    assert!(result.is_none());
+}
+
+#[test]
+fn test_build_api_key_with_secret_name_returns_secret() {
+    let mut app = make_app(AppType::Sonarr);
+    app.spec.api_key_secret = Some("my-sonarr-key".into());
+    let result = servarr_resources::secret::build_api_key(&app, "deadbeef");
+    let secret = result.expect("expected a Secret");
+
+    assert_eq!(secret.metadata.name.as_deref(), Some("my-sonarr-key"));
+    assert_eq!(secret.metadata.namespace.as_deref(), Some("media"));
+    assert_eq!(secret.type_.as_deref(), Some("Opaque"));
+
+    let string_data = secret.string_data.expect("string_data must be set");
+    assert_eq!(
+        string_data.get("api-key").map(String::as_str),
+        Some("deadbeef")
+    );
+}
