@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased] - ReleaseDate
 
+### Changed
+
+- Update default Radarr image to `6.1.1` (from `6.0.4`).
+- Update default Tautulli image to `2.17.1` (from `2.16.1`).
+- Update default Jackett image to `0.24.2116` (from `0.24.2075`), rolling up upstream
+  indexer-definition updates.
+- Update default Subgen image to `2026.06.3` (from `2026.04.3`).
+
 ## [1.1.0] - 2026-06-24
 
 ### Added
