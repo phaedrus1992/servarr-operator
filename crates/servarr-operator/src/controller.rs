@@ -5474,6 +5474,145 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn maybe_run_backup_prunes_exactly_one_over_retention() {
+        use servarr_crds::BackupSpec;
+        use wiremock::matchers::{method, path, path_regex};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock_server = MockServer::start().await;
+        let client = build_mock_client(&mock_server.uri()).await;
+        let mut app = make_test_app("my-sonarr", "test", AppType::Sonarr);
+        app.spec.backup = Some(BackupSpec {
+            enabled: true,
+            schedule: "0 3 * * *".into(),
+            retention_count: 2,
+        });
+        app.spec.api_key_secret = Some("sonarr-key".into());
+
+        Mock::given(method("GET"))
+            .and(path("/api/v1/namespaces/test/secrets/sonarr-key"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "apiVersion": "v1", "kind": "Secret",
+                "metadata": { "name": "sonarr-key", "namespace": "test" },
+                "data": { "api-key": "c29uYXJyLWtleQ==" }
+            })))
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/v3/system/backup"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": 3,
+                "name": "sonarr_backup.zip",
+                "path": "/config/Backups/sonarr_backup.zip",
+                "size": 1048576,
+                "time": "2026-06-25T03:00:00Z"
+            })))
+            .mount(&mock_server)
+            .await;
+
+        // 3 backups > retention of 2 → exactly one must be pruned.
+        Mock::given(method("GET"))
+            .and(path("/api/v3/system/backup"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+                { "id": 1, "name": "a.zip", "path": "/config/Backups/a.zip", "size": 1, "time": "2026-06-23T03:00:00Z" },
+                { "id": 2, "name": "b.zip", "path": "/config/Backups/b.zip", "size": 1, "time": "2026-06-24T03:00:00Z" },
+                { "id": 3, "name": "c.zip", "path": "/config/Backups/c.zip", "size": 1, "time": "2026-06-25T03:00:00Z" }
+            ])))
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("DELETE"))
+            .and(path_regex(r"/api/v3/system/backup/\d+"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let recorder = make_recorder(&client);
+        let obj_ref = app.object_ref(&());
+        let mock_uri = mock_server.uri();
+
+        let result =
+            maybe_run_backup(&client, &app, "test", &recorder, &obj_ref, Some(&mock_uri)).await;
+        let status = result.expect("should return Some(BackupStatus) on success");
+        assert_eq!(status.last_backup_result.as_deref(), Some("success"));
+        assert_eq!(
+            status.backup_count, 2,
+            "backup_count must be clamped to retention"
+        );
+    }
+
+    #[tokio::test]
+    async fn maybe_run_backup_retention_zero_prunes_all() {
+        use servarr_crds::BackupSpec;
+        use wiremock::matchers::{method, path, path_regex};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock_server = MockServer::start().await;
+        let client = build_mock_client(&mock_server.uri()).await;
+        let mut app = make_test_app("my-sonarr", "test", AppType::Sonarr);
+        app.spec.backup = Some(BackupSpec {
+            enabled: true,
+            schedule: "0 3 * * *".into(),
+            retention_count: 0,
+        });
+        app.spec.api_key_secret = Some("sonarr-key".into());
+
+        Mock::given(method("GET"))
+            .and(path("/api/v1/namespaces/test/secrets/sonarr-key"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "apiVersion": "v1", "kind": "Secret",
+                "metadata": { "name": "sonarr-key", "namespace": "test" },
+                "data": { "api-key": "c29uYXJyLWtleQ==" }
+            })))
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/v3/system/backup"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": 2,
+                "name": "sonarr_backup.zip",
+                "path": "/config/Backups/sonarr_backup.zip",
+                "size": 1048576,
+                "time": "2026-06-25T03:00:00Z"
+            })))
+            .mount(&mock_server)
+            .await;
+
+        // retention_count=0 → every existing backup must be pruned.
+        Mock::given(method("GET"))
+            .and(path("/api/v3/system/backup"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+                { "id": 1, "name": "a.zip", "path": "/config/Backups/a.zip", "size": 1, "time": "2026-06-24T03:00:00Z" },
+                { "id": 2, "name": "b.zip", "path": "/config/Backups/b.zip", "size": 1, "time": "2026-06-25T03:00:00Z" }
+            ])))
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("DELETE"))
+            .and(path_regex(r"/api/v3/system/backup/\d+"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(2)
+            .mount(&mock_server)
+            .await;
+
+        let recorder = make_recorder(&client);
+        let obj_ref = app.object_ref(&());
+        let mock_uri = mock_server.uri();
+
+        let result =
+            maybe_run_backup(&client, &app, "test", &recorder, &obj_ref, Some(&mock_uri)).await;
+        let status = result.expect("should return Some(BackupStatus) on success");
+        assert_eq!(status.last_backup_result.as_deref(), Some("success"));
+        assert_eq!(
+            status.backup_count, 0,
+            "retention_count=0 clamps backup_count to 0"
+        );
+    }
+
+    #[tokio::test]
     async fn maybe_run_backup_create_fails_returns_error_status() {
         use servarr_crds::BackupSpec;
         use wiremock::matchers::{method, path};
