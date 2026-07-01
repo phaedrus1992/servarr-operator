@@ -196,6 +196,16 @@
       matchUpdateTypes: ['minor', 'major'],
       enabled: false,
     },
+    // Exception: Servarr app images track upstream feature releases closely,
+    // so allow minor bumps (not major) on release/* branches too. Placed
+    // after the blanket disable rule above so it wins for this file.
+    {
+      description: 'Allow minor Servarr image bumps on release/* branches',
+      matchFileNames: ['image-defaults.toml'],
+      matchBaseBranches: ['/^release\\//'],
+      matchUpdateTypes: ['minor'],
+      enabled: true,
+    },
   ],
 
   // CVE fixes: vulnerabilityAlerts defaults give us separate PRs (groupName: null),
