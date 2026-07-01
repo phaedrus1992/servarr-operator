@@ -1897,19 +1897,23 @@ pub(crate) async fn maybe_restore_backup(
     .await;
 
     // Step 2: Build API client and call restore; always attempt scale-up on failure.
-    let restore_outcome = if scale_down_outcome.is_ok() {
-        try_restore(
-            client,
-            app,
-            ns,
-            backup_id,
-            recorder,
-            obj_ref,
-            base_url_override,
-        )
-        .await
-    } else {
-        scale_down_outcome
+    let restore_outcome = match scale_down_outcome {
+        Ok(()) => {
+            try_restore(
+                client,
+                app,
+                ns,
+                backup_id,
+                recorder,
+                obj_ref,
+                base_url_override,
+            )
+            .await
+        }
+        Err(e) => {
+            warn!(%name, error = %e, "scale-down for restore failed, skipping restore attempt");
+            Err(e)
+        }
     };
 
     // Step 3: Scale the deployment back up (always runs, even on restore failure).
