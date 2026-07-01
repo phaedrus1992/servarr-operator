@@ -4614,6 +4614,7 @@ mod tests {
         Mock::given(method("POST"))
             .and(path("/api/system/settings"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+            .expect(2)
             .mount(&mock_server)
             .await;
 
@@ -4678,6 +4679,7 @@ mod tests {
         Mock::given(method("POST"))
             .and(path("/api/system/settings"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+            .expect(2)
             .mount(&mock_server)
             .await;
 
