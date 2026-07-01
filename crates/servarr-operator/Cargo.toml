@@ -50,7 +50,7 @@ base64 = "0.22.1"
 servarr-api = { path = "../servarr-api" }
 overseerr = "0.1"
 chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
-cron = "0.16.0"
+cron = "0.17.0"
 url = "2.5.8"
 rand = "0.10.1"
 sha2 = "0.11.0"
