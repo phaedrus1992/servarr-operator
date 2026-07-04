@@ -139,15 +139,15 @@ impl AppDefaults {
         Self {
             image: ImageSpec::default(),
             service: single_port_service("http", port),
-            security: SecurityProfile::linux_server(65534, 65534),
+            security: SecurityProfile::linux_server(DEFAULT_UID, DEFAULT_GID),
             persistence: PersistenceSpec {
                 volumes,
                 nfs_mounts: vec![],
             },
             probes: http_probes(probe_path, 30, 10),
             resources: std_resources("1", mem_limit, "100m", mem_request),
-            uid: 65534,
-            gid: 65534,
+            uid: DEFAULT_UID,
+            gid: DEFAULT_GID,
             env: vec![tz_env()],
             app_config: None,
         }
@@ -166,15 +166,15 @@ impl AppDefaults {
         Self {
             image: ImageSpec::default(),
             service: single_port_service("http", port),
-            security: SecurityProfile::non_root(65534, 65534),
+            security: SecurityProfile::non_root(DEFAULT_UID, DEFAULT_GID),
             persistence: PersistenceSpec {
                 volumes,
                 nfs_mounts: vec![],
             },
             probes: http_probes(probe_path, 30, 10),
             resources: std_resources("1", mem_limit, "100m", mem_request),
-            uid: 65534,
-            gid: 65534,
+            uid: DEFAULT_UID,
+            gid: DEFAULT_GID,
             env: vec![tz_env()],
             app_config: None,
         }
@@ -264,7 +264,7 @@ fn tcp_probes(liveness_delay: i32, readiness_delay: i32) -> ProbeSpec {
         readiness: ProbeConfig {
             probe_type: ProbeType::Tcp,
             initial_delay_seconds: readiness_delay,
-            period_seconds: 5,
+            period_seconds: default_readiness_period(),
             ..Default::default()
         },
     }
@@ -283,7 +283,7 @@ fn http_probes(path: &str, liveness_delay: i32, readiness_delay: i32) -> ProbeSp
             probe_type: ProbeType::Http,
             path: path.into(),
             initial_delay_seconds: readiness_delay,
-            period_seconds: 5,
+            period_seconds: default_readiness_period(),
             ..Default::default()
         },
     }

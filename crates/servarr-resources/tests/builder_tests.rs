@@ -488,6 +488,25 @@ fn test_configmap_builder_non_transmission() {
 }
 
 #[test]
+fn test_configmap_transmission_chown_uses_shared_default_uid_gid() {
+    // #223: the uid/gid fallback in configmap.rs must come from servarr_crds's
+    // shared constant, not an independently hardcoded literal, so the two
+    // crates cannot silently drift apart.
+    let app = make_app(AppType::Transmission);
+    let cm = servarr_resources::configmap::build(&app).unwrap();
+    let script = &cm.data.unwrap()["apply-settings.sh"];
+    let expected = format!(
+        "chown {}:{}",
+        servarr_crds::DEFAULT_UID,
+        servarr_crds::DEFAULT_GID
+    );
+    assert!(
+        script.contains(&expected),
+        "expected script to contain '{expected}', got: {script}"
+    );
+}
+
+#[test]
 fn test_httproute_builder_disabled() {
     let app = make_app(AppType::Sonarr);
     let route = servarr_resources::httproute::build(&app);

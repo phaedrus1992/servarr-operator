@@ -1,6 +1,6 @@
 use k8s_openapi::api::core::v1::ConfigMap;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
-use servarr_crds::{AppConfig, AppType, ServarrApp, SshMode};
+use servarr_crds::{AppConfig, AppType, ServarrApp, SshMode, DEFAULT_GID, DEFAULT_UID};
 use std::collections::BTreeMap;
 
 use crate::common;
@@ -382,8 +382,8 @@ fn build_transmission(app: &ServarrApp) -> Option<ConfigMap> {
         return None;
     }
 
-    let uid = app.spec.uid.unwrap_or(65534);
-    let gid = app.spec.gid.unwrap_or(65534);
+    let uid = app.spec.uid.unwrap_or(DEFAULT_UID);
+    let gid = app.spec.gid.unwrap_or(DEFAULT_GID);
 
     let settings_json = if let Some(AppConfig::Transmission(ref tc)) = app.spec.app_config {
         if tc.settings.is_null() {
