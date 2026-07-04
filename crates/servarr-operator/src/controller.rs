@@ -2644,16 +2644,30 @@ async fn sync_maintainerr_servers(
     let discovered = discover_namespace_apps(client, target_ns).await?;
 
     // List already-registered servers so re-registration is idempotent (#132).
-    let existing_sonarr: std::collections::HashSet<String> = maintainerr_client
+    // On API error, log it explicitly rather than silently falling back to empty set,
+    // which would cause duplicate registrations on transient failures (#199).
+    let existing_sonarr: std::collections::HashSet<String> = match maintainerr_client
         .list_sonarr()
         .await
-        .map(|servers| servers.into_iter().map(|s| s.name).collect())
-        .unwrap_or_default();
-    let existing_radarr: std::collections::HashSet<String> = maintainerr_client
+    {
+        Ok(servers) => servers.into_iter().map(|s| s.name).collect(),
+        Err(e) => {
+            warn!(maintainerr = %maintainerr_name, error = %e,
+                "failed to list existing Sonarr servers in Maintainerr; sync may create duplicates");
+            Default::default()
+        }
+    };
+    let existing_radarr: std::collections::HashSet<String> = match maintainerr_client
         .list_radarr()
         .await
-        .map(|servers| servers.into_iter().map(|s| s.name).collect())
-        .unwrap_or_default();
+    {
+        Ok(servers) => servers.into_iter().map(|s| s.name).collect(),
+        Err(e) => {
+            warn!(maintainerr = %maintainerr_name, error = %e,
+                "failed to list existing Radarr servers in Maintainerr; sync may create duplicates");
+            Default::default()
+        }
+    };
 
     let mut sonarr_count = 0;
     let mut radarr_count = 0;
