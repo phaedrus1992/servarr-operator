@@ -67,7 +67,7 @@ impl AppDefaults {
                 },
             ]);
             // Whisper medium model requires ~1.5GB; 512Mi default causes OOM
-            defaults.resources = transcription_workload_resources();
+            defaults.resources = elevated_workload_resources();
         }
         if matches!(app, super::AppType::Maintainerr) {
             // Issue #131: Maintainerr v3 expects /opt/data, not /config
@@ -79,7 +79,7 @@ impl AppDefaults {
                 .ok_or_else(|| "Maintainerr defaults must have a 'config' volume".to_string())?;
             config_vol.mount_path = "/opt/data".to_string();
             // Issue #138: Maintainerr needs higher memory for large library scans
-            defaults.resources = transcription_workload_resources();
+            defaults.resources = elevated_workload_resources();
         }
         Ok(defaults)
     }
@@ -307,7 +307,7 @@ fn std_resources(
     }
 }
 
-fn transcription_workload_resources() -> ResourceRequirements {
+fn elevated_workload_resources() -> ResourceRequirements {
     std_resources("1", "2Gi", "100m", "512Mi")
 }
 
