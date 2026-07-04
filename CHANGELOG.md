@@ -11,6 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Fix default liveness probe (`timeout_seconds: 1`, `failure_threshold: 3`) being too
+  aggressive for .NET-based *arr apps (Sonarr, Radarr, Lidarr). Brief HTTP unresponsiveness
+  during RSS syncs, library scans, or GC pauses could trip 3 consecutive 1s-timeout failures
+  in 30s and get the pod SIGKILLed even though it was healthy. Raised to `timeout_seconds: 5`,
+  `failure_threshold: 5` (~50s grace). Override via `probes:` on the ServarrApp CR if you need
+  different values (#173).
 - Fix Maintainerr sync silently masking Sonarr/Radarr API list failures as "no servers
   registered", which caused duplicate server registrations on retry instead of a visible
   reconcile error. The operator now propagates these API errors so the controller retries

@@ -259,16 +259,12 @@ fn tcp_probes(liveness_delay: i32, readiness_delay: i32) -> ProbeSpec {
             probe_type: ProbeType::Tcp,
             initial_delay_seconds: liveness_delay,
             period_seconds: 10,
-            timeout_seconds: 1,
-            failure_threshold: 3,
             ..Default::default()
         },
         readiness: ProbeConfig {
             probe_type: ProbeType::Tcp,
             initial_delay_seconds: readiness_delay,
             period_seconds: 5,
-            timeout_seconds: 1,
-            failure_threshold: 3,
             ..Default::default()
         },
     }
@@ -281,8 +277,6 @@ fn http_probes(path: &str, liveness_delay: i32, readiness_delay: i32) -> ProbeSp
             path: path.into(),
             initial_delay_seconds: liveness_delay,
             period_seconds: 10,
-            timeout_seconds: 1,
-            failure_threshold: 3,
             ..Default::default()
         },
         readiness: ProbeConfig {
@@ -290,8 +284,6 @@ fn http_probes(path: &str, liveness_delay: i32, readiness_delay: i32) -> ProbeSp
             path: path.into(),
             initial_delay_seconds: readiness_delay,
             period_seconds: 5,
-            timeout_seconds: 1,
-            failure_threshold: 3,
             ..Default::default()
         },
     }

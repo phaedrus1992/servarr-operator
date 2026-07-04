@@ -695,12 +695,12 @@ spec:
                         liveness:
                           default:
                             command: []
-                            failureThreshold: 3
+                            failureThreshold: 5
                             initialDelaySeconds: 30
                             path: /
                             periodSeconds: 10
                             probeType: Http
-                            timeoutSeconds: 1
+                            timeoutSeconds: 5
                           properties:
                             command:
                               default: []
@@ -709,7 +709,7 @@ spec:
                                 type: string
                               type: array
                             failureThreshold:
-                              default: 3
+                              default: 5
                               format: int32
                               type: integer
                             initialDelaySeconds:
@@ -731,19 +731,19 @@ spec:
                               - Exec
                               type: string
                             timeoutSeconds:
-                              default: 1
+                              default: 5
                               format: int32
                               type: integer
                           type: object
                         readiness:
                           default:
                             command: []
-                            failureThreshold: 3
+                            failureThreshold: 5
                             initialDelaySeconds: 30
                             path: /
                             periodSeconds: 10
                             probeType: Http
-                            timeoutSeconds: 1
+                            timeoutSeconds: 5
                           properties:
                             command:
                               default: []
@@ -752,7 +752,7 @@ spec:
                                 type: string
                               type: array
                             failureThreshold:
-                              default: 3
+                              default: 5
                               format: int32
                               type: integer
                             initialDelaySeconds:
@@ -774,7 +774,7 @@ spec:
                               - Exec
                               type: string
                             timeoutSeconds:
-                              default: 1
+                              default: 5
                               format: int32
                               type: integer
                           type: object

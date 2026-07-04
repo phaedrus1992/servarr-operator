@@ -572,8 +572,8 @@ fn probe_config_defaults_inject() {
     assert_eq!(v.path, "");
     assert_eq!(v.initial_delay_seconds, 30);
     assert_eq!(v.period_seconds, 10);
-    assert_eq!(v.timeout_seconds, 1);
-    assert_eq!(v.failure_threshold, 3);
+    assert_eq!(v.timeout_seconds, 5);
+    assert_eq!(v.failure_threshold, 5);
 }
 
 #[test]
