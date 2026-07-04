@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Fix Maintainerr sync silently masking Sonarr/Radarr API list failures as "no servers
+  registered", which caused duplicate server registrations on retry instead of a visible
+  reconcile error. The operator now propagates these API errors so the controller retries
+  with backoff instead of silently proceeding with a stale empty list (#199).
 - Fix Maintainerr `DATA_DIR` not being wired to the config volume mount path. The operator
   now auto-injects `DATA_DIR` for Maintainerr equal to the `config` volume's `mountPath`
   (defaulting to `/opt/data`). Previously, users who mounted their PVC at `/config`
