@@ -128,8 +128,10 @@ fn tcp_probe_liveness_parameters() {
 
     assert_eq!(liveness.initial_delay_seconds, 30);
     assert_eq!(liveness.period_seconds, 10);
-    assert_eq!(liveness.timeout_seconds, 1);
-    assert_eq!(liveness.failure_threshold, 3);
+    // #173: 5s timeout / 5 failures gives .NET *arr apps room for GC pauses
+    // without silently disabling liveness detection.
+    assert_eq!(liveness.timeout_seconds, 5);
+    assert_eq!(liveness.failure_threshold, 5);
     // TCP probes inherit the default path from ProbeConfig::default() but it is
     // unused at runtime -- the operator ignores `path` for Tcp probe types.
 }
@@ -141,8 +143,8 @@ fn tcp_probe_readiness_parameters() {
 
     assert_eq!(readiness.initial_delay_seconds, 10);
     assert_eq!(readiness.period_seconds, 5);
-    assert_eq!(readiness.timeout_seconds, 1);
-    assert_eq!(readiness.failure_threshold, 3);
+    assert_eq!(readiness.timeout_seconds, 5);
+    assert_eq!(readiness.failure_threshold, 5);
 }
 
 #[test]
@@ -182,6 +184,27 @@ fn http_apps_use_http_probes_not_tcp() {
     }
 }
 
+#[test]
+fn http_apps_liveness_timeout_tolerates_dotnet_gc_pauses() {
+    // #173: Sonarr/Radarr/Lidarr are .NET apps whose HTTP server briefly stalls
+    // during RSS syncs, library scans, and GC pauses. A 1s timeout / 3-failure
+    // threshold (30s grace) was tight enough that these normal stalls triggered
+    // SIGKILL restarts (68 restarts/4 days observed on Sonarr, all exit 137).
+    let dotnet_apps = vec![AppType::Sonarr, AppType::Radarr, AppType::Lidarr];
+
+    for app_type in &dotnet_apps {
+        let defaults = AppDefaults::for_app(app_type).unwrap();
+        assert_eq!(
+            defaults.probes.liveness.timeout_seconds, 5,
+            "{app_type} liveness timeout should tolerate brief GC-pause stalls"
+        );
+        assert_eq!(
+            defaults.probes.liveness.failure_threshold, 5,
+            "{app_type} liveness failure_threshold should give ~50s grace"
+        );
+    }
+}
+
 // ---------------------------------------------------------------------------
 // SSH bastion tier and display
 // ---------------------------------------------------------------------------
@@ -208,8 +231,8 @@ fn probe_config_default_is_http_with_standard_values() {
     assert!(probe.command.is_empty());
     assert_eq!(probe.initial_delay_seconds, 30);
     assert_eq!(probe.period_seconds, 10);
-    assert_eq!(probe.timeout_seconds, 1);
-    assert_eq!(probe.failure_threshold, 3);
+    assert_eq!(probe.timeout_seconds, 5);
+    assert_eq!(probe.failure_threshold, 5);
 }
 
 // ---------------------------------------------------------------------------
