@@ -299,8 +299,15 @@ pub enum SecurityProfileType {
     Custom,
 }
 
+/// Default UID/GID (nobody/nogroup) used across security profiles, `AppDefaults`,
+/// and cross-crate by `servarr-resources` config builders that fall back when a
+/// `ServarrApp` doesn't override uid/gid (#223). A single source of truth so the
+/// two crates cannot silently drift apart.
+pub const DEFAULT_UID: i64 = 65534;
+pub const DEFAULT_GID: i64 = 65534;
+
 fn default_uid() -> i64 {
-    65534
+    DEFAULT_UID
 }
 
 impl SecurityProfile {
@@ -451,6 +458,12 @@ fn default_initial_delay() -> i32 {
 }
 fn default_period() -> i32 {
     10
+}
+/// Shared by `http_probes()`/`tcp_probes()` for the readiness probe's period,
+/// kept separate from `default_period()` (liveness) so the two can diverge
+/// without call sites hardcoding either value independently (#221).
+pub(crate) fn default_readiness_period() -> i32 {
+    5
 }
 fn default_timeout() -> i32 {
     5
