@@ -1,6 +1,6 @@
 use k8s_openapi::api::core::v1::ConfigMap;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
-use servarr_crds::{AppConfig, AppType, ServarrApp, SshMode, DEFAULT_GID, DEFAULT_UID};
+use servarr_crds::{AppConfig, AppType, DEFAULT_GID, DEFAULT_UID, ServarrApp, SshMode};
 use std::collections::BTreeMap;
 
 use crate::common;
