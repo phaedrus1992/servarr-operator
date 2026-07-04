@@ -16,7 +16,7 @@ use servarr_api::AppKind;
 use servarr_crds::{AppType, Condition, ServarrApp, ServarrAppStatus, condition_types};
 use thiserror::Error;
 use tokio::time::Duration;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::context::Context;
 use crate::metrics::{
@@ -2644,30 +2644,31 @@ async fn sync_maintainerr_servers(
     let discovered = discover_namespace_apps(client, target_ns).await?;
 
     // List already-registered servers so re-registration is idempotent (#132).
-    // On API error, log it explicitly rather than silently falling back to empty set,
-    // which would cause duplicate registrations on transient failures (#199).
-    let existing_sonarr: std::collections::HashSet<String> = match maintainerr_client
+    // On API error, propagate immediately to trigger controller retry with backoff (#199).
+    // Do not fall back to empty set: that causes duplicate registrations on every transient
+    // failure, with no reconcile error to trigger backoff.
+    let existing_sonarr: std::collections::HashSet<String> = maintainerr_client
         .list_sonarr()
         .await
-    {
-        Ok(servers) => servers.into_iter().map(|s| s.name).collect(),
-        Err(e) => {
-            warn!(maintainerr = %maintainerr_name, error = %e,
-                "failed to list existing Sonarr servers in Maintainerr; sync may create duplicates");
-            Default::default()
-        }
-    };
-    let existing_radarr: std::collections::HashSet<String> = match maintainerr_client
+        .map_err(|e| {
+            error!(maintainerr = %maintainerr_name, error = %e,
+                "failed to list existing Sonarr servers from Maintainerr; aborting sync to prevent duplicates");
+            anyhow::anyhow!("list_sonarr failed: {e}")
+        })?
+        .into_iter()
+        .map(|s| s.name)
+        .collect();
+    let existing_radarr: std::collections::HashSet<String> = maintainerr_client
         .list_radarr()
         .await
-    {
-        Ok(servers) => servers.into_iter().map(|s| s.name).collect(),
-        Err(e) => {
-            warn!(maintainerr = %maintainerr_name, error = %e,
-                "failed to list existing Radarr servers in Maintainerr; sync may create duplicates");
-            Default::default()
-        }
-    };
+        .map_err(|e| {
+            error!(maintainerr = %maintainerr_name, error = %e,
+                "failed to list existing Radarr servers from Maintainerr; aborting sync to prevent duplicates");
+            anyhow::anyhow!("list_radarr failed: {e}")
+        })?
+        .into_iter()
+        .map(|s| s.name)
+        .collect();
 
     let mut sonarr_count = 0;
     let mut radarr_count = 0;
@@ -2738,7 +2739,13 @@ async fn sync_maintainerr_servers(
                     }
                 }
             }
-            _ => {}
+            _ => {
+                // Unhandled app type: duplicate Overseerr/Tautulli, future variants, or unsupported types.
+                // Log at debug level so the operator can see what was skipped (important for troubleshooting
+                // missing Overseerr/Tautulli instances beyond the first).
+                debug!(maintainerr = %maintainerr_name, app = %app.name, app_type = ?app.app_type,
+                    "skipping app type in Maintainerr sync");
+            }
         }
     }
 
