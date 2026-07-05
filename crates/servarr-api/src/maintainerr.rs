@@ -269,7 +269,12 @@ impl MaintainerrClient {
     /// Hostname/port and the auth token are sent in one request rather than two separate
     /// calls to this same endpoint, so an uncertain replace-semantics call can't clobber
     /// what the other call just wrote.
-    pub async fn set_plex(&self, hostname: &str, port: u16, auth_token: &str) -> Result<(), ApiError> {
+    pub async fn set_plex(
+        &self,
+        hostname: &str,
+        port: u16,
+        auth_token: &str,
+    ) -> Result<(), ApiError> {
         let endpoint = format!("{}/api/settings", self.base_url);
         let body = PlexSetRequest {
             plex_hostname: hostname,
@@ -578,7 +583,9 @@ mod tests {
             .await;
 
         let client = MaintainerrClient::new(&server.uri(), "test-key").expect("should construct");
-        let result = client.set_plex("plex.example.com", 32400, "my-plex-token").await;
+        let result = client
+            .set_plex("plex.example.com", 32400, "my-plex-token")
+            .await;
 
         assert!(result.is_ok());
     }
@@ -600,7 +607,6 @@ mod tests {
             other => panic!("expected ApiResponse, got: {other}"),
         }
     }
-
 }
 
 #[cfg(test)]

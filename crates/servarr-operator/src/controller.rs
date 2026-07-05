@@ -2611,20 +2611,20 @@ async fn sync_plex_to_maintainerr(
     ns: &str,
     plex_secret: &str,
 ) -> (bool, usize) {
-    let hostname = match servarr_api::read_secret_key(client, ns, plex_secret, "plex-hostname").await
-    {
-        Ok(h) => h,
-        Err(servarr_api::SecretError::Kube(kube::Error::Api(ref er))) if er.code == 404 => {
-            info!(maintainerr = %maintainerr_name, secret = %plex_secret,
+    let hostname =
+        match servarr_api::read_secret_key(client, ns, plex_secret, "plex-hostname").await {
+            Ok(h) => h,
+            Err(servarr_api::SecretError::Kube(kube::Error::Api(ref er))) if er.code == 404 => {
+                info!(maintainerr = %maintainerr_name, secret = %plex_secret,
                 "plexTokenSecret not found; skipping Plex sync");
-            return (false, 0);
-        }
-        Err(e) => {
-            warn!(maintainerr = %maintainerr_name, secret = %plex_secret, error = %e,
+                return (false, 0);
+            }
+            Err(e) => {
+                warn!(maintainerr = %maintainerr_name, secret = %plex_secret, error = %e,
                 "failed to read plex-hostname from plexTokenSecret");
-            return (false, 1);
-        }
-    };
+                return (false, 1);
+            }
+        };
 
     let auth_token =
         match servarr_api::read_secret_key(client, ns, plex_secret, "plex-auth-token").await {
@@ -2653,7 +2653,10 @@ async fn sync_plex_to_maintainerr(
         }
     };
 
-    if let Err(e) = maintainerr_client.set_plex(&hostname, port, &auth_token).await {
+    if let Err(e) = maintainerr_client
+        .set_plex(&hostname, port, &auth_token)
+        .await
+    {
         warn!(maintainerr = %maintainerr_name, error = %e,
             "failed to set Plex configuration in Maintainerr");
         return (false, 1);
@@ -2826,9 +2829,14 @@ async fn sync_maintainerr_servers(
         .and_then(|s| s.plex_token_secret.as_ref())
         .cloned()
     {
-        let (configured, plex_failures) =
-            sync_plex_to_maintainerr(client, &maintainerr_client, &maintainerr_name, &ns, secret_name)
-                .await;
+        let (configured, plex_failures) = sync_plex_to_maintainerr(
+            client,
+            &maintainerr_client,
+            &maintainerr_name,
+            &ns,
+            secret_name,
+        )
+        .await;
         plex_configured = configured;
         failures += plex_failures;
     }
@@ -4025,9 +4033,14 @@ mod tests {
             .mount(&m_server)
             .await;
 
-        let (configured, failures) =
-            sync_plex_to_maintainerr(&kube_client, &m_client, "my-maintainerr", "test", "plex-secret")
-                .await;
+        let (configured, failures) = sync_plex_to_maintainerr(
+            &kube_client,
+            &m_client,
+            "my-maintainerr",
+            "test",
+            "plex-secret",
+        )
+        .await;
 
         assert!(configured, "plex_configured should be true on full success");
         assert_eq!(failures, 0);
@@ -4064,9 +4077,14 @@ mod tests {
             .mount(&m_server)
             .await;
 
-        let (configured, failures) =
-            sync_plex_to_maintainerr(&kube_client, &m_client, "my-maintainerr", "test", "plex-secret")
-                .await;
+        let (configured, failures) = sync_plex_to_maintainerr(
+            &kube_client,
+            &m_client,
+            "my-maintainerr",
+            "test",
+            "plex-secret",
+        )
+        .await;
 
         assert!(!configured);
         assert_eq!(failures, 1);
@@ -4094,9 +4112,14 @@ mod tests {
             .mount(&kube_server)
             .await;
 
-        let (configured, failures) =
-            sync_plex_to_maintainerr(&kube_client, &m_client, "my-maintainerr", "test", "plex-secret")
-                .await;
+        let (configured, failures) = sync_plex_to_maintainerr(
+            &kube_client,
+            &m_client,
+            "my-maintainerr",
+            "test",
+            "plex-secret",
+        )
+        .await;
 
         assert!(!configured);
         assert_eq!(failures, 0, "absent secret must not increment failures");
@@ -4123,9 +4146,14 @@ mod tests {
         )
         .await;
 
-        let (configured, failures) =
-            sync_plex_to_maintainerr(&kube_client, &m_client, "my-maintainerr", "test", "plex-secret")
-                .await;
+        let (configured, failures) = sync_plex_to_maintainerr(
+            &kube_client,
+            &m_client,
+            "my-maintainerr",
+            "test",
+            "plex-secret",
+        )
+        .await;
 
         assert!(!configured);
         assert_eq!(failures, 1, "missing required key must increment failures");
@@ -4164,11 +4192,22 @@ mod tests {
             .mount(&m_server)
             .await;
 
-        let (configured, failures) =
-            sync_plex_to_maintainerr(&kube_client, &m_client, "my-maintainerr", "test", "plex-secret")
-                .await;
+        let (configured, failures) = sync_plex_to_maintainerr(
+            &kube_client,
+            &m_client,
+            "my-maintainerr",
+            "test",
+            "plex-secret",
+        )
+        .await;
 
-        assert!(configured, "malformed port falls back to default, sync still succeeds");
-        assert_eq!(failures, 0, "malformed port is a logged fallback, not a failure");
+        assert!(
+            configured,
+            "malformed port falls back to default, sync still succeeds"
+        );
+        assert_eq!(
+            failures, 0,
+            "malformed port is a logged fallback, not a failure"
+        );
     }
 }
