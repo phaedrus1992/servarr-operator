@@ -634,7 +634,7 @@ pub async fn reconcile(app: Arc<ServarrApp>, ctx: Arc<Context>) -> Result<Action
             ConditionSpec {
                 condition_type: condition_types::MAINTAINERR_SYNC_READY,
                 ok_reason: "SyncComplete",
-                ok_message: "Sonarr, Radarr, Overseerr, and Tautulli synced into Maintainerr",
+                ok_message: "Sonarr, Radarr, Overseerr, Tautulli, and Plex synced into Maintainerr",
                 fail_reason: "SyncFailed",
                 fail_log: "Maintainerr sync failed",
             },
@@ -2662,12 +2662,13 @@ async fn sync_plex_to_maintainerr(
     (true, 0)
 }
 
-/// Sync Sonarr, Radarr, Overseerr, and Tautulli into Maintainerr.
+/// Sync Sonarr, Radarr, Overseerr, Tautulli, and Plex into Maintainerr.
 ///
 /// Called on every reconcile when `maintainerr_sync.enabled` is true. Discovers
 /// Sonarr, Radarr, Overseerr, and Tautulli instances in the target namespace and
 /// registers them with Maintainerr. split4k Sonarr/Radarr instances are discovered
-/// as separate `ServarrApp`s, so each is registered independently.
+/// as separate `ServarrApp`s, so each is registered independently. Plex is synced
+/// separately via [`sync_plex_to_maintainerr`] using credentials from `plexTokenSecret`.
 ///
 /// Registration is idempotent: existing Sonarr/Radarr servers are listed first and
 /// already-registered names are skipped, so repeated reconciles do not accumulate
