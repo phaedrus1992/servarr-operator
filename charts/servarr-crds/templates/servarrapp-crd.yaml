@@ -548,6 +548,14 @@ spec:
                     description: Namespace to discover companion apps in. Defaults to Maintainerr's own namespace.
                     nullable: true
                     type: string
+                  plexTokenSecret:
+                    description: |-
+                      Name of a Secret in the same namespace holding Plex credentials for Maintainerr.
+                      Required keys: `plex-hostname`, `plex-auth-token`.
+                      Optional key: `plex-port` (default 32400).
+                      When absent, Plex sync is skipped.
+                    nullable: true
+                    type: string
                 type: object
               networkPolicy:
                 nullable: true

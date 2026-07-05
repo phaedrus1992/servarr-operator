@@ -30,3 +30,4 @@ anyhow = "1.0.103"
 servarr-crds = { path = "crates/servarr-crds" }
 servarr-resources = { path = "crates/servarr-resources" }
 wiremock = "0.6.5"
+proptest = "1.11.0"

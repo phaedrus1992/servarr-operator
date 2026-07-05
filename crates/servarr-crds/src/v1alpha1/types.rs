@@ -710,6 +710,12 @@ pub struct MaintainerrSyncSpec {
     /// Namespace to discover companion apps in. Defaults to Maintainerr's own namespace.
     #[serde(default)]
     pub namespace_scope: Option<String>,
+    /// Name of a Secret in the same namespace holding Plex credentials for Maintainerr.
+    /// Required keys: `plex-hostname`, `plex-auth-token`.
+    /// Optional key: `plex-port` (default 32400).
+    /// When absent, Plex sync is skipped.
+    #[serde(default)]
+    pub plex_token_secret: Option<String>,
 }
 
 /// Configuration for the in-cluster NFS server deployed by the MediaStack operator.
