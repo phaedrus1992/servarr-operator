@@ -215,7 +215,7 @@
         '/(^|/)image-defaults\\.toml$/',
       ],
       matchStrings: [
-        '\\[(?<depName>[a-z]+)\\]\\nrepository\\s*=\\s*"(?<packageName>[^"]+)"\\ntag\\s*=\\s*"(?<currentValue>[^"]+)"',
+        '\\[(?<depName>[a-z-]+)\\]\\nrepository\\s*=\\s*"(?<packageName>[^"]+)"\\ntag\\s*=\\s*"(?<currentValue>[^"]+)"',
       ],
       datasourceTemplate: 'docker',
     },
@@ -232,7 +232,7 @@
         '/(^|/)charts\\/servarr-operator\\/values\\.yaml$/',
       ],
       matchStrings: [
-        '  (?<depName>[a-z]+):\\n    repository:\\s*(?<packageName>[^\\n]+)\\n    tag:\\s*"(?<currentValue>[^"]+)"',
+        '  (?<depName>[a-z-]+):\\n    repository:\\s*(?<packageName>[^\\n]+)\\n    tag:\\s*"(?<currentValue>[^"]+)"',
       ],
       datasourceTemplate: 'docker',
     },
