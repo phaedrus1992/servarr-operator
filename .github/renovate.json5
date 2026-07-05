@@ -215,7 +215,24 @@
         '/(^|/)image-defaults\\.toml$/',
       ],
       matchStrings: [
-        '\\[(?<depName>[a-z]+)\\]\\nrepository\\s*=\\s*"(?<packageName>[^"]+)"\\ntag\\s*=\\s*"(?<currentValue>[^"]+)"',
+        '\\[(?<depName>[a-z-]+)\\]\\nrepository\\s*=\\s*"(?<packageName>[^"]+)"\\ntag\\s*=\\s*"(?<currentValue>[^"]+)"',
+      ],
+      datasourceTemplate: 'docker',
+    },
+
+    // Mirror of the image-defaults.toml manager above, targeting the generated
+    // defaultImages block in values.yaml directly. Matching the same
+    // depName/packageName scheme makes Renovate correlate both as the same
+    // dependency and bump them together in one PR, instead of only patching
+    // the toml and leaving values.yaml to drift until the next manual
+    // sync-image-defaults.sh run (#249).
+    {
+      customType: 'regex',
+      managerFilePatterns: [
+        '/(^|/)charts\\/servarr-operator\\/values\\.yaml$/',
+      ],
+      matchStrings: [
+        '  (?<depName>[a-z-]+):\\n    repository:\\s*(?<packageName>[^\\n]+)\\n    tag:\\s*"(?<currentValue>[^"]+)"',
       ],
       datasourceTemplate: 'docker',
     },
