@@ -2653,15 +2653,9 @@ async fn sync_plex_to_maintainerr(
         }
     };
 
-    if let Err(e) = maintainerr_client.set_plex(&hostname, port).await {
+    if let Err(e) = maintainerr_client.set_plex(&hostname, port, &auth_token).await {
         warn!(maintainerr = %maintainerr_name, error = %e,
-            "failed to set Plex hostname/port in Maintainerr");
-        return (false, 1);
-    }
-
-    if let Err(e) = maintainerr_client.set_plex_token(&auth_token).await {
-        warn!(maintainerr = %maintainerr_name, error = %e,
-            "failed to set Plex auth token in Maintainerr");
+            "failed to set Plex configuration in Maintainerr");
         return (false, 1);
     }
 
@@ -4000,7 +3994,7 @@ mod tests {
     //   "my-plex-token"     → "bXktcGxleC10b2tlbg=="
 
     #[tokio::test]
-    async fn sync_plex_success_two_call_sequence() {
+    async fn sync_plex_success_single_call() {
         let kube_server = MockServer::start().await;
         let kube_client = build_mock_client(&kube_server.uri()).await;
         let m_server = MockServer::start().await;
@@ -4020,17 +4014,11 @@ mod tests {
 
         Mock::given(method("POST"))
             .and(path("/api/settings"))
-            .and(body_json(
-                json!({"plexHostname": "plex.example.com", "plexPort": 32400}),
-            ))
-            .respond_with(ResponseTemplate::new(200))
-            .expect(1)
-            .mount(&m_server)
-            .await;
-
-        Mock::given(method("POST"))
-            .and(path("/api/settings"))
-            .and(body_json(json!({"plexAuthToken": "my-plex-token"})))
+            .and(body_json(json!({
+                "plexHostname": "plex.example.com",
+                "plexPort": 32400,
+                "plexAuthToken": "my-plex-token",
+            })))
             .respond_with(ResponseTemplate::new(200))
             .expect(1)
             .mount(&m_server)
@@ -4065,9 +4053,11 @@ mod tests {
 
         Mock::given(method("POST"))
             .and(path("/api/settings"))
-            .and(body_json(
-                json!({"plexHostname": "plex.example.com", "plexPort": 32400}),
-            ))
+            .and(body_json(json!({
+                "plexHostname": "plex.example.com",
+                "plexPort": 32400,
+                "plexAuthToken": "my-plex-token",
+            })))
             .respond_with(ResponseTemplate::new(500))
             .expect(1)
             .mount(&m_server)
@@ -4078,53 +4068,6 @@ mod tests {
                 .await;
 
         assert!(!configured);
-        assert_eq!(failures, 1);
-        // set_plex_token must not have been called
-        assert_eq!(m_server.received_requests().await.unwrap().len(), 1);
-    }
-
-    #[tokio::test]
-    async fn sync_plex_set_plex_token_fails_increments_failures() {
-        let kube_server = MockServer::start().await;
-        let kube_client = build_mock_client(&kube_server.uri()).await;
-        let m_server = MockServer::start().await;
-        let m_client =
-            servarr_api::MaintainerrClient::new(&m_server.uri(), "test-key").expect("client");
-
-        mount_secret_mock(
-            &kube_server,
-            "test",
-            "plex-secret",
-            json!({
-                "plex-hostname": "cGxleC5leGFtcGxlLmNvbQ==",
-                "plex-auth-token": "bXktcGxleC10b2tlbg==",
-            }),
-        )
-        .await;
-
-        Mock::given(method("POST"))
-            .and(path("/api/settings"))
-            .and(body_json(
-                json!({"plexHostname": "plex.example.com", "plexPort": 32400}),
-            ))
-            .respond_with(ResponseTemplate::new(200))
-            .expect(1)
-            .mount(&m_server)
-            .await;
-
-        Mock::given(method("POST"))
-            .and(path("/api/settings"))
-            .and(body_json(json!({"plexAuthToken": "my-plex-token"})))
-            .respond_with(ResponseTemplate::new(500))
-            .expect(1)
-            .mount(&m_server)
-            .await;
-
-        let (configured, failures) =
-            sync_plex_to_maintainerr(&kube_client, &m_client, "my-maintainerr", "test", "plex-secret")
-                .await;
-
-        assert!(!configured, "plex_configured must be false when set_plex_token fails");
         assert_eq!(failures, 1);
     }
 
@@ -4210,17 +4153,11 @@ mod tests {
 
         Mock::given(method("POST"))
             .and(path("/api/settings"))
-            .and(body_json(
-                json!({"plexHostname": "plex.example.com", "plexPort": 32400}),
-            ))
-            .respond_with(ResponseTemplate::new(200))
-            .expect(1)
-            .mount(&m_server)
-            .await;
-
-        Mock::given(method("POST"))
-            .and(path("/api/settings"))
-            .and(body_json(json!({"plexAuthToken": "my-plex-token"})))
+            .and(body_json(json!({
+                "plexHostname": "plex.example.com",
+                "plexPort": 32400,
+                "plexAuthToken": "my-plex-token",
+            })))
             .respond_with(ResponseTemplate::new(200))
             .expect(1)
             .mount(&m_server)
