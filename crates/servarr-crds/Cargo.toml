@@ -17,4 +17,4 @@ serde = { version = "1.0.228", features = ["derive"] }
 
 [dev-dependencies]
 serde_yaml.workspace = true
-proptest = "1.11.0"
+proptest = { workspace = true }

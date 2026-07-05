@@ -2615,10 +2615,64 @@ async fn sync_bazarr_apps(
 /// `Err` if any registration failed so the `MaintainerrSyncReady` status condition
 /// reflects the partial failure. The caller converts this into a condition rather
 /// than propagating it, so a sync failure never blocks the rest of reconciliation.
+/// Sync Plex into Maintainerr using credentials from a k8s Secret.
 ///
-/// Plex is intentionally not synced here: Plex uses plex.tv account authentication
-/// rather than an operator-managed API key, so the operator has no token to inject.
-/// Tracked for follow-up.
+/// Returns `(plex_configured, failure_count)`. A 404 on the secret is not a failure —
+/// it means Plex sync is intentionally disabled by omitting the secret.
+async fn sync_plex_to_maintainerr(
+    client: &Client,
+    maintainerr_client: &servarr_api::MaintainerrClient,
+    maintainerr_name: &str,
+    ns: &str,
+    plex_secret: &str,
+) -> (bool, usize) {
+    use k8s_openapi::api::core::v1::Secret;
+    use kube::api::Api;
+
+    let secrets: Api<Secret> = Api::namespaced(client.clone(), ns);
+    let secret = match secrets.get(plex_secret).await {
+        Ok(s) => s,
+        Err(kube::Error::Api(ref er)) if er.code == 404 => {
+            info!(maintainerr = %maintainerr_name, secret = %plex_secret,
+                "plexTokenSecret not found; skipping Plex sync");
+            return (false, 0);
+        }
+        Err(e) => {
+            warn!(maintainerr = %maintainerr_name, error = %e,
+                "failed to read plexTokenSecret");
+            return (false, 1);
+        }
+    };
+
+    let data = secret.data.unwrap_or_default();
+    let get_key = |key: &str| -> Option<String> {
+        data.get(key).and_then(|b| String::from_utf8(b.0.clone()).ok())
+    };
+
+    let (Some(hostname), Some(auth_token)) = (get_key("plex-hostname"), get_key("plex-auth-token"))
+    else {
+        warn!(maintainerr = %maintainerr_name, secret = %plex_secret,
+            "plex-hostname or plex-auth-token missing from plexTokenSecret");
+        return (false, 1);
+    };
+
+    let port: u16 = get_key("plex-port").and_then(|s| s.parse().ok()).unwrap_or(32400);
+
+    if let Err(e) = maintainerr_client.set_plex(&hostname, port).await {
+        warn!(maintainerr = %maintainerr_name, error = %e,
+            "failed to set Plex hostname/port in Maintainerr");
+        return (false, 1);
+    }
+
+    if let Err(e) = maintainerr_client.set_plex_token(&auth_token).await {
+        warn!(maintainerr = %maintainerr_name, error = %e,
+            "failed to set Plex auth token in Maintainerr");
+        return (false, 1);
+    }
+
+    (true, 0)
+}
+
 async fn sync_maintainerr_servers(
     client: &Client,
     maintainerr: &ServarrApp,
@@ -2684,6 +2738,7 @@ async fn sync_maintainerr_servers(
     let mut radarr_count = 0;
     let mut overseerr_configured = false;
     let mut tautulli_configured = false;
+    let mut plex_configured = false;
     let mut failures = 0;
 
     // Register all discovered apps. split4k instances appear as separate apps in discovery.
@@ -2759,8 +2814,22 @@ async fn sync_maintainerr_servers(
         }
     }
 
+    if let Some(ref secret_name) = maintainerr
+        .spec
+        .maintainerr_sync
+        .as_ref()
+        .and_then(|s| s.plex_token_secret.as_ref())
+        .cloned()
+    {
+        let (configured, plex_failures) =
+            sync_plex_to_maintainerr(client, &maintainerr_client, &maintainerr_name, &ns, secret_name)
+                .await;
+        plex_configured = configured;
+        failures += plex_failures;
+    }
+
     info!(maintainerr = %maintainerr_name, sonarr_count, radarr_count,
-        overseerr_configured, tautulli_configured, failures,
+        overseerr_configured, tautulli_configured, plex_configured, failures,
         "Maintainerr sync complete");
 
     if failures > 0 {
@@ -3090,7 +3159,7 @@ fn json_is_subset(desired: &serde_json::Value, actual: &serde_json::Value) -> bo
 mod tests {
     use super::*;
     use serde_json::json;
-    use wiremock::matchers::{method, path};
+    use wiremock::matchers::{body_json, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     // ---- json_is_subset ----
@@ -3909,5 +3978,202 @@ mod tests {
             !apps.iter().any(|a| a.name == "my-transmission"),
             "Transmission should not be in discovered results"
         );
+    }
+
+    // ---- sync_plex_to_maintainerr tests (#151) ----
+    //
+    // These tests use two mock servers: one for kube API (secrets) and one for
+    // the Maintainerr HTTP API, since sync_plex_to_maintainerr makes both kinds of calls.
+    //
+    // Secret data values are base64-encoded as required by the kube Secret.data format:
+    //   "plex.example.com"  → "cGxleC5leGFtcGxlLmNvbQ=="
+    //   "my-plex-token"     → "bXktcGxleC10b2tlbg=="
+
+    #[tokio::test]
+    async fn sync_plex_success_two_call_sequence() {
+        let kube_server = MockServer::start().await;
+        let kube_client = build_mock_client(&kube_server.uri()).await;
+        let m_server = MockServer::start().await;
+        let m_client =
+            servarr_api::MaintainerrClient::new(&m_server.uri(), "test-key").expect("client");
+
+        mount_secret_mock(
+            &kube_server,
+            "test",
+            "plex-secret",
+            json!({
+                "plex-hostname": "cGxleC5leGFtcGxlLmNvbQ==",
+                "plex-auth-token": "bXktcGxleC10b2tlbg==",
+            }),
+        )
+        .await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/settings"))
+            .and(body_json(
+                json!({"plexHostname": "plex.example.com", "plexPort": 32400}),
+            ))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&m_server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/settings"))
+            .and(body_json(json!({"plexAuthToken": "my-plex-token"})))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&m_server)
+            .await;
+
+        let (configured, failures) =
+            sync_plex_to_maintainerr(&kube_client, &m_client, "my-maintainerr", "test", "plex-secret")
+                .await;
+
+        assert!(configured, "plex_configured should be true on full success");
+        assert_eq!(failures, 0);
+    }
+
+    #[tokio::test]
+    async fn sync_plex_set_plex_fails_increments_failures() {
+        let kube_server = MockServer::start().await;
+        let kube_client = build_mock_client(&kube_server.uri()).await;
+        let m_server = MockServer::start().await;
+        let m_client =
+            servarr_api::MaintainerrClient::new(&m_server.uri(), "test-key").expect("client");
+
+        mount_secret_mock(
+            &kube_server,
+            "test",
+            "plex-secret",
+            json!({
+                "plex-hostname": "cGxleC5leGFtcGxlLmNvbQ==",
+                "plex-auth-token": "bXktcGxleC10b2tlbg==",
+            }),
+        )
+        .await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/settings"))
+            .and(body_json(
+                json!({"plexHostname": "plex.example.com", "plexPort": 32400}),
+            ))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(1)
+            .mount(&m_server)
+            .await;
+
+        let (configured, failures) =
+            sync_plex_to_maintainerr(&kube_client, &m_client, "my-maintainerr", "test", "plex-secret")
+                .await;
+
+        assert!(!configured);
+        assert_eq!(failures, 1);
+        // set_plex_token must not have been called
+        assert_eq!(m_server.received_requests().await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn sync_plex_set_plex_token_fails_increments_failures() {
+        let kube_server = MockServer::start().await;
+        let kube_client = build_mock_client(&kube_server.uri()).await;
+        let m_server = MockServer::start().await;
+        let m_client =
+            servarr_api::MaintainerrClient::new(&m_server.uri(), "test-key").expect("client");
+
+        mount_secret_mock(
+            &kube_server,
+            "test",
+            "plex-secret",
+            json!({
+                "plex-hostname": "cGxleC5leGFtcGxlLmNvbQ==",
+                "plex-auth-token": "bXktcGxleC10b2tlbg==",
+            }),
+        )
+        .await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/settings"))
+            .and(body_json(
+                json!({"plexHostname": "plex.example.com", "plexPort": 32400}),
+            ))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&m_server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/settings"))
+            .and(body_json(json!({"plexAuthToken": "my-plex-token"})))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(1)
+            .mount(&m_server)
+            .await;
+
+        let (configured, failures) =
+            sync_plex_to_maintainerr(&kube_client, &m_client, "my-maintainerr", "test", "plex-secret")
+                .await;
+
+        assert!(!configured, "plex_configured must be false when set_plex_token fails");
+        assert_eq!(failures, 1);
+    }
+
+    #[tokio::test]
+    async fn sync_plex_secret_absent_skips_cleanly() {
+        let kube_server = MockServer::start().await;
+        let kube_client = build_mock_client(&kube_server.uri()).await;
+        let m_server = MockServer::start().await;
+        let m_client =
+            servarr_api::MaintainerrClient::new(&m_server.uri(), "test-key").expect("client");
+
+        Mock::given(method("GET"))
+            .and(path("/api/v1/namespaces/test/secrets/plex-secret"))
+            .respond_with(ResponseTemplate::new(404).set_body_json(json!({
+                "apiVersion": "v1",
+                "kind": "Status",
+                "metadata": {},
+                "status": "Failure",
+                "message": "secrets \"plex-secret\" not found",
+                "reason": "NotFound",
+                "code": 404
+            })))
+            .mount(&kube_server)
+            .await;
+
+        let (configured, failures) =
+            sync_plex_to_maintainerr(&kube_client, &m_client, "my-maintainerr", "test", "plex-secret")
+                .await;
+
+        assert!(!configured);
+        assert_eq!(failures, 0, "absent secret must not increment failures");
+        assert!(
+            m_server.received_requests().await.unwrap().is_empty(),
+            "no Maintainerr calls should happen when secret is absent",
+        );
+    }
+
+    #[tokio::test]
+    async fn sync_plex_secret_missing_required_key() {
+        let kube_server = MockServer::start().await;
+        let kube_client = build_mock_client(&kube_server.uri()).await;
+        let m_server = MockServer::start().await;
+        let m_client =
+            servarr_api::MaintainerrClient::new(&m_server.uri(), "test-key").expect("client");
+
+        // Secret present but missing plex-auth-token
+        mount_secret_mock(
+            &kube_server,
+            "test",
+            "plex-secret",
+            json!({ "plex-hostname": "cGxleC5leGFtcGxlLmNvbQ==" }),
+        )
+        .await;
+
+        let (configured, failures) =
+            sync_plex_to_maintainerr(&kube_client, &m_client, "my-maintainerr", "test", "plex-secret")
+                .await;
+
+        assert!(!configured);
+        assert_eq!(failures, 1, "missing required key must increment failures");
     }
 }

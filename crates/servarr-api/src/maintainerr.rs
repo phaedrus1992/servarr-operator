@@ -57,6 +57,13 @@ struct PlexSetRequest<'a> {
     plex_port: u16,
 }
 
+/// Request body for setting Plex auth token.
+#[derive(Serialize)]
+struct PlexTokenSetRequest<'a> {
+    #[serde(rename = "plexAuthToken")]
+    plex_auth_token: &'a str,
+}
+
 /// Generic API response for server listings.
 #[derive(Deserialize, Serialize, Debug, Clone, PartialEq, Eq)]
 pub struct ServerResponse {
@@ -269,6 +276,31 @@ impl MaintainerrClient {
             plex_hostname: hostname,
             plex_port: port,
         };
+
+        let resp = self
+            .client
+            .post(&endpoint)
+            .json(&body)
+            .send()
+            .await
+            .map_err(ApiError::Request)?;
+
+        if resp.status().is_success() {
+            Ok(())
+        } else {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_else(|e| {
+                tracing::debug!(error = %e, "failed to read Maintainerr error response body");
+                String::new()
+            });
+            Err(ApiError::ApiResponse { status, body })
+        }
+    }
+
+    /// Set Plex auth token via `POST /api/settings`.
+    pub async fn set_plex_token(&self, auth_token: &str) -> Result<(), ApiError> {
+        let endpoint = format!("{}/api/settings", self.base_url);
+        let body = PlexTokenSetRequest { plex_auth_token: auth_token };
 
         let resp = self
             .client
@@ -589,6 +621,38 @@ mod tests {
         match err {
             ApiError::ApiResponse { status, .. } => assert_eq!(status, 400),
             other => panic!("expected ApiResponse, got: {other}"),
+        }
+    }
+
+    #[test]
+    fn plex_token_set_request_serializes_correctly() {
+        let req = PlexTokenSetRequest { plex_auth_token: "my-plex-token" };
+        let json = serde_json::to_value(&req).expect("should serialize");
+        assert_eq!(json["plexAuthToken"], "my-plex-token");
+        assert!(json.get("plex_auth_token").is_none(), "snake_case leaked");
+    }
+}
+
+#[cfg(test)]
+mod proptest_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn plex_set_request_camel_case_stable(hostname in ".*", port in 0u16..=65535u16) {
+            let req = PlexSetRequest { plex_hostname: &hostname, plex_port: port };
+            let json = serde_json::to_value(&req).unwrap();
+            prop_assert_eq!(json.get("plexHostname").and_then(|v| v.as_str()), Some(hostname.as_str()));
+            prop_assert!(json.get("plex_hostname").is_none(), "snake_case leaked");
+        }
+
+        #[test]
+        fn plex_token_set_request_camel_case_stable(token in ".*") {
+            let req = PlexTokenSetRequest { plex_auth_token: &token };
+            let json = serde_json::to_value(&req).unwrap();
+            prop_assert_eq!(json.get("plexAuthToken").and_then(|v| v.as_str()), Some(token.as_str()));
+            prop_assert!(json.get("plex_auth_token").is_none(), "snake_case leaked");
         }
     }
 }
