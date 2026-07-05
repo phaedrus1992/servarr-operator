@@ -33,8 +33,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Changed
 
 - Update default Sonarr image to `4.0.18` (from `4.0.17`).
-- Update default Jackett image to `0.24.2126` (from `0.24.2116`), rolling up upstream
+- Update default Jackett image to `0.24.2135` (from `0.24.2116`), rolling up upstream
   indexer-definition updates.
+- Update default Subgen image to `2026.06.4` (from `2026.06.3`).
 
 ## [1.1.1] - 2026-07-01
 
