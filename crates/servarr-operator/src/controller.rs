@@ -2611,37 +2611,47 @@ async fn sync_plex_to_maintainerr(
     ns: &str,
     plex_secret: &str,
 ) -> (bool, usize) {
-    use k8s_openapi::api::core::v1::Secret;
-    use kube::api::Api;
-
-    let secrets: Api<Secret> = Api::namespaced(client.clone(), ns);
-    let secret = match secrets.get(plex_secret).await {
-        Ok(s) => s,
-        Err(kube::Error::Api(ref er)) if er.code == 404 => {
+    let hostname = match servarr_api::read_secret_key(client, ns, plex_secret, "plex-hostname").await
+    {
+        Ok(h) => h,
+        Err(servarr_api::SecretError::Kube(kube::Error::Api(ref er))) if er.code == 404 => {
             info!(maintainerr = %maintainerr_name, secret = %plex_secret,
                 "plexTokenSecret not found; skipping Plex sync");
             return (false, 0);
         }
         Err(e) => {
-            warn!(maintainerr = %maintainerr_name, error = %e,
-                "failed to read plexTokenSecret");
+            warn!(maintainerr = %maintainerr_name, secret = %plex_secret, error = %e,
+                "failed to read plex-hostname from plexTokenSecret");
             return (false, 1);
         }
     };
 
-    let data = secret.data.unwrap_or_default();
-    let get_key = |key: &str| -> Option<String> {
-        data.get(key).and_then(|b| String::from_utf8(b.0.clone()).ok())
-    };
+    let auth_token =
+        match servarr_api::read_secret_key(client, ns, plex_secret, "plex-auth-token").await {
+            Ok(t) => t,
+            Err(e) => {
+                warn!(maintainerr = %maintainerr_name, secret = %plex_secret, error = %e,
+                    "failed to read plex-auth-token from plexTokenSecret");
+                return (false, 1);
+            }
+        };
 
-    let (Some(hostname), Some(auth_token)) = (get_key("plex-hostname"), get_key("plex-auth-token"))
-    else {
-        warn!(maintainerr = %maintainerr_name, secret = %plex_secret,
-            "plex-hostname or plex-auth-token missing from plexTokenSecret");
-        return (false, 1);
+    let port: u16 = match servarr_api::read_secret_key(client, ns, plex_secret, "plex-port").await {
+        Ok(s) => match s.parse() {
+            Ok(p) => p,
+            Err(e) => {
+                warn!(maintainerr = %maintainerr_name, secret = %plex_secret, value = %s, error = %e,
+                    "plex-port in plexTokenSecret is not a valid port number; using default 32400");
+                32400
+            }
+        },
+        Err(servarr_api::SecretError::KeyNotFound { .. }) => 32400,
+        Err(e) => {
+            warn!(maintainerr = %maintainerr_name, secret = %plex_secret, error = %e,
+                "failed to read plex-port from plexTokenSecret; using default 32400");
+            32400
+        }
     };
-
-    let port: u16 = get_key("plex-port").and_then(|s| s.parse().ok()).unwrap_or(32400);
 
     if let Err(e) = maintainerr_client.set_plex(&hostname, port).await {
         warn!(maintainerr = %maintainerr_name, error = %e,
@@ -4175,5 +4185,52 @@ mod tests {
 
         assert!(!configured);
         assert_eq!(failures, 1, "missing required key must increment failures");
+    }
+
+    #[tokio::test]
+    async fn sync_plex_malformed_port_falls_back_to_default() {
+        let kube_server = MockServer::start().await;
+        let kube_client = build_mock_client(&kube_server.uri()).await;
+        let m_server = MockServer::start().await;
+        let m_client =
+            servarr_api::MaintainerrClient::new(&m_server.uri(), "test-key").expect("client");
+
+        mount_secret_mock(
+            &kube_server,
+            "test",
+            "plex-secret",
+            json!({
+                "plex-hostname": "cGxleC5leGFtcGxlLmNvbQ==",
+                "plex-auth-token": "bXktcGxleC10b2tlbg==",
+                // "not-a-port" base64-encoded
+                "plex-port": "bm90LWEtcG9ydA==",
+            }),
+        )
+        .await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/settings"))
+            .and(body_json(
+                json!({"plexHostname": "plex.example.com", "plexPort": 32400}),
+            ))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&m_server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/settings"))
+            .and(body_json(json!({"plexAuthToken": "my-plex-token"})))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&m_server)
+            .await;
+
+        let (configured, failures) =
+            sync_plex_to_maintainerr(&kube_client, &m_client, "my-maintainerr", "test", "plex-secret")
+                .await;
+
+        assert!(configured, "malformed port falls back to default, sync still succeeds");
+        assert_eq!(failures, 0, "malformed port is a logged fallback, not a failure");
     }
 }
