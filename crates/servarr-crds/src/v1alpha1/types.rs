@@ -525,8 +525,8 @@ pub struct NetworkPolicyConfig {
 impl Default for NetworkPolicyConfig {
     fn default() -> Self {
         Self {
-            allow_same_namespace: true,
-            allow_dns: true,
+            allow_same_namespace: default_true(),
+            allow_dns: default_true(),
             allow_internet_egress: false,
             denied_cidr_blocks: Vec::new(),
             custom_egress_rules: Vec::new(),
@@ -617,7 +617,7 @@ impl Default for ProwlarrSyncSpec {
         Self {
             enabled: false,
             namespace_scope: None,
-            auto_remove: true,
+            auto_remove: default_true(),
         }
     }
 }
@@ -646,7 +646,7 @@ impl Default for OverseerrSyncSpec {
         Self {
             enabled: false,
             namespace_scope: None,
-            auto_remove: true,
+            auto_remove: default_true(),
         }
     }
 }
@@ -675,7 +675,7 @@ impl Default for BazarrSyncSpec {
         Self {
             enabled: false,
             namespace_scope: None,
-            auto_remove: true,
+            auto_remove: default_true(),
         }
     }
 }
