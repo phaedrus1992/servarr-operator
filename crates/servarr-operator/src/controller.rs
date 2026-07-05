@@ -413,7 +413,7 @@ pub async fn reconcile(app: Arc<ServarrApp>, ctx: Arc<Context>) -> Result<Action
     // Auto-create API key Secret if apiKeySecret is set and the Secret is absent.
     // Uses a get-then-create pattern so an existing key is never overwritten.
     tracing::debug!(%name, "ensuring API key secret");
-    ensure_api_key_secret(client, &app, &ns).await?;
+    ensure_api_key_secret(client, &app).await?;
 
     // For Servarr v3 apps (Sonarr/Radarr/Lidarr/Prowlarr) credentials are applied
     // via PUT /api/v3/config/host after each pod start (sync_admin_credentials).
@@ -429,7 +429,7 @@ pub async fn reconcile(app: Arc<ServarrApp>, ctx: Arc<Context>) -> Result<Action
     );
     if needs_rollout_on_secret_change && let Some(ref ac) = app.spec.admin_credentials {
         tracing::debug!(%name, secret_name = %ac.secret_name, "patching admin credentials checksum");
-        patch_admin_credentials_checksum(client, &app, &ns, &ac.secret_name).await?;
+        patch_admin_credentials_checksum(client, &app, &ac.secret_name).await?;
     }
 
     // Build and apply SSH bastion authorized-keys Secret
@@ -721,7 +721,9 @@ pub async fn reconcile(app: Arc<ServarrApp>, ctx: Arc<Context>) -> Result<Action
 ///
 /// The Secret is owned by the ServarrApp so it is garbage-collected when the
 /// ServarrApp is deleted.  An existing Secret is never touched.
-async fn ensure_api_key_secret(client: &Client, app: &ServarrApp, ns: &str) -> Result<(), Error> {
+async fn ensure_api_key_secret(client: &Client, app: &ServarrApp) -> Result<(), Error> {
+    let ns = app.namespace().unwrap_or_else(|| "default".into());
+    let ns = ns.as_str();
     // For Bazarr, the operator always manages the API key secret using a
     // deterministic name (<app-name>-api-key), regardless of apiKeySecret spec.
     let (secret_name, is_bazarr) = if matches!(app.spec.app, AppType::Bazarr) {
@@ -776,9 +778,10 @@ async fn ensure_api_key_secret(client: &Client, app: &ServarrApp, ns: &str) -> R
 async fn patch_admin_credentials_checksum(
     client: &Client,
     app: &ServarrApp,
-    ns: &str,
     secret_name: &str,
 ) -> Result<(), Error> {
+    let ns = app.namespace().unwrap_or_else(|| "default".into());
+    let ns = ns.as_str();
     use sha2::{Digest, Sha256};
 
     // Fetch Secret metadata to get resourceVersion (changes on every update).
