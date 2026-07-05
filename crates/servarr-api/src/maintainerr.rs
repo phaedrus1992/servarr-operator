@@ -294,6 +294,8 @@ impl MaintainerrClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     #[test]
     fn server_response_accepts_servername_key() {
@@ -365,9 +367,6 @@ mod tests {
 
     #[tokio::test]
     async fn add_sonarr_calls_correct_endpoint() {
-        use wiremock::matchers::{method, path};
-        use wiremock::{Mock, MockServer, ResponseTemplate};
-
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/api/settings/sonarr"))
@@ -393,9 +392,6 @@ mod tests {
 
     #[tokio::test]
     async fn add_sonarr_returns_error_on_failure() {
-        use wiremock::matchers::{method, path};
-        use wiremock::{Mock, MockServer, ResponseTemplate};
-
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/api/settings/sonarr"))
@@ -417,9 +413,6 @@ mod tests {
 
     #[tokio::test]
     async fn list_sonarr_calls_correct_endpoint() {
-        use wiremock::matchers::{method, path};
-        use wiremock::{Mock, MockServer, ResponseTemplate};
-
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/api/settings/sonarr"))
@@ -445,9 +438,6 @@ mod tests {
 
     #[tokio::test]
     async fn add_radarr_calls_correct_endpoint() {
-        use wiremock::matchers::{method, path};
-        use wiremock::{Mock, MockServer, ResponseTemplate};
-
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/api/settings/radarr"))
@@ -473,9 +463,6 @@ mod tests {
 
     #[tokio::test]
     async fn list_radarr_calls_correct_endpoint() {
-        use wiremock::matchers::{method, path};
-        use wiremock::{Mock, MockServer, ResponseTemplate};
-
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/api/settings/radarr"))
@@ -501,9 +488,6 @@ mod tests {
 
     #[tokio::test]
     async fn set_overseerr_calls_correct_endpoint() {
-        use wiremock::matchers::{method, path};
-        use wiremock::{Mock, MockServer, ResponseTemplate};
-
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/api/settings/overseerr"))
@@ -522,9 +506,6 @@ mod tests {
 
     #[tokio::test]
     async fn set_overseerr_returns_error_on_failure() {
-        use wiremock::matchers::{method, path};
-        use wiremock::{Mock, MockServer, ResponseTemplate};
-
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/api/settings/overseerr"))
@@ -543,9 +524,6 @@ mod tests {
 
     #[tokio::test]
     async fn set_tautulli_calls_correct_endpoint() {
-        use wiremock::matchers::{method, path};
-        use wiremock::{Mock, MockServer, ResponseTemplate};
-
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/api/settings/tautulli"))
@@ -564,9 +542,6 @@ mod tests {
 
     #[tokio::test]
     async fn set_tautulli_returns_error_on_failure() {
-        use wiremock::matchers::{method, path};
-        use wiremock::{Mock, MockServer, ResponseTemplate};
-
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/api/settings/tautulli"))
@@ -585,9 +560,6 @@ mod tests {
 
     #[tokio::test]
     async fn set_plex_calls_correct_endpoint() {
-        use wiremock::matchers::{method, path};
-        use wiremock::{Mock, MockServer, ResponseTemplate};
-
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/api/settings"))
@@ -604,9 +576,6 @@ mod tests {
 
     #[tokio::test]
     async fn set_plex_returns_error_on_failure() {
-        use wiremock::matchers::{method, path};
-        use wiremock::{Mock, MockServer, ResponseTemplate};
-
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/api/settings"))

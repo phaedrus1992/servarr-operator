@@ -141,6 +141,8 @@ impl OverseerrClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     #[test]
     fn overseerr_client_new_constructs() {
@@ -160,9 +162,6 @@ mod tests {
 
     #[tokio::test]
     async fn setup_local_auth_calls_correct_endpoint() {
-        use wiremock::matchers::{method, path};
-        use wiremock::{Mock, MockServer, ResponseTemplate};
-
         let server = MockServer::start().await;
         Mock::given(method("PUT"))
             .and(path("/api/v1/auth/local"))
@@ -176,9 +175,6 @@ mod tests {
 
     #[tokio::test]
     async fn setup_local_auth_returns_error_on_failure() {
-        use wiremock::matchers::{method, path};
-        use wiremock::{Mock, MockServer, ResponseTemplate};
-
         let server = MockServer::start().await;
         Mock::given(method("PUT"))
             .and(path("/api/v1/auth/local"))
