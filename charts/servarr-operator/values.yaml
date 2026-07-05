@@ -100,13 +100,13 @@ defaultImages:
     tag: "3.15.2"
   jackett:
     repository: linuxserver/jackett
-    tag: "0.24.2126"
+    tag: "0.24.2135"
   bazarr:
     repository: linuxserver/bazarr
     tag: "1.5.6"
   subgen:
     repository: mccloud/subgen
-    tag: "2026.06.3"
+    tag: "2026.06.4"
   jellyfin:
     repository: linuxserver/jellyfin
     tag: "10.11.10"
