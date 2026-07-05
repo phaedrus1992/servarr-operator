@@ -2600,21 +2600,6 @@ async fn sync_bazarr_apps(
     Ok(())
 }
 
-/// Sync Sonarr, Radarr, Overseerr, and Tautulli into Maintainerr.
-///
-/// Called on every reconcile when `maintainerr_sync.enabled` is true. Discovers
-/// Sonarr, Radarr, Overseerr, and Tautulli instances in the target namespace and
-/// registers them with Maintainerr. split4k Sonarr/Radarr instances are discovered
-/// as separate `ServarrApp`s, so each is registered independently.
-///
-/// Registration is idempotent: existing Sonarr/Radarr servers are listed first and
-/// already-registered names are skipped, so repeated reconciles do not accumulate
-/// duplicate entries.
-///
-/// Per-app failures are logged and do not abort the loop, but the function returns
-/// `Err` if any registration failed so the `MaintainerrSyncReady` status condition
-/// reflects the partial failure. The caller converts this into a condition rather
-/// than propagating it, so a sync failure never blocks the rest of reconciliation.
 /// Sync Plex into Maintainerr using credentials from a k8s Secret.
 ///
 /// Returns `(plex_configured, failure_count)`. A 404 on the secret is not a failure —
@@ -2673,6 +2658,21 @@ async fn sync_plex_to_maintainerr(
     (true, 0)
 }
 
+/// Sync Sonarr, Radarr, Overseerr, and Tautulli into Maintainerr.
+///
+/// Called on every reconcile when `maintainerr_sync.enabled` is true. Discovers
+/// Sonarr, Radarr, Overseerr, and Tautulli instances in the target namespace and
+/// registers them with Maintainerr. split4k Sonarr/Radarr instances are discovered
+/// as separate `ServarrApp`s, so each is registered independently.
+///
+/// Registration is idempotent: existing Sonarr/Radarr servers are listed first and
+/// already-registered names are skipped, so repeated reconciles do not accumulate
+/// duplicate entries.
+///
+/// Per-app failures are logged and do not abort the loop, but the function returns
+/// `Err` if any registration failed so the `MaintainerrSyncReady` status condition
+/// reflects the partial failure. The caller converts this into a condition rather
+/// than propagating it, so a sync failure never blocks the rest of reconciliation.
 async fn sync_maintainerr_servers(
     client: &Client,
     maintainerr: &ServarrApp,
