@@ -27,7 +27,11 @@ repo=""
 tag=""
 
 flush_app() {
-  if [[ -n "$current_app" && -n "$repo" ]]; then
+  if [[ -n "$current_app" ]]; then
+    if [[ -z "$repo" ]]; then
+      echo "error: app '${current_app}' has no repository in $TOML_FILE" >&2
+      exit 1
+    fi
     yaml_block+=$'\n'"  ${current_app}:"
     yaml_block+=$'\n'"    repository: ${repo}"
     yaml_block+=$'\n'"    tag: \"${tag}\""
@@ -69,7 +73,7 @@ fi
 
 # Find the line where defaultImages section starts (comment or key)
 start_pattern="^# Default container images\|^# AUTO-GENERATED\|^defaultImages:"
-start_line=$(grep -n "$start_pattern" "$VALUES_FILE" | head -1 | cut -d: -f1)
+start_line=$(grep -n "$start_pattern" "$VALUES_FILE" | head -1 | cut -d: -f1 || true)
 
 if [[ -n "$start_line" ]]; then
   # Keep everything before the defaultImages section

@@ -30,6 +30,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `mountPath: /opt/data`; the files on the PVC do not need to move. You can also keep
   `mountPath: /config` and add `DATA_DIR: /config` to `spec.env` as an alternative.
 
+### Changed
+
+- Update default Sonarr image to `4.0.18` (from `4.0.17`).
+- Update default Jackett image to `0.24.2126` (from `0.24.2116`), rolling up upstream
+  indexer-definition updates.
+
 ## [1.1.1] - 2026-07-01
 
 ### Changed

@@ -77,6 +77,17 @@ jobs:
           helm template test charts/servarr-operator/ > /dev/null
           helm template test charts/servarr-operator/ --set watchAllNamespaces=true > /dev/null
 
+  image-defaults-sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+
+      - name: Check image defaults are in sync
+        run: bash scripts/sync-image-defaults.sh && git diff --exit-code charts/servarr-operator/values.yaml
+
   # ── Stage 2: Analysis + Tests ──────────────────────────────────────────
   clippy:
     needs: [fmt, actionlint, zizmor]
