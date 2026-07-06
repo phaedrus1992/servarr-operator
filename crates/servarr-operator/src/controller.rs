@@ -699,7 +699,7 @@ pub async fn reconcile(app: Arc<ServarrApp>, ctx: Arc<Context>) -> Result<Action
             ConditionSpec {
                 condition_type: condition_types::MAINTAINERR_SYNC_READY,
                 ok_reason: "SyncComplete",
-                ok_message: "Sonarr, Radarr, Overseerr, and Tautulli synced into Maintainerr",
+                ok_message: "Sonarr, Radarr, Overseerr, Tautulli, and Plex synced into Maintainerr",
                 fail_reason: "SyncFailed",
                 fail_log: "Maintainerr sync failed",
             },
@@ -2695,12 +2695,14 @@ pub(crate) async fn sync_bazarr_apps(
     Ok(())
 }
 
-/// Sync Sonarr, Radarr, Overseerr, and Tautulli into Maintainerr.
+/// Sync Sonarr, Radarr, Overseerr, Tautulli, and Plex into Maintainerr.
 ///
 /// Called on every reconcile when `maintainerr_sync.enabled` is true. Discovers
 /// Sonarr, Radarr, Overseerr, and Tautulli instances in the target namespace and
 /// registers them with Maintainerr. split4k Sonarr/Radarr instances are discovered
-/// as separate `ServarrApp`s, so each is registered independently.
+/// as separate `ServarrApp`s, so each is registered independently. Plex is looked up
+/// separately (it has no `api_key_secret` so `discover_namespace_apps` excludes it)
+/// and synced using the plex.tv auth token from `plexTokenSecret`.
 ///
 /// Registration is idempotent: existing Sonarr/Radarr servers are listed first and
 /// already-registered names are skipped, so repeated reconciles do not accumulate
@@ -2710,10 +2712,6 @@ pub(crate) async fn sync_bazarr_apps(
 /// `Err` if any registration failed so the `MaintainerrSyncReady` status condition
 /// reflects the partial failure. The caller converts this into a condition rather
 /// than propagating it, so a sync failure never blocks the rest of reconciliation.
-///
-/// Plex is intentionally not synced here: Plex uses plex.tv account authentication
-/// rather than an operator-managed API key, so the operator has no token to inject.
-/// Tracked for follow-up.
 pub(crate) async fn sync_maintainerr_servers(
     client: &Client,
     maintainerr: &ServarrApp,
@@ -3264,7 +3262,7 @@ fn json_is_subset(desired: &serde_json::Value, actual: &serde_json::Value) -> bo
 mod tests {
     use super::*;
     use serde_json::json;
-    use wiremock::matchers::{method, path};
+    use wiremock::matchers::{body_json, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     // ---- json_is_subset ----
@@ -4738,6 +4736,220 @@ mod tests {
         let mock_uri = mock_server.uri();
         let result = sync_maintainerr_servers(&client, &maintainerr, "test", Some(&mock_uri)).await;
         assert!(result.is_ok());
+    }
+
+    // ---- sync_maintainerr_servers Plex-wiring tests (#151, #251) ----
+    //
+    // These exercise sync_maintainerr_servers end to end: the ServarrApp list call
+    // (shared by discover_namespace_apps and the separate Plex lookup), the
+    // plex-token secret read, and the two Maintainerr calls (set_plex_token then
+    // set_plex) that configure Plex. Secret data values are base64-encoded as
+    // required by the kube Secret.data format:
+    //   "my-plex-token" → "bXktcGxleC10b2tlbg=="
+
+    async fn mount_servarrapps_list(mock_server: &MockServer, items: serde_json::Value) {
+        Mock::given(method("GET"))
+            .and(path(
+                "/apis/servarr.dev/v1alpha1/namespaces/test/servarrapps",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "apiVersion": "servarr.dev/v1alpha1",
+                "kind": "ServarrAppList",
+                "metadata": {},
+                "items": items
+            })))
+            .mount(mock_server)
+            .await;
+    }
+
+    fn plex_app_json(name: &str) -> serde_json::Value {
+        json!({
+            "apiVersion": "servarr.dev/v1alpha1",
+            "kind": "ServarrApp",
+            "metadata": {
+                "name": name,
+                "namespace": "test",
+                "uid": "plex-uid",
+                "resourceVersion": "1"
+            },
+            "spec": { "app": "Plex" }
+        })
+    }
+
+    async fn mount_maintainerr_list_mocks(m_server: &MockServer) {
+        Mock::given(method("GET"))
+            .and(path("/api/settings/sonarr"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+            .mount(m_server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/settings/radarr"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+            .mount(m_server)
+            .await;
+    }
+
+    fn maintainerr_app_with_plex_sync(plex_token_secret: Option<&str>) -> ServarrApp {
+        let mut app = make_test_app("my-maintainerr", "test", AppType::Maintainerr);
+        app.spec.maintainerr_sync = Some(servarr_crds::MaintainerrSyncSpec {
+            enabled: true,
+            namespace_scope: None,
+            plex_token_secret: plex_token_secret.map(str::to_string),
+        });
+        app
+    }
+
+    async fn mount_maintainerr_api_key_secret(mock_server: &MockServer, maintainerr: &ServarrApp) {
+        mount_secret_mock(
+            mock_server,
+            "test",
+            &servarr_resources::common::child_name(maintainerr, "api-key"),
+            json!({ "api-key": "bWFpbnRhaW5lcnIta2V5" }),
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn sync_maintainerr_configures_plex_via_servarrapp_lookup() {
+        let mock_server = MockServer::start().await;
+        let client = build_mock_client(&mock_server.uri()).await;
+        let m_server = MockServer::start().await;
+
+        let maintainerr = maintainerr_app_with_plex_sync(Some("plex-token-secret"));
+        let port = servarr_crds::AppDefaults::for_app(&AppType::Plex)
+            .expect("Plex defaults")
+            .service
+            .ports[0]
+            .port as u16;
+
+        mount_maintainerr_api_key_secret(&mock_server, &maintainerr).await;
+        mount_secret_mock(
+            &mock_server,
+            "test",
+            "plex-token-secret",
+            json!({ "plex-token": "bXktcGxleC10b2tlbg==" }),
+        )
+        .await;
+        mount_servarrapps_list(&mock_server, json!([plex_app_json("my-plex")])).await;
+        mount_maintainerr_list_mocks(&m_server).await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/settings/plex/token"))
+            .and(body_json(json!({ "plex_auth_token": "my-plex-token" })))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&m_server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/settings"))
+            .and(body_json(json!({
+                "plex_hostname": "my-plex.test.svc",
+                "plex_port": port,
+            })))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&m_server)
+            .await;
+
+        let result =
+            sync_maintainerr_servers(&client, &maintainerr, "test", Some(&m_server.uri())).await;
+        assert!(result.is_ok(), "expected Ok, got {result:?}");
+    }
+
+    #[tokio::test]
+    async fn sync_maintainerr_no_plex_token_secret_skips_plex() {
+        let mock_server = MockServer::start().await;
+        let client = build_mock_client(&mock_server.uri()).await;
+        let m_server = MockServer::start().await;
+
+        let maintainerr = maintainerr_app_with_plex_sync(None);
+        mount_maintainerr_api_key_secret(&mock_server, &maintainerr).await;
+        mount_servarrapps_list(&mock_server, json!([plex_app_json("my-plex")])).await;
+        mount_maintainerr_list_mocks(&m_server).await;
+
+        // No plex-token-secret mock mounted, and no Plex endpoints mounted on
+        // m_server: reading the secret and calling Plex endpoints must never be
+        // attempted when plex_token_secret is None.
+        let result =
+            sync_maintainerr_servers(&client, &maintainerr, "test", Some(&m_server.uri())).await;
+        assert!(result.is_ok(), "expected Ok, got {result:?}");
+    }
+
+    #[tokio::test]
+    async fn sync_maintainerr_missing_plex_token_key_skips_plex_without_failure() {
+        let mock_server = MockServer::start().await;
+        let client = build_mock_client(&mock_server.uri()).await;
+        let m_server = MockServer::start().await;
+
+        let maintainerr = maintainerr_app_with_plex_sync(Some("plex-token-secret"));
+        mount_maintainerr_api_key_secret(&mock_server, &maintainerr).await;
+        // Secret exists but lacks the plex-token key.
+        mount_secret_mock(&mock_server, "test", "plex-token-secret", json!({})).await;
+        mount_servarrapps_list(&mock_server, json!([plex_app_json("my-plex")])).await;
+        mount_maintainerr_list_mocks(&m_server).await;
+
+        // A missing key is logged and treated as "Plex not configured", not a
+        // sync failure — matches the read_secret_key contract used everywhere else.
+        let result =
+            sync_maintainerr_servers(&client, &maintainerr, "test", Some(&m_server.uri())).await;
+        assert!(result.is_ok(), "expected Ok, got {result:?}");
+    }
+
+    #[tokio::test]
+    async fn sync_maintainerr_no_plex_servarrapp_skips_plex() {
+        let mock_server = MockServer::start().await;
+        let client = build_mock_client(&mock_server.uri()).await;
+        let m_server = MockServer::start().await;
+
+        let maintainerr = maintainerr_app_with_plex_sync(Some("plex-token-secret"));
+        mount_maintainerr_api_key_secret(&mock_server, &maintainerr).await;
+        mount_secret_mock(
+            &mock_server,
+            "test",
+            "plex-token-secret",
+            json!({ "plex-token": "bXktcGxleC10b2tlbg==" }),
+        )
+        .await;
+        // No Plex ServarrApp in the namespace — token is present but there's
+        // nothing to configure it against.
+        mount_servarrapps_list(&mock_server, json!([])).await;
+        mount_maintainerr_list_mocks(&m_server).await;
+
+        let result =
+            sync_maintainerr_servers(&client, &maintainerr, "test", Some(&m_server.uri())).await;
+        assert!(result.is_ok(), "expected Ok, got {result:?}");
+    }
+
+    #[tokio::test]
+    async fn sync_maintainerr_set_plex_token_failure_counts_as_sync_failure() {
+        let mock_server = MockServer::start().await;
+        let client = build_mock_client(&mock_server.uri()).await;
+        let m_server = MockServer::start().await;
+
+        let maintainerr = maintainerr_app_with_plex_sync(Some("plex-token-secret"));
+        mount_maintainerr_api_key_secret(&mock_server, &maintainerr).await;
+        mount_secret_mock(
+            &mock_server,
+            "test",
+            "plex-token-secret",
+            json!({ "plex-token": "bXktcGxleC10b2tlbg==" }),
+        )
+        .await;
+        mount_servarrapps_list(&mock_server, json!([plex_app_json("my-plex")])).await;
+        mount_maintainerr_list_mocks(&m_server).await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/settings/plex/token"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&m_server)
+            .await;
+
+        let result =
+            sync_maintainerr_servers(&client, &maintainerr, "test", Some(&m_server.uri())).await;
+        assert!(
+            result.is_err(),
+            "a failed Plex token call must surface as a sync failure"
+        );
     }
 
     // ---- sync_subgen_jellyfin tests ----
