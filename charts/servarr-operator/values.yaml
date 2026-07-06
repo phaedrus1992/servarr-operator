@@ -85,13 +85,13 @@ defaultImages:
     tag: "2.3.5"
   sabnzbd:
     repository: linuxserver/sabnzbd
-    tag: "4.5.5"
+    tag: "5.0.3"
   transmission:
     repository: linuxserver/transmission
     tag: "4.1.1"
   tautulli:
     repository: linuxserver/tautulli
-    tag: "2.17.1"
+    tag: "2.17.2"
   overseerr:
     repository: linuxserver/overseerr
     tag: "1.35.0"

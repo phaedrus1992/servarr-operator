@@ -43,6 +43,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Update default Jackett image to `0.24.2135` (from `0.24.2116`), rolling up upstream
   indexer-definition updates.
 - Update default Subgen image to `2026.06.4` (from `2026.06.3`).
+- Update default SABnzbd image to `5.0.3` (from `4.5.5`), a major upstream release. Adds
+  NNTP Pipelining (existing servers must manually enable it under server settings; new
+  servers default to it) and Direct Write for faster download assembly, and
+  post-processing scripts now always run, even for failed jobs — update scripts that
+  assumed they'd only run on success. Safe to upgrade directly; no queue repair needed
+  coming from 4.5.5.
+- Update default Tautulli image to `2.17.2` (from `2.17.1`).
 
 ## [1.1.1] - 2026-07-01
 
