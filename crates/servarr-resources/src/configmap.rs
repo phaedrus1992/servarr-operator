@@ -2,6 +2,7 @@ use k8s_openapi::api::core::v1::ConfigMap;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 use servarr_crds::{AppConfig, AppType, DEFAULT_GID, DEFAULT_UID, ServarrApp, SshMode};
 use std::collections::BTreeMap;
+use tracing::warn;
 
 use crate::common;
 
@@ -404,7 +405,10 @@ fn build_transmission(app: &ServarrApp) -> Option<ConfigMap> {
         if tc.settings.is_null() {
             default_transmission_settings()
         } else {
-            serde_json::to_string_pretty(&tc.settings).unwrap_or_default()
+            serde_json::to_string_pretty(&tc.settings).unwrap_or_else(|e| {
+                warn!(error = %e, "failed to serialize Transmission settings; ConfigMap will have empty settings");
+                String::new()
+            })
         }
     } else {
         default_transmission_settings()
