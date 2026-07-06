@@ -264,6 +264,35 @@ fn test_crd_generation() {
     assert!(yaml.contains("v1alpha1"));
 }
 
+#[test]
+fn test_service_name_has_validation_constraints() {
+    use kube::CustomResourceExt;
+
+    let crd = ServarrApp::crd();
+    let json = serde_json::to_value(&crd).unwrap();
+
+    // Navigate to the serviceName field in the schema
+    let service_name = json
+        .pointer("/spec/versions/0/schema/openAPIV3Schema/properties/spec/properties/serviceName")
+        .expect("serviceName not found in CRD schema");
+
+    assert_eq!(
+        service_name.get("type").and_then(|v| v.as_str()),
+        Some("string"),
+        "serviceName should be a string type"
+    );
+    assert_eq!(
+        service_name.get("pattern").and_then(|v| v.as_str()),
+        Some("^[a-z0-9]([a-z0-9-]*[a-z0-9])?$"),
+        "serviceName should have RFC 1123 label pattern"
+    );
+    assert_eq!(
+        service_name.get("maxLength").and_then(|v| v.as_u64()),
+        Some(63),
+        "serviceName should have maxLength 63"
+    );
+}
+
 /// Validate that the generated CRD schema is compatible with Kubernetes
 /// structural schema requirements.
 ///

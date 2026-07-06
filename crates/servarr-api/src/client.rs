@@ -22,6 +22,20 @@ pub enum ApiError {
     OperationFailed { message: String },
 }
 
+impl ApiError {
+    /// Returns a log-safe summary that excludes response body content.
+    ///
+    /// Use for credential-bearing API calls where the response body from the
+    /// downstream API may echo back the submitted credential (API keys, tokens,
+    /// passwords) in a validation error message.
+    pub fn log_summary(&self) -> String {
+        match self {
+            Self::ApiResponse { status, .. } => format!("HTTP API error (status: {status})"),
+            other => other.to_string(),
+        }
+    }
+}
+
 /// Shared HTTP client for all Servarr-family API interactions.
 ///
 /// Wraps [`reqwest::Client`] with a base URL and optional API key.

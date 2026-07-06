@@ -2865,7 +2865,8 @@ pub(crate) async fn sync_maintainerr_servers(
                     .add_sonarr(&app.name, &app.base_url(), &app.api_key)
                     .await
                 {
-                    warn!(maintainerr = %maintainerr_name, sonarr = %app.name, error = %e,
+                    let error_summary = e.log_summary();
+                    warn!(maintainerr = %maintainerr_name, sonarr = %app.name, error = %error_summary,
                         "failed to sync Sonarr to Maintainerr");
                     failures += 1;
                 } else {
@@ -2881,7 +2882,8 @@ pub(crate) async fn sync_maintainerr_servers(
                     .add_radarr(&app.name, &app.base_url(), &app.api_key)
                     .await
                 {
-                    warn!(maintainerr = %maintainerr_name, radarr = %app.name, error = %e,
+                    let error_summary = e.log_summary();
+                    warn!(maintainerr = %maintainerr_name, radarr = %app.name, error = %error_summary,
                         "failed to sync Radarr to Maintainerr");
                     failures += 1;
                 } else {
@@ -2896,7 +2898,8 @@ pub(crate) async fn sync_maintainerr_servers(
                 {
                     Ok(()) => overseerr_configured = true,
                     Err(e) => {
-                        warn!(maintainerr = %maintainerr_name, overseerr = %app.name, error = %e,
+                        let error_summary = e.log_summary();
+                        warn!(maintainerr = %maintainerr_name, overseerr = %app.name, error = %error_summary,
                             "failed to sync Overseerr to Maintainerr");
                         failures += 1;
                     }
@@ -2910,7 +2913,8 @@ pub(crate) async fn sync_maintainerr_servers(
                 {
                     Ok(()) => tautulli_configured = true,
                     Err(e) => {
-                        warn!(maintainerr = %maintainerr_name, tautulli = %app.name, error = %e,
+                        let error_summary = e.log_summary();
+                        warn!(maintainerr = %maintainerr_name, tautulli = %app.name, error = %error_summary,
                             "failed to sync Tautulli to Maintainerr");
                         failures += 1;
                     }
@@ -2950,7 +2954,8 @@ pub(crate) async fn sync_maintainerr_servers(
             // Token must be set before hostname/port: Maintainerr rejects Plex server
             // settings until an auth token is present (#156).
             if let Err(e) = maintainerr_client.set_plex_token(token).await {
-                warn!(maintainerr = %maintainerr_name, plex = %plex_name, error = %e,
+                let error_summary = e.log_summary();
+                warn!(maintainerr = %maintainerr_name, plex = %plex_name, error = %error_summary,
                     "failed to set Plex token in Maintainerr");
                 failures += 1;
             } else if let Err(e) = maintainerr_client.set_plex(&plex_host, plex_port).await {
