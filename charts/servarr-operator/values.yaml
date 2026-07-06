@@ -76,7 +76,7 @@ defaultImages:
     tag: "4.0.18"
   radarr:
     repository: linuxserver/radarr
-    tag: "6.1.1"
+    tag: "6.2.1"
   lidarr:
     repository: linuxserver/lidarr
     tag: "3.0.1"
