@@ -111,6 +111,7 @@ pub struct StackApp {
     /// Override the generated Service name for this app (see
     /// `ServarrAppSpec::service_name`).
     #[serde(default)]
+    #[schemars(pattern("^[a-z0-9]([a-z0-9-]*[a-z0-9])?$"), length(max = 63))]
     pub service_name: Option<String>,
     #[serde(default)]
     pub gateway: Option<GatewaySpec>,
@@ -182,6 +183,7 @@ pub struct Split4kOverrides {
     pub service: Option<ServiceSpec>,
     /// Override the generated Service name for the 4K instance (e.g. `radarr4k`).
     #[serde(default)]
+    #[schemars(pattern("^[a-z0-9]([a-z0-9-]*[a-z0-9])?$"), length(max = 63))]
     pub service_name: Option<String>,
     #[serde(default)]
     pub gateway: Option<GatewaySpec>,

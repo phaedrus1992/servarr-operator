@@ -943,7 +943,9 @@ spec:
                       description: |-
                         Override the generated Service name for this app (see
                         `ServarrAppSpec::service_name`).
+                      maxLength: 63
                       nullable: true
+                      pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
                       type: string
                     split4k:
                       description: |-
@@ -1175,7 +1177,9 @@ spec:
                           type: object
                         serviceName:
                           description: Override the generated Service name for the 4K instance (e.g. `radarr4k`).
+                          maxLength: 63
                           nullable: true
+                          pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
                           type: string
                       type: object
                     subgenSync:

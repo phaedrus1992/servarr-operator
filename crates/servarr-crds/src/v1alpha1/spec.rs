@@ -47,6 +47,7 @@ pub struct ServarrAppSpec {
     /// stored configs keep resolving (e.g. `transmission` instead of
     /// `media-transmission`). Does not affect the Deployment or pod labels.
     #[serde(default)]
+    #[schemars(pattern("^[a-z0-9]([a-z0-9-]*[a-z0-9])?$"), length(max = 63))]
     pub service_name: Option<String>,
 
     #[serde(default)]
