@@ -159,11 +159,16 @@
       matchManagers: ['custom.regex'],
     },
 
-    // Container image versions in image-defaults.toml
+    // Container image versions in image-defaults.toml, and their mirror in
+    // values.yaml. Both files must be listed here (not just image-defaults.toml):
+    // Renovate groups a dependency by its resolved groupName, so a dependency
+    // extracted from a file that isn't covered by this rule gets no groupName
+    // and falls back to a separate default-named branch, splitting what should
+    // be one PR into two (#260).
     {
       groupName: 'Servarr App Images',
       groupSlug: 'servarr-images',
-      matchFileNames: ['image-defaults.toml'],
+      matchFileNames: ['image-defaults.toml', 'charts/servarr-operator/values.yaml'],
     },
 
     // Major isolation (most specific — placed LAST so it overrides the
