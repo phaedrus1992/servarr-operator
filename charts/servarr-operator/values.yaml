@@ -76,7 +76,7 @@ defaultImages:
     tag: "4.0.18"
   radarr:
     repository: linuxserver/radarr
-    tag: "6.1.1"
+    tag: "6.2.1"
   lidarr:
     repository: linuxserver/lidarr
     tag: "3.0.1"
@@ -100,7 +100,7 @@ defaultImages:
     tag: "3.15.2"
   jackett:
     repository: linuxserver/jackett
-    tag: "0.24.2135"
+    tag: "0.24.2140"
   bazarr:
     repository: linuxserver/bazarr
     tag: "1.5.6"
