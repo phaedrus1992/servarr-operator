@@ -1617,7 +1617,13 @@ async fn maybe_run_backup(
     }
 
     let app_name = servarr_resources::common::service_name(app);
-    let defaults = servarr_crds::AppDefaults::for_app(&app.spec.app).ok()?;
+    let defaults = match servarr_crds::AppDefaults::for_app(&app.spec.app) {
+        Ok(d) => d,
+        Err(e) => {
+            warn!(app = %app_name, error = %e, "failed to load app defaults; skipping backup");
+            return None;
+        }
+    };
     let svc_spec = app.spec.service.as_ref().unwrap_or(&defaults.service);
     let port = svc_spec.ports.first().map(|p| p.port).unwrap_or(80);
     let base_url = format!("http://{app_name}.{ns}.svc:{port}");
