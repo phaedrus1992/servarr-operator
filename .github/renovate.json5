@@ -159,11 +159,16 @@
       matchManagers: ['custom.regex'],
     },
 
-    // Container image versions in image-defaults.toml
+    // Container image versions in image-defaults.toml, and their mirror in
+    // values.yaml. Both files must be listed here (not just image-defaults.toml):
+    // Renovate groups a dependency by its resolved groupName, so a dependency
+    // extracted from a file that isn't covered by this rule gets no groupName
+    // and falls back to a separate default-named branch, splitting what should
+    // be one PR into two (#260).
     {
       groupName: 'Servarr App Images',
       groupSlug: 'servarr-images',
-      matchFileNames: ['image-defaults.toml'],
+      matchFileNames: ['image-defaults.toml', 'charts/servarr-operator/values.yaml'],
     },
 
     // Major isolation (most specific — placed LAST so it overrides the
@@ -198,10 +203,13 @@
     },
     // Exception: Servarr app images track upstream feature releases closely,
     // so allow minor bumps (not major) on release/* branches too. Placed
-    // after the blanket disable rule above so it wins for this file.
+    // after the blanket disable rule above so it wins for this file. Must
+    // list both files for the same reason as the groupName rule above (#260):
+    // otherwise the values.yaml half of the bump stays disabled on release
+    // branches while the image-defaults.toml half is allowed through.
     {
       description: 'Allow minor Servarr image bumps on release/* branches',
-      matchFileNames: ['image-defaults.toml'],
+      matchFileNames: ['image-defaults.toml', 'charts/servarr-operator/values.yaml'],
       matchBaseBranches: ['/^release\\//'],
       matchUpdateTypes: ['minor'],
       enabled: true,
