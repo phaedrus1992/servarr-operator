@@ -16,7 +16,22 @@ const DEFAULT_DENIED_CIDRS: &[&str] = &[
 ];
 
 pub fn build(app: &ServarrApp) -> NetworkPolicy {
-    let defaults = AppDefaults::for_app(&app.spec.app).expect("missing app defaults");
+    let defaults = match AppDefaults::for_app(&app.spec.app) {
+        Ok(d) => d,
+        Err(e) => {
+            tracing::error!(app_type = ?app.spec.app, error = %e, "failed to get app defaults; returning minimal NetworkPolicy");
+            return NetworkPolicy {
+                metadata: ObjectMeta {
+                    name: Some(common::app_name(app)),
+                    namespace: Some(common::app_namespace(app)),
+                    labels: Some(common::labels(app)),
+                    owner_references: Some(vec![common::owner_reference(app)]),
+                    ..Default::default()
+                },
+                spec: None,
+            };
+        }
+    };
     let svc_spec = app.spec.service.as_ref().unwrap_or(&defaults.service);
     let mut config = app.spec.network_policy_config.clone().unwrap_or_default();
 

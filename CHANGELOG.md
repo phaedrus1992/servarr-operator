@@ -18,6 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Fix panic in resource builders (`pvc`, `networkpolicy`, `service`, `deployment`) when app defaults are missing for unknown app types. Builders now log the error and return a safe fallback instead of crashing (#267).
+- Fix `maybe_run_backup` silently skipping backups when app defaults fail to load. Operator now logs a warning with the error context (#268).
 - Fix default liveness probe (`timeout_seconds: 1`, `failure_threshold: 3`) being too
   aggressive for .NET-based *arr apps (Sonarr, Radarr, Lidarr). Brief HTTP unresponsiveness
   during RSS syncs, library scans, or GC pauses could trip 3 consecutive 1s-timeout failures
