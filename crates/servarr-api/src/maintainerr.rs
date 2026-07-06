@@ -151,17 +151,7 @@ impl MaintainerrClient {
             .send()
             .await
             .map_err(ApiError::Request)?;
-
-        if resp.status().is_success() {
-            resp.json().await.map_err(ApiError::Request)
-        } else {
-            let status = resp.status().as_u16();
-            let body = resp.text().await.unwrap_or_else(|e| {
-                tracing::debug!(error = %e, "failed to read Maintainerr error response body");
-                String::new()
-            });
-            Err(ApiError::ApiResponse { status, body })
-        }
+        Self::check_envelope_json(resp).await
     }
 
     // ===== Radarr Methods =====
@@ -195,17 +185,7 @@ impl MaintainerrClient {
             .send()
             .await
             .map_err(ApiError::Request)?;
-
-        if resp.status().is_success() {
-            resp.json().await.map_err(ApiError::Request)
-        } else {
-            let status = resp.status().as_u16();
-            let body = resp.text().await.unwrap_or_else(|e| {
-                tracing::debug!(error = %e, "failed to read Maintainerr error response body");
-                String::new()
-            });
-            Err(ApiError::ApiResponse { status, body })
-        }
+        Self::check_envelope_json(resp).await
     }
 
     // ===== Overseerr Methods =====
@@ -450,6 +430,24 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn list_sonarr_returns_error_on_failure() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/settings/sonarr"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("Internal error"))
+            .mount(&server)
+            .await;
+
+        let client = MaintainerrClient::new(&server.uri(), "test-key").expect("should construct");
+        let err = client.list_sonarr().await.unwrap_err();
+
+        match err {
+            ApiError::ApiResponse { status, .. } => assert_eq!(status, 500),
+            other => panic!("expected ApiResponse, got: {other}"),
+        }
+    }
+
+    #[tokio::test]
     async fn add_sonarr_calls_correct_endpoint() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
@@ -551,6 +549,24 @@ mod tests {
         let servers = result.unwrap();
         assert_eq!(servers.len(), 1);
         assert_eq!(servers[0].name, "Sonarr1");
+    }
+
+    #[tokio::test]
+    async fn list_radarr_returns_error_on_failure() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/settings/radarr"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("Internal error"))
+            .mount(&server)
+            .await;
+
+        let client = MaintainerrClient::new(&server.uri(), "test-key").expect("should construct");
+        let err = client.list_radarr().await.unwrap_err();
+
+        match err {
+            ApiError::ApiResponse { status, .. } => assert_eq!(status, 500),
+            other => panic!("expected ApiResponse, got: {other}"),
+        }
     }
 
     #[tokio::test]
