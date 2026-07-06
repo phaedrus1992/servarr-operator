@@ -916,7 +916,9 @@ spec:
                   preserving in-cluster DNS names from a prior deployment so other apps'
                   stored configs keep resolving (e.g. `transmission` instead of
                   `media-transmission`). Does not affect the Deployment or pod labels.
+                maxLength: 63
                 nullable: true
+                pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
                 type: string
               subgenSync:
                 description: Subgen cross-app synchronization. Only applies to Subgen-type apps.
