@@ -21,7 +21,7 @@ downloads = true
 
 [radarr]
 repository = "linuxserver/radarr"
-tag = "6.1.1"
+tag = "6.2.1"
 port = 7878
 security = "linuxserver"
 downloads = true
@@ -78,7 +78,7 @@ downloads = false
 
 [jackett]
 repository = "linuxserver/jackett"
-tag = "0.24.2135"
+tag = "0.24.2140"
 port = 9117
 security = "linuxserver"
 downloads = false
