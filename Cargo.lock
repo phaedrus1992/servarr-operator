@@ -2915,6 +2915,7 @@ dependencies = [
  "kube",
  "lidarr",
  "overseerr",
+ "proptest",
  "prowlarr",
  "radarr",
  "reqwest 0.13.4",

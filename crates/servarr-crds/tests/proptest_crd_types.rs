@@ -700,4 +700,25 @@ fn maintainerr_sync_spec_defaults_inject() {
     let spec: MaintainerrSyncSpec = serde_json::from_str("{}").expect("deserialize empty");
     assert!(!spec.enabled, "enabled should default to false");
     assert_eq!(spec.namespace_scope, None);
+    assert_eq!(spec.plex_token_secret, None);
+}
+
+// proptest: plex_token_secret Some(string) must round-trip as camelCase "plexTokenSecret"
+proptest::proptest! {
+    #[test]
+    fn maintainerr_sync_spec_plex_token_secret_camel_case(s in "[a-z][a-z0-9-]{0,30}") {
+        let spec = MaintainerrSyncSpec {
+            enabled: false,
+            namespace_scope: None,
+            plex_token_secret: Some(s.clone()),
+        };
+        let json = serde_json::to_string(&spec).expect("serialize");
+        proptest::prop_assert!(
+            json.contains(&format!("\"plexTokenSecret\":\"{s}\"")),
+            "camelCase key missing or value wrong: {json}"
+        );
+        proptest::prop_assert!(!json.contains("plex_token_secret"), "snake_case leaked: {json}");
+        let back: MaintainerrSyncSpec = serde_json::from_str(&json).expect("deserialize");
+        proptest::prop_assert_eq!(back.plex_token_secret.as_deref(), Some(s.as_str()));
+    }
 }
