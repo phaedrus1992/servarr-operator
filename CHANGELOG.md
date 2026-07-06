@@ -16,6 +16,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   in-cluster Plex `ServarrApp` and configures its hostname/port and auth token in
   Maintainerr automatically (#151).
 
+### Security
+
+- Redact credential-bearing API error response bodies in Maintainerr sync logs. If
+  Maintainerr ever echoes submitted credentials (API keys, plex.tv tokens) in a
+  validation error message, those credentials are no longer logged verbatim in operator
+  pod logs (#255).
+- Add RFC 1123 label pattern and maxLength validation to `serviceName` CRD fields
+  (`ServarrAppSpec`, `StackApp`, `Split4kOverrides`), preventing arbitrary strings
+  from being forwarded as hostnames to downstream integrations (#256).
+
 ### Fixed
 
 - Fix panic in resource builders (`pvc`, `networkpolicy`, `service`, `deployment`) when app defaults are missing for unknown app types. Builders now log the error and return a safe fallback instead of crashing (#267).
