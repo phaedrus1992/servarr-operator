@@ -38,6 +38,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   CR has `mountPath: /config` for the Maintainerr config volume, change it to
   `mountPath: /opt/data`; the files on the PVC do not need to move. You can also keep
   `mountPath: /config` and add `DATA_DIR: /config` to `spec.env` as an alternative.
+- Fix Transmission ConfigMap silently producing empty settings when serialization fails (now logs a warning instead) (#269).
 
 ### Changed
 
