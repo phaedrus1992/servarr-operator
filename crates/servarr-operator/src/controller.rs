@@ -2655,44 +2655,44 @@ async fn sync_maintainerr_servers(
 
     // Read Plex token if configured
     let mut plex_token = None;
-    if let Some(sync_spec) = &maintainerr.spec.maintainerr_sync {
-        if let Some(secret_name) = &sync_spec.plex_token_secret {
-            match servarr_api::read_secret_key(client, &ns, secret_name, "plex-token").await {
-                Ok(token) => plex_token = Some(token),
-                // 404 = secret not found, intentional-skip case when Plex is optional
-                Err(servarr_api::SecretError::Kube(kube::Error::Api(ref api_err)))
-                    if api_err.code == 404 =>
-                {
-                    debug!(
-                        maintainerr = %maintainerr_name,
-                        secret = %secret_name,
-                        namespace = %ns,
-                        "Plex token secret not found; Plex will not be configured"
-                    );
-                }
-                // Any other Kube error (permission denied, timeout, connection failure, etc.)
-                // is an infrastructure failure and should trigger backoff.
-                Err(servarr_api::SecretError::Kube(e)) => {
-                    warn!(
-                        maintainerr = %maintainerr_name,
-                        secret = %secret_name,
-                        namespace = %ns,
-                        error = %e,
-                        "failed to read Plex token secret due to Kubernetes API error"
-                    );
-                    failures += 1;
-                }
-                // Non-Kube errors (missing key in secret, invalid UTF-8) are a data/config
-                // problem, not an infra failure — retrying won't fix a missing key.
-                Err(e) => {
-                    warn!(
-                        maintainerr = %maintainerr_name,
-                        secret = %secret_name,
-                        namespace = %ns,
-                        error = %e,
-                        "failed to read Plex token secret; Plex will not be configured"
-                    );
-                }
+    if let Some(sync_spec) = &maintainerr.spec.maintainerr_sync
+        && let Some(secret_name) = &sync_spec.plex_token_secret
+    {
+        match servarr_api::read_secret_key(client, &ns, secret_name, "plex-token").await {
+            Ok(token) => plex_token = Some(token),
+            // 404 = secret not found, intentional-skip case when Plex is optional
+            Err(servarr_api::SecretError::Kube(kube::Error::Api(ref api_err)))
+                if api_err.code == 404 =>
+            {
+                debug!(
+                    maintainerr = %maintainerr_name,
+                    secret = %secret_name,
+                    namespace = %ns,
+                    "Plex token secret not found; Plex will not be configured"
+                );
+            }
+            // Any other Kube error (permission denied, timeout, connection failure, etc.)
+            // is an infrastructure failure and should trigger backoff.
+            Err(servarr_api::SecretError::Kube(e)) => {
+                warn!(
+                    maintainerr = %maintainerr_name,
+                    secret = %secret_name,
+                    namespace = %ns,
+                    error = %e,
+                    "failed to read Plex token secret due to Kubernetes API error"
+                );
+                failures += 1;
+            }
+            // Non-Kube errors (missing key in secret, invalid UTF-8) are a data/config
+            // problem, not an infra failure — retrying won't fix a missing key.
+            Err(e) => {
+                warn!(
+                    maintainerr = %maintainerr_name,
+                    secret = %secret_name,
+                    namespace = %ns,
+                    error = %e,
+                    "failed to read Plex token secret; Plex will not be configured"
+                );
             }
         }
     }
