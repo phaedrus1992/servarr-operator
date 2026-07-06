@@ -2651,44 +2651,85 @@ async fn sync_maintainerr_servers(
     let maintainerr_client =
         servarr_api::MaintainerrClient::new(&maintainerr_url, &maintainerr_key)?;
 
+    let mut failures = 0;
+
     // Read Plex token if configured
-    let plex_token = if let Some(sync_spec) = &maintainerr.spec.maintainerr_sync {
-        if let Some(secret_name) = &sync_spec.plex_token_secret {
-            match servarr_api::read_secret_key(client, &ns, secret_name, "plex-token").await {
-                Ok(token) => Some(token),
-                Err(e) => {
-                    warn!(
-                        maintainerr = %maintainerr_name,
-                        secret = %secret_name,
-                        namespace = %ns,
-                        error = %e,
-                        "failed to read Plex token secret; Plex will not be configured in Maintainerr"
-                    );
-                    None
+    let (plex_token, plex_token_secret_error) =
+        if let Some(sync_spec) = &maintainerr.spec.maintainerr_sync {
+            if let Some(secret_name) = &sync_spec.plex_token_secret {
+                match servarr_api::read_secret_key(client, &ns, secret_name, "plex-token").await {
+                    Ok(token) => (Some(token), false),
+                    // 404 = secret not found, intentional-skip case when Plex is optional
+                    Err(servarr_api::SecretError::Kube(kube::Error::Api(ref api_err)))
+                        if api_err.code == 404 =>
+                    {
+                        debug!(
+                            maintainerr = %maintainerr_name,
+                            secret = %secret_name,
+                            namespace = %ns,
+                            "Plex token secret not found; Plex will not be configured"
+                        );
+                        (None, false)
+                    }
+                    // Infrastructure errors (permissions denied, connection failed, etc.) should trigger backoff
+                    Err(servarr_api::SecretError::Kube(kube::Error::Api(ref api_err))) => {
+                        warn!(
+                            maintainerr = %maintainerr_name,
+                            secret = %secret_name,
+                            namespace = %ns,
+                            error = %api_err,
+                            "failed to read Plex token secret due to Kubernetes API error"
+                        );
+                        (None, true)
+                    }
+                    // Other errors (missing key in secret, deserialization, etc.) are treated as optional
+                    Err(e) => {
+                        warn!(
+                            maintainerr = %maintainerr_name,
+                            secret = %secret_name,
+                            namespace = %ns,
+                            error = %e,
+                            "failed to read Plex token secret; Plex will not be configured"
+                        );
+                        (None, false)
+                    }
                 }
+            } else {
+                (None, false)
             }
         } else {
-            None
-        }
-    } else {
-        None
-    };
+            (None, false)
+        };
+
+    // Track plex_token_secret_error for failures accounting
+    if plex_token_secret_error {
+        failures += 1;
+    }
 
     // Discover apps in the target namespace (excludes Plex since it uses plex.tv auth, not api_key_secret)
     let discovered = discover_namespace_apps(client, target_ns).await?;
 
+    let mut sonarr_count = 0;
+    let mut radarr_count = 0;
+    let mut overseerr_configured = false;
+    let mut tautulli_configured = false;
+    let mut plex_configured = false;
+
     // Lookup Plex separately (discover_namespace_apps filters it out due to missing api_key_secret)
     let plex_app = if plex_token.is_some() {
         let all_apps = Api::<ServarrApp>::namespaced(client.clone(), target_ns);
-        all_apps
-            .list(&kube::api::ListParams::default())
-            .await
-            .ok()
-            .and_then(|list| {
-                list.items
-                    .into_iter()
-                    .find(|app| app.spec.app == AppType::Plex)
-            })
+        match all_apps.list(&kube::api::ListParams::default()).await {
+            Ok(list) => list
+                .items
+                .into_iter()
+                .find(|app| app.spec.app == AppType::Plex),
+            Err(e) => {
+                warn!(maintainerr = %maintainerr_name, error = %e,
+                    "failed to list apps in target namespace; Plex will not be configured");
+                failures += 1;
+                None
+            }
+        }
     } else {
         None
     };
@@ -2719,13 +2760,6 @@ async fn sync_maintainerr_servers(
         .into_iter()
         .map(|s| s.name)
         .collect();
-
-    let mut sonarr_count = 0;
-    let mut radarr_count = 0;
-    let mut overseerr_configured = false;
-    let mut tautulli_configured = false;
-    let mut plex_configured = false;
-    let mut failures = 0;
 
     // Register all discovered apps. split4k instances appear as separate apps in discovery.
     for app in &discovered {
@@ -2805,9 +2839,15 @@ async fn sync_maintainerr_servers(
     if let (Some(plex), Some(token)) = (&plex_app, &plex_token) {
         let plex_name = plex.name_any();
         let plex_ns = plex.namespace().unwrap_or_else(|| "default".into());
-        let plex_defaults = servarr_crds::AppDefaults::for_app(&plex.spec.app)
-            .map(|d| d.service)
-            .unwrap_or_default();
+        let plex_defaults = match servarr_crds::AppDefaults::for_app(&plex.spec.app) {
+            Ok(defaults) => defaults.service,
+            Err(e) => {
+                warn!(maintainerr = %maintainerr_name, plex = %plex_name, error = %e,
+                    "failed to load app defaults for Plex");
+                failures += 1;
+                servarr_crds::ServiceSpec::default()
+            }
+        };
         let plex_svc_spec = plex.spec.service.as_ref().unwrap_or(&plex_defaults);
         if let Some(plex_port) = plex_svc_spec.ports.first().map(|p| p.port as u16) {
             let plex_svc_name = servarr_resources::common::service_name(plex);
@@ -2827,6 +2867,10 @@ async fn sync_maintainerr_servers(
             } else {
                 plex_configured = true;
             }
+        } else {
+            warn!(maintainerr = %maintainerr_name, plex = %plex_name,
+                "Plex service spec has no ports; cannot sync to Maintainerr");
+            failures += 1;
         }
     }
 
