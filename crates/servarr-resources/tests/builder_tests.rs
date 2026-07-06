@@ -88,9 +88,15 @@ fn test_deployment_builder_maintainerr_nonroot() {
     let pod_spec = deploy.spec.unwrap().template.spec.unwrap();
     let container = &pod_spec.containers[0];
 
+    let maintainerr_defaults =
+        AppDefaults::for_app(&AppType::Maintainerr).expect("maintainerr defaults");
+    let expected_maintainerr_image = format!(
+        "{}:{}",
+        maintainerr_defaults.image.repository, maintainerr_defaults.image.tag
+    );
     assert_eq!(
         container.image.as_deref(),
-        Some("ghcr.io/maintainerr/maintainerr:3.15.2")
+        Some(expected_maintainerr_image.as_str())
     );
 
     let sec = container.security_context.as_ref().unwrap();
