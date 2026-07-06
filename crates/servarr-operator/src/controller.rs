@@ -2654,56 +2654,47 @@ async fn sync_maintainerr_servers(
     let mut failures = 0;
 
     // Read Plex token if configured
-    let (plex_token, plex_token_secret_error) =
-        if let Some(sync_spec) = &maintainerr.spec.maintainerr_sync {
-            if let Some(secret_name) = &sync_spec.plex_token_secret {
-                match servarr_api::read_secret_key(client, &ns, secret_name, "plex-token").await {
-                    Ok(token) => (Some(token), false),
-                    // 404 = secret not found, intentional-skip case when Plex is optional
-                    Err(servarr_api::SecretError::Kube(kube::Error::Api(ref api_err)))
-                        if api_err.code == 404 =>
-                    {
-                        debug!(
-                            maintainerr = %maintainerr_name,
-                            secret = %secret_name,
-                            namespace = %ns,
-                            "Plex token secret not found; Plex will not be configured"
-                        );
-                        (None, false)
-                    }
-                    // Infrastructure errors (permissions denied, connection failed, etc.) should trigger backoff
-                    Err(servarr_api::SecretError::Kube(kube::Error::Api(ref api_err))) => {
-                        warn!(
-                            maintainerr = %maintainerr_name,
-                            secret = %secret_name,
-                            namespace = %ns,
-                            error = %api_err,
-                            "failed to read Plex token secret due to Kubernetes API error"
-                        );
-                        (None, true)
-                    }
-                    // Other errors (missing key in secret, deserialization, etc.) are treated as optional
-                    Err(e) => {
-                        warn!(
-                            maintainerr = %maintainerr_name,
-                            secret = %secret_name,
-                            namespace = %ns,
-                            error = %e,
-                            "failed to read Plex token secret; Plex will not be configured"
-                        );
-                        (None, false)
-                    }
+    let mut plex_token = None;
+    if let Some(sync_spec) = &maintainerr.spec.maintainerr_sync {
+        if let Some(secret_name) = &sync_spec.plex_token_secret {
+            match servarr_api::read_secret_key(client, &ns, secret_name, "plex-token").await {
+                Ok(token) => plex_token = Some(token),
+                // 404 = secret not found, intentional-skip case when Plex is optional
+                Err(servarr_api::SecretError::Kube(kube::Error::Api(ref api_err)))
+                    if api_err.code == 404 =>
+                {
+                    debug!(
+                        maintainerr = %maintainerr_name,
+                        secret = %secret_name,
+                        namespace = %ns,
+                        "Plex token secret not found; Plex will not be configured"
+                    );
                 }
-            } else {
-                (None, false)
+                // Any other Kube error (permission denied, timeout, connection failure, etc.)
+                // is an infrastructure failure and should trigger backoff.
+                Err(servarr_api::SecretError::Kube(e)) => {
+                    warn!(
+                        maintainerr = %maintainerr_name,
+                        secret = %secret_name,
+                        namespace = %ns,
+                        error = %e,
+                        "failed to read Plex token secret due to Kubernetes API error"
+                    );
+                    failures += 1;
+                }
+                // Non-Kube errors (missing key in secret, invalid UTF-8) are a data/config
+                // problem, not an infra failure — retrying won't fix a missing key.
+                Err(e) => {
+                    warn!(
+                        maintainerr = %maintainerr_name,
+                        secret = %secret_name,
+                        namespace = %ns,
+                        error = %e,
+                        "failed to read Plex token secret; Plex will not be configured"
+                    );
+                }
             }
-        } else {
-            (None, false)
-        };
-
-    // Track plex_token_secret_error for failures accounting
-    if plex_token_secret_error {
-        failures += 1;
+        }
     }
 
     // Discover apps in the target namespace (excludes Plex since it uses plex.tv auth, not api_key_secret)
@@ -2839,15 +2830,16 @@ async fn sync_maintainerr_servers(
     if let (Some(plex), Some(token)) = (&plex_app, &plex_token) {
         let plex_name = plex.name_any();
         let plex_ns = plex.namespace().unwrap_or_else(|| "default".into());
-        let plex_defaults = match servarr_crds::AppDefaults::for_app(&plex.spec.app) {
-            Ok(defaults) => defaults.service,
-            Err(e) => {
-                warn!(maintainerr = %maintainerr_name, plex = %plex_name, error = %e,
-                    "failed to load app defaults for Plex");
-                failures += 1;
-                servarr_crds::ServiceSpec::default()
-            }
-        };
+        let (plex_defaults, plex_defaults_failed) =
+            match servarr_crds::AppDefaults::for_app(&plex.spec.app) {
+                Ok(defaults) => (defaults.service, false),
+                Err(e) => {
+                    warn!(maintainerr = %maintainerr_name, plex = %plex_name, error = %e,
+                        "failed to load app defaults for Plex");
+                    failures += 1;
+                    (servarr_crds::ServiceSpec::default(), true)
+                }
+            };
         let plex_svc_spec = plex.spec.service.as_ref().unwrap_or(&plex_defaults);
         if let Some(plex_port) = plex_svc_spec.ports.first().map(|p| p.port as u16) {
             let plex_svc_name = servarr_resources::common::service_name(plex);
@@ -2870,7 +2862,11 @@ async fn sync_maintainerr_servers(
         } else {
             warn!(maintainerr = %maintainerr_name, plex = %plex_name,
                 "Plex service spec has no ports; cannot sync to Maintainerr");
-            failures += 1;
+            // Don't double-count: a defaults-load failure already incremented `failures`
+            // and is the root cause of these empty ports.
+            if !plex_defaults_failed {
+                failures += 1;
+            }
         }
     }
 
@@ -4181,6 +4177,39 @@ mod tests {
         let result =
             sync_maintainerr_servers(&client, &maintainerr, "test", Some(&m_server.uri())).await;
         assert!(result.is_ok(), "expected Ok, got {result:?}");
+    }
+
+    #[tokio::test]
+    async fn sync_maintainerr_plex_token_secret_api_error_counts_as_failure() {
+        let mock_server = MockServer::start().await;
+        let client = build_mock_client(&mock_server.uri()).await;
+        let m_server = MockServer::start().await;
+
+        let maintainerr = maintainerr_app_with_plex_sync(Some("plex-token-secret"));
+        mount_maintainerr_api_key_secret(&mock_server, &maintainerr).await;
+        // Secret read fails with a non-404 K8s API error (e.g. RBAC denial).
+        Mock::given(method("GET"))
+            .and(path("/api/v1/namespaces/test/secrets/plex-token-secret"))
+            .respond_with(ResponseTemplate::new(403).set_body_json(json!({
+                "apiVersion": "v1",
+                "kind": "Status",
+                "metadata": {},
+                "status": "Failure",
+                "message": "secrets \"plex-token-secret\" is forbidden",
+                "reason": "Forbidden",
+                "code": 403
+            })))
+            .mount(&mock_server)
+            .await;
+        mount_servarrapps_list(&mock_server, json!([plex_app_json("my-plex")])).await;
+        mount_maintainerr_list_mocks(&m_server).await;
+
+        // A non-404 Kubernetes API error (permission denied, transient failure) is an
+        // infrastructure problem, not an intentional skip — it must count as a sync
+        // failure so the controller retries with backoff (#253).
+        let result =
+            sync_maintainerr_servers(&client, &maintainerr, "test", Some(&m_server.uri())).await;
+        assert!(result.is_err(), "expected Err, got {result:?}");
     }
 
     #[tokio::test]
