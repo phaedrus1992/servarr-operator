@@ -72,6 +72,22 @@ struct StatusEnvelope {
     message: Option<String>,
 }
 
+/// Classify an HTTP-success response body: a `{ status: "NOK" }` envelope (case
+/// insensitive) maps to [`ApiError::OperationFailed`]; anything else (including
+/// non-JSON or non-envelope bodies) passes through as success (#156).
+fn classify_success_body(body: String) -> Result<String, ApiError> {
+    if let Ok(envelope) = serde_json::from_str::<StatusEnvelope>(&body)
+        && envelope.status.eq_ignore_ascii_case("NOK")
+    {
+        return Err(ApiError::OperationFailed {
+            message: envelope
+                .message
+                .unwrap_or_else(|| "Maintainerr reported failure".to_string()),
+        });
+    }
+    Ok(body)
+}
+
 /// Generic API response for server listings.
 #[derive(Deserialize, Serialize, Debug, Clone, PartialEq, Eq)]
 pub struct ServerResponse {
@@ -282,16 +298,7 @@ impl MaintainerrClient {
             tracing::debug!(error = %e, "failed to read Maintainerr response body");
             String::new()
         });
-        if let Ok(envelope) = serde_json::from_str::<StatusEnvelope>(&body)
-            && envelope.status.eq_ignore_ascii_case("NOK")
-        {
-            return Err(ApiError::OperationFailed {
-                message: envelope
-                    .message
-                    .unwrap_or_else(|| "Maintainerr reported failure".to_string()),
-            });
-        }
-        Ok(body)
+        classify_success_body(body)
     }
 
     /// Validate a Maintainerr response from an endpoint that returns no body of
@@ -317,8 +324,75 @@ impl MaintainerrClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    proptest! {
+        // classify_success_body must never panic on arbitrary input, and must
+        // never mistake a non-envelope body (including invalid JSON, or JSON
+        // that isn't a status envelope) for a failure.
+        #[test]
+        fn classify_success_body_never_panics_on_arbitrary_input(body in ".*") {
+            let _ = classify_success_body(body);
+        }
+
+        // Any status value that is a case-insensitive match for "NOK" must be
+        // classified as OperationFailed, regardless of casing (#156).
+        #[test]
+        fn classify_success_body_detects_nok_case_insensitively(
+            case in prop::sample::select(vec!["NOK", "nok", "Nok", "nOk", "NoK"]),
+            message in proptest::option::of(".*"),
+        ) {
+            let body = serde_json::json!({ "status": case, "message": message }).to_string();
+            let result = classify_success_body(body);
+            let is_operation_failed = matches!(result, Err(ApiError::OperationFailed { .. }));
+            prop_assert!(is_operation_failed);
+        }
+
+        // Any status value that is not "NOK" (case-insensitively) must pass
+        // through as success, carrying the original body unchanged.
+        #[test]
+        fn classify_success_body_passes_through_non_nok_status(
+            status in "[a-zA-Z]{1,10}".prop_filter("not NOK", |s| !s.eq_ignore_ascii_case("nok")),
+        ) {
+            let body = serde_json::json!({ "status": status }).to_string();
+            let result = classify_success_body(body.clone());
+            prop_assert_eq!(result.ok(), Some(body));
+        }
+
+        // ServerResponse must round-trip through serialize -> deserialize for
+        // arbitrary field values, and must always serialize `name` back out
+        // under the `serverName` key, never the `name` alias.
+        #[test]
+        fn server_response_roundtrips_and_serializes_servername(
+            id in proptest::option::of(any::<i32>()),
+            name in ".*",
+            url in ".*",
+        ) {
+            let original = ServerResponse { id, name: name.clone(), url: url.clone() };
+            let json = serde_json::to_string(&original).expect("should serialize");
+            prop_assert!(json.contains("\"serverName\":"), "got: {json}");
+            prop_assert!(!json.contains("\"name\":"), "alias leaked into output: {json}");
+
+            let parsed: ServerResponse = serde_json::from_str(&json).expect("should deserialize");
+            prop_assert_eq!(parsed.id, id);
+            prop_assert_eq!(parsed.name, name);
+            prop_assert_eq!(parsed.url, url);
+        }
+    }
+
+    #[test]
+    fn classify_success_body_non_json_is_success() {
+        let result = classify_success_body("not json at all".to_string());
+        assert_eq!(result.ok(), Some("not json at all".to_string()));
+    }
+
+    #[test]
+    fn classify_success_body_empty_is_success() {
+        let result = classify_success_body(String::new());
+        assert_eq!(result.ok(), Some(String::new()));
+    }
 
     #[test]
     fn server_response_accepts_servername_key() {
