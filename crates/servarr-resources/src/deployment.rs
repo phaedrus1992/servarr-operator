@@ -58,7 +58,24 @@ pub fn config_checksum(app: &ServarrApp) -> Option<String> {
 }
 
 pub fn build(app: &ServarrApp, image_overrides: &HashMap<String, ImageSpec>) -> Deployment {
-    let mut defaults = AppDefaults::for_app(&app.spec.app).expect("missing app defaults");
+    let mut defaults = match AppDefaults::for_app(&app.spec.app) {
+        Ok(d) => d,
+        Err(e) => {
+            tracing::error!(app_type = ?app.spec.app, error = %e, "failed to get app defaults; returning minimal Deployment");
+            // Return a minimal Deployment without defaults - better than panicking
+            return Deployment {
+                metadata: ObjectMeta {
+                    name: Some(common::app_name(app)),
+                    namespace: Some(common::app_namespace(app)),
+                    labels: Some(common::labels(app)),
+                    owner_references: Some(vec![common::owner_reference(app)]),
+                    ..Default::default()
+                },
+                spec: None,
+                ..Default::default()
+            };
+        }
+    };
 
     // Apply image override from operator config (env vars / Helm values).
     // Merge rather than replace: a partial override (e.g. only the repository

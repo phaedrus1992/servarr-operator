@@ -5,7 +5,21 @@ use servarr_crds::{AppConfig, AppDefaults, AppType, ServarrApp};
 use crate::common;
 
 pub fn build(app: &ServarrApp) -> Service {
-    let defaults = AppDefaults::for_app(&app.spec.app).expect("missing app defaults");
+    let defaults = match AppDefaults::for_app(&app.spec.app) {
+        Ok(d) => d,
+        Err(e) => {
+            tracing::error!(app_type = ?app.spec.app, error = %e, "failed to get app defaults; returning minimal Service");
+            // Return a minimal Service without defaults - better than panicking
+            return Service {
+                metadata: ObjectMeta {
+                    name: Some(common::service_name(app)),
+                    ..common::metadata(app, "")
+                },
+                spec: None,
+                ..Default::default()
+            };
+        }
+    };
     let svc = app.spec.service.as_ref().unwrap_or(&defaults.service);
     let app_config = app
         .spec
