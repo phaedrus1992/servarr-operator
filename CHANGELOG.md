@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased] - ReleaseDate
 
+### Added
+
+- Add Plex sync to Maintainerr. Set `maintainerrSync.plexTokenSecret` to the name of a
+  Secret containing a `plex-token` key (a plex.tv auth token); the operator discovers the
+  in-cluster Plex `ServarrApp` and configures its hostname/port and auth token in
+  Maintainerr automatically (#151).
+
 ### Fixed
 
 - Fix default liveness probe (`timeout_seconds: 1`, `failure_threshold: 3`) being too

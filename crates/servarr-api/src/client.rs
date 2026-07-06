@@ -15,6 +15,11 @@ pub enum ApiError {
     ApiResponse { status: u16, body: String },
     #[error("API key contains invalid characters (non-visible ASCII)")]
     InvalidApiKey,
+    /// The API returned HTTP success but a body indicating the operation failed.
+    /// Maintainerr wraps mutating responses in a `{ status: "NOK", message }`
+    /// envelope and still answers 200, so a success status alone is not enough (#156).
+    #[error("operation rejected by API: {message}")]
+    OperationFailed { message: String },
 }
 
 /// Shared HTTP client for all Servarr-family API interactions.

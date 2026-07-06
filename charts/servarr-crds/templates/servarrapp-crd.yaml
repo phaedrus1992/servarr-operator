@@ -550,10 +550,8 @@ spec:
                     type: string
                   plexTokenSecret:
                     description: |-
-                      Name of a Secret in the same namespace holding Plex credentials for Maintainerr.
-                      Required keys: `plex-hostname`, `plex-auth-token`.
-                      Optional key: `plex-port` (default 32400).
-                      When absent, Plex sync is skipped.
+                      Name of the secret containing the Plex authentication token (key: `plex-token`).
+                      Optional; if provided, the operator will configure Plex in Maintainerr.
                     nullable: true
                     type: string
                 type: object
