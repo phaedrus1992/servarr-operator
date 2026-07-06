@@ -94,7 +94,7 @@ probe_path = "/api/system/ping"
 
 [subgen]
 repository = "mccloud/subgen"
-tag = "2026.06.4"
+tag = "2026.06.5"
 port = 9000
 security = "nonroot"
 downloads = false
