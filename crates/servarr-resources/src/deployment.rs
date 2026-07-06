@@ -62,7 +62,6 @@ pub fn build(app: &ServarrApp, image_overrides: &HashMap<String, ImageSpec>) -> 
         Ok(d) => d,
         Err(e) => {
             tracing::error!(app_type = ?app.spec.app, error = %e, "failed to get app defaults; returning minimal Deployment");
-            // Return a minimal Deployment without defaults - better than panicking
             return Deployment {
                 metadata: ObjectMeta {
                     name: Some(common::app_name(app)),

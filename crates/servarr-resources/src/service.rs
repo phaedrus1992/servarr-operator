@@ -9,7 +9,6 @@ pub fn build(app: &ServarrApp) -> Service {
         Ok(d) => d,
         Err(e) => {
             tracing::error!(app_type = ?app.spec.app, error = %e, "failed to get app defaults; returning minimal Service");
-            // Return a minimal Service without defaults - better than panicking
             return Service {
                 metadata: ObjectMeta {
                     name: Some(common::service_name(app)),

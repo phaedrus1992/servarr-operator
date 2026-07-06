@@ -20,8 +20,6 @@ pub fn build(app: &ServarrApp) -> NetworkPolicy {
         Ok(d) => d,
         Err(e) => {
             tracing::error!(app_type = ?app.spec.app, error = %e, "failed to get app defaults; returning minimal NetworkPolicy");
-            // Return a minimal NetworkPolicy without defaults - better than panicking
-            // The controller will requeue if this doesn't match user expectations
             return NetworkPolicy {
                 metadata: ObjectMeta {
                     name: Some(common::app_name(app)),
