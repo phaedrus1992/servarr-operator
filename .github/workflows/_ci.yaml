@@ -29,7 +29,6 @@ jobs:
         run: bash scripts/sync-image-defaults.sh && git diff --exit-code charts/servarr-operator/values.yaml
 
   check-crd-sync:
-    needs: [build]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
