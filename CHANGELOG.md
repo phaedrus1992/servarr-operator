@@ -15,6 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   Secret containing a `plex-token` key (a plex.tv auth token); the operator discovers the
   in-cluster Plex `ServarrApp` and configures its hostname/port and auth token in
   Maintainerr automatically (#151).
+- Add Lidarr YouTube Downloader sidecar support. Set `spec.appConfig.lidarr.youtubeDownloader`
+  on a Lidarr `ServarrApp` to deploy the companion container alongside Lidarr. Supports
+  `image`, `lidarrDbPath`, `lidarrMusicPath`, `ytCookiesFile`, `matchThreshold`, and
+  `blacklistKeywords` configuration (#213).
 
 ### Security
 
@@ -28,6 +32,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Fix Maintainerr sync silently masking Kubernetes API errors (e.g. failing to read the
+  Plex token secret). The operator now surfaces these errors as warnings instead of
+  retrying silently (#265).
 - Fix panic in resource builders (`pvc`, `networkpolicy`, `service`, `deployment`) when app defaults are missing for unknown app types. Builders now log the error and return a safe fallback instead of crashing (#267).
 - Fix `maybe_run_backup` silently skipping backups when app defaults fail to load. Operator now logs a warning with the error context (#268).
 - Fix default liveness probe (`timeout_seconds: 1`, `failure_threshold: 3`) being too
@@ -53,37 +60,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Changed
 
 - Update default Sonarr image to `4.0.18` (from `4.0.17`).
-- Update default Jackett image to `0.24.2135` (from `0.24.2116`), rolling up upstream
+- Decouple CRD Helm chart (`servarr-crds`) version from the operator chart. The CRD
+  chart version now only bumps when CRD files actually change (schema, validation rules,
+  new fields). Bump `charts/servarr-crds/Chart.yaml`'s `version` field manually as
+  needed; the app chart continues to bump on every release as before (#162).
+- Update default Jackett image to `0.24.2140` (from `0.24.2116`), rolling up upstream
   indexer-definition updates.
-- Update default Subgen image to `2026.06.4` (from `2026.06.3`).
-- Update default SABnzbd image to `5.0.3` (from `4.5.5`), a major upstream release. Adds
-  NNTP Pipelining (existing servers must manually enable it under server settings; new
-  servers default to it) and Direct Write for faster download assembly, and
-  post-processing scripts now always run, even for failed jobs — update scripts that
-  assumed they'd only run on success. Safe to upgrade directly; no queue repair needed
-  coming from 4.5.5.
-- Update default Tautulli image to `2.17.2` (from `2.17.1`).
+- Update default Subgen image to `2026.06.5` (from `2026.06.3`).
 
 ## [1.1.1] - 2026-07-01
-
-### Changed
-
-- Upgrade `kube` 3.1 → 4.0 and `k8s-openapi` 0.27 → 0.28 together. The two crates are
-  version-locked (kube 4 requires k8s-openapi 0.28), so they are bumped in lockstep to avoid a
-  workspace carrying two incompatible k8s-openapi versions. Updated test kubeconfig builders for
-  the new `other` catch-all field on the `Named*` structs and `Config`'s `#[non_exhaustive]`
-  constructor. Renovate now groups `kube`/`k8s-openapi` even on major updates so they never
-  split into separate, individually-broken PRs again.
-
-### Fixed
-
-- Fix Maintainerr auto-sync silently failing against Maintainerr v3. The Plex auth token
-  was sent under the wrong field name and before the hostname/port (which v3 refuses until
-  a token is present), and Maintainerr's HTTP-200 `{status:"NOK"}` failure envelope was
-  treated as success. The token is now set first, and `NOK` responses surface as errors
-  across the Sonarr, Radarr, Overseerr, Tautulli, and Plex Maintainerr calls. (#156)
-
-<!-- 1.0 next-header -->
 
 ### Changed
 
@@ -102,6 +87,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   Overseerr, and Tautulli instances into Maintainerr (including split4k variants),
   replacing the manual API workaround. Registration is idempotent. Adds the
   `maintainerrSync` spec field and a `MaintainerrSyncReady` status condition.
+  (Plex sync is not yet supported — it needs a plex.tv token source, tracked in #148.)
 
 ### Changed
 
