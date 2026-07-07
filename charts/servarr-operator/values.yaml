@@ -85,7 +85,7 @@ defaultImages:
     tag: "2.3.5"
   sabnzbd:
     repository: linuxserver/sabnzbd
-    tag: "4.5.5"
+    tag: "5.0.3"
   transmission:
     repository: linuxserver/transmission
     tag: "4.1.2"
