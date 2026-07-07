@@ -3896,3 +3896,79 @@ fn test_config_checksum_changes_on_rsync_flag_change() {
         "checksum must change when allowed rsync flags change"
     );
 }
+
+#[test]
+fn test_deployment_builder_lidarr_youtube_downloader() {
+    let app = ServarrApp {
+        metadata: ObjectMeta {
+            name: Some("lidarr".into()),
+            namespace: Some("media".into()),
+            uid: Some("uid-lidarr-yt".into()),
+            ..Default::default()
+        },
+        spec: ServarrAppSpec {
+            app: AppType::Lidarr,
+            app_config: Some(AppConfig::Lidarr(LidarrConfig {
+                youtube_downloader: Some(LidarrYoutubeDownloaderSpec {
+                    image: Some("test-yt:latest".into()),
+                    lidarr_db_path: Some("/config/lidarr.db".into()),
+                    lidarr_music_path: Some("/music".into()),
+                    yt_cookies_file: Some("/config/cookies.txt".into()),
+                    match_threshold: Some(0.85),
+                    blacklist_keywords: Some("live,karaoke".into()),
+                }),
+            })),
+            env: vec![servarr_crds::EnvVar {
+                name: "LIDARR_API_KEY".into(),
+                value: "abc123".into(),
+            }],
+            ..Default::default()
+        },
+        status: None,
+    };
+
+    let deploy = servarr_resources::deployment::build(&app, &std::collections::HashMap::new());
+    let spec = deploy.spec.unwrap();
+    let pod_spec = spec.template.spec.unwrap();
+
+    let container_names: Vec<&str> = pod_spec
+        .containers
+        .iter()
+        .map(|c| c.name.as_str())
+        .collect();
+
+    assert!(
+        container_names.contains(&"lidarr-youtube-downloader"),
+        "expected lidarr-youtube-downloader sidecar container, got: {container_names:?}"
+    );
+
+    let yt = pod_spec
+        .containers
+        .iter()
+        .find(|c| c.name == "lidarr-youtube-downloader")
+        .expect("sidecar container must exist");
+
+    assert_eq!(yt.image.as_deref(), Some("test-yt:latest"));
+
+    let env_names: Vec<&str> = yt
+        .env
+        .as_ref()
+        .map(|e| e.iter().map(|e| e.name.as_str()).collect())
+        .unwrap_or_default();
+    assert!(
+        env_names.contains(&"LIDARR_API_KEY"),
+        "expected LIDARR_API_KEY env var"
+    );
+    assert!(
+        env_names.contains(&"LIDARR_DB"),
+        "expected LIDARR_DB env var"
+    );
+    assert!(
+        env_names.contains(&"MATCH_THRESHOLD"),
+        "expected MATCH_THRESHOLD env var"
+    );
+    assert!(
+        env_names.contains(&"BLACKLIST_KEYWORDS"),
+        "expected BLACKLIST_KEYWORDS env var"
+    );
+}
