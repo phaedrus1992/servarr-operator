@@ -102,7 +102,38 @@ spec:
                         - sshBastion
                       - required:
                         - overseerr
+                      - required:
+                        - lidarr
                       properties:
+                        lidarr:
+                          description: |-
+                            Configuration for Lidarr YouTube Downloader sidecar.
+
+                            The [Lidarr YouTube Downloader](https://github.com/dmzoneill/lidarr-youtube-downloader)
+                            is a companion container that monitors Lidarr's API for new track additions
+                            and automatically downloads the corresponding YouTube video.
+                          properties:
+                            youtubeDownloader:
+                              description: Enable the Lidarr YouTube Downloader sidecar container.
+                              nullable: true
+                              properties:
+                                checkIntervalMinutes:
+                                  description: 'Check interval in minutes (default: 5).'
+                                  format: int32
+                                  nullable: true
+                                  type: integer
+                                downloadDir:
+                                  description: 'Download directory (default: /downloads/youtube).'
+                                  nullable: true
+                                  type: string
+                                image:
+                                  description: |-
+                                    Container image for the YouTube downloader.
+                                    Defaults to ghcr.io/dmzoneill/lidarr-youtube-downloader:latest.
+                                  nullable: true
+                                  type: string
+                              type: object
+                          type: object
                         overseerr:
                           description: |-
                             Overseerr integration configuration.

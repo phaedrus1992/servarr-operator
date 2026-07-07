@@ -219,10 +219,66 @@ pub fn build(app: &ServarrApp, image_overrides: &HashMap<String, ImageSpec>) -> 
         ..Default::default()
     };
 
+    let mut containers = vec![container];
+
+    // Lidarr YouTube Downloader sidecar
+    if matches!(app.spec.app, AppType::Lidarr)
+        && let Some(AppConfig::Lidarr(cfg)) = &app.spec.app_config
+        && let Some(yt) = &cfg.youtube_downloader
+    {
+        let yt_image = yt
+            .image
+            .clone()
+            .unwrap_or_else(|| "ghcr.io/dmzoneill/lidarr-youtube-downloader:latest".into());
+
+        let mut yt_env = vec![
+            EnvVar {
+                name: "LIDARR_HOST".into(),
+                value: Some("localhost".into()),
+                ..Default::default()
+            },
+            EnvVar {
+                name: "LIDARR_PORT".into(),
+                value: Some(
+                    svc_spec
+                        .ports
+                        .first()
+                        .map_or("8686".into(), |p| p.port.to_string()),
+                ),
+                ..Default::default()
+            },
+        ];
+        // Add LIDARR_API_KEY from the app's env if available
+        if let Some(api_key) = app.spec.env.iter().find(|e| e.name == "LIDARR_API_KEY") {
+            yt_env.push(EnvVar {
+                name: api_key.name.clone(),
+                value: Some(api_key.value.clone()),
+                ..Default::default()
+            });
+        }
+
+        if let Some(interval) = yt.check_interval_minutes {
+            yt_env.push(EnvVar {
+                name: "CHECK_INTERVAL".into(),
+                value: Some(interval.to_string()),
+                ..Default::default()
+            });
+        }
+
+        let yt_container = Container {
+            name: "lidarr-youtube-downloader".into(),
+            image: Some(yt_image),
+            image_pull_policy: Some("IfNotPresent".into()),
+            env: Some(yt_env),
+            ..Default::default()
+        };
+        containers.push(yt_container);
+    }
+
     let mut pod_spec = PodSpec {
         automount_service_account_token: Some(false),
         security_context: Some(pod_security),
-        containers: vec![container],
+        containers,
         volumes: Some(volumes),
         ..Default::default()
     };

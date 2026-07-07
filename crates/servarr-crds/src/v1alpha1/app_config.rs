@@ -9,6 +9,7 @@ pub enum AppConfig {
     Prowlarr(ProwlarrConfig),
     SshBastion(SshBastionConfig),
     Overseerr(Box<OverseerrConfig>),
+    Lidarr(LidarrConfig),
 }
 
 // --- Prowlarr ---
@@ -242,4 +243,36 @@ pub struct OverseerrServerDefaults4k {
     /// Enable season folders for the 4K Sonarr instance.
     #[serde(default)]
     pub enable_season_folders: Option<bool>,
+}
+
+
+// --- Lidarr ---
+
+/// Configuration for Lidarr YouTube Downloader sidecar.
+///
+/// The [Lidarr YouTube Downloader](https://github.com/dmzoneill/lidarr-youtube-downloader)
+/// is a companion container that monitors Lidarr's API for new track additions
+/// and automatically downloads the corresponding YouTube video.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct LidarrConfig {
+    /// Enable the Lidarr YouTube Downloader sidecar container.
+    #[serde(default)]
+    pub youtube_downloader: Option<LidarrYoutubeDownloaderSpec>,
+}
+
+/// YouTube downloader sidecar settings.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct LidarrYoutubeDownloaderSpec {
+    /// Container image for the YouTube downloader.
+    /// Defaults to ghcr.io/dmzoneill/lidarr-youtube-downloader:latest.
+    #[serde(default)]
+    pub image: Option<String>,
+    /// Check interval in minutes (default: 5).
+    #[serde(default)]
+    pub check_interval_minutes: Option<i32>,
+    /// Download directory (default: /downloads/youtube).
+    #[serde(default)]
+    pub download_dir: Option<String>,
 }
