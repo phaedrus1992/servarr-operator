@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [1.2.2] - 2026-07-07
 
+- Skip CRD publish when the CRD is unchanged.
+
 ## [1.2.1] - 2026-07-07
 
 ### Fixed
