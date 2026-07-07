@@ -268,10 +268,22 @@ pub struct LidarrYoutubeDownloaderSpec {
     /// Defaults to ghcr.io/dmzoneill/lidarr-youtube-downloader:latest.
     #[serde(default)]
     pub image: Option<String>,
-    /// Check interval in minutes (default: 5).
+    /// Path to Lidarr's SQLite database file (e.g. /config/lidarr.db).
+    /// The operator mounts the Lidarr config volume into the sidecar at this path.
+    pub lidarr_db_path: Option<String>,
+    /// Path to Lidarr's music library on disk (e.g. /music).
+    /// The operator mounts the Lidarr downloads volume into the sidecar at this path.
+    pub lidarr_music_path: Option<String>,
+    /// YouTube cookies file path for authenticated downloads (e.g. /config/cookies.txt).
+    /// Mount a ConfigMap or Secret containing the cookies file at this path.
     #[serde(default)]
-    pub check_interval_minutes: Option<i32>,
-    /// Download directory (default: /downloads/youtube).
+    pub yt_cookies_file: Option<String>,
+    /// Fuzzy match threshold for track matching (0.0 to 1.0).
+    /// Higher values require a closer match to the artist/track name.
     #[serde(default)]
-    pub download_dir: Option<String>,
+    pub match_threshold: Option<f64>,
+    /// Comma-separated keywords that cause a YouTube result to be skipped.
+    /// Example: "live,karaoke,cover"
+    #[serde(default)]
+    pub blacklist_keywords: Option<String>,
 }

@@ -257,10 +257,38 @@ pub fn build(app: &ServarrApp, image_overrides: &HashMap<String, ImageSpec>) -> 
             });
         }
 
-        if let Some(interval) = yt.check_interval_minutes {
+        if let Some(path) = &yt.lidarr_db_path {
             yt_env.push(EnvVar {
-                name: "CHECK_INTERVAL".into(),
-                value: Some(interval.to_string()),
+                name: "LIDARR_DB".into(),
+                value: Some(path.clone()),
+                ..Default::default()
+            });
+        }
+        if let Some(path) = &yt.lidarr_music_path {
+            yt_env.push(EnvVar {
+                name: "LIDARR_MUSIC_PATH".into(),
+                value: Some(path.clone()),
+                ..Default::default()
+            });
+        }
+        if let Some(file) = &yt.yt_cookies_file {
+            yt_env.push(EnvVar {
+                name: "YT_COOKIES_FILE".into(),
+                value: Some(file.clone()),
+                ..Default::default()
+            });
+        }
+        if let Some(thresh) = yt.match_threshold {
+            yt_env.push(EnvVar {
+                name: "MATCH_THRESHOLD".into(),
+                value: Some(thresh.to_string()),
+                ..Default::default()
+            });
+        }
+        if let Some(keywords) = &yt.blacklist_keywords {
+            yt_env.push(EnvVar {
+                name: "BLACKLIST_KEYWORDS".into(),
+                value: Some(keywords.clone()),
                 ..Default::default()
             });
         }

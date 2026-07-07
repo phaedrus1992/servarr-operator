@@ -3911,8 +3911,11 @@ fn test_deployment_builder_lidarr_youtube_downloader() {
             app_config: Some(AppConfig::Lidarr(LidarrConfig {
                 youtube_downloader: Some(LidarrYoutubeDownloaderSpec {
                     image: Some("test-yt:latest".into()),
-                    check_interval_minutes: Some(10),
-                    download_dir: Some("/music/youtube".into()),
+                    lidarr_db_path: Some("/config/lidarr.db".into()),
+                    lidarr_music_path: Some("/music".into()),
+                    yt_cookies_file: Some("/config/cookies.txt".into()),
+                    match_threshold: Some(0.85),
+                    blacklist_keywords: Some("live,karaoke".into()),
                 }),
             })),
             env: vec![servarr_crds::EnvVar {
@@ -3957,7 +3960,15 @@ fn test_deployment_builder_lidarr_youtube_downloader() {
         "expected LIDARR_API_KEY env var"
     );
     assert!(
-        env_names.contains(&"CHECK_INTERVAL"),
-        "expected CHECK_INTERVAL env var"
+        env_names.contains(&"LIDARR_DB"),
+        "expected LIDARR_DB env var"
+    );
+    assert!(
+        env_names.contains(&"MATCH_THRESHOLD"),
+        "expected MATCH_THRESHOLD env var"
+    );
+    assert!(
+        env_names.contains(&"BLACKLIST_KEYWORDS"),
+        "expected BLACKLIST_KEYWORDS env var"
     );
 }
