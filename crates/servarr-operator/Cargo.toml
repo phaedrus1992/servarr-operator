@@ -19,8 +19,10 @@ pre-release-replacements = [
   { file = "../../CHANGELOG.md", search = "<!-- next-header -->", replace = "<!-- next-header -->\n\n## [Unreleased] - ReleaseDate", exactly = 1 },
   { file = "../../CHANGELOG.md", search = "<!-- next-url -->", replace = "<!-- next-url -->\n[Unreleased]: https://github.com/phaedrus1992/servarr-operator/compare/v{{version}}...HEAD", exactly = 1 },
 
-  # Keep both Helm charts honest in-repo (CI still passes versions at package time).
-  { file = "../../charts/servarr-crds/Chart.yaml", search = "^version: .*$", replace = "version: {{version}}", exactly = 1 },
+  # Keep the operator Helm chart version in sync with the release.
+  # The CRD chart (servarr-crds) is versioned independently — its version is
+  # only bumped when CRD files actually change (schema, validation rules, etc.).
+  # Its appVersion is still bumped here to indicate operator compatibility.
   { file = "../../charts/servarr-crds/Chart.yaml", search = "^appVersion: .*$", replace = "appVersion: \"{{version}}\"", exactly = 1 },
   { file = "../../charts/servarr-operator/Chart.yaml", search = "^version: .*$", replace = "version: {{version}}", exactly = 1 },
   { file = "../../charts/servarr-operator/Chart.yaml", search = "^appVersion: .*$", replace = "appVersion: \"{{version}}\"", exactly = 1 },
