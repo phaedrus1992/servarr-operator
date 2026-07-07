@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased] - ReleaseDate
 
+## [1.2.0] - 2026-07-07
+
 ### Added
 
 - Add Plex sync to Maintainerr. Set `maintainerrSync.plexTokenSecret` to the name of a
@@ -247,7 +249,8 @@ lifecycle: deployment, storage, networking, backups, and cross-app integration.
   on each `v*` tag.
 
 <!-- next-url -->
-[Unreleased]: https://github.com/phaedrus1992/servarr-operator/compare/v1.1.1...HEAD
+[Unreleased]: https://github.com/phaedrus1992/servarr-operator/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/phaedrus1992/servarr-operator/compare/v1.1.1...v1.2.0
 [1.1.1]: https://github.com/phaedrus1992/servarr-operator/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/phaedrus1992/servarr-operator/compare/v1.0.3...v1.1.0
 [1.0.3]: https://github.com/phaedrus1992/servarr-operator/compare/v1.0.2...v1.0.3
