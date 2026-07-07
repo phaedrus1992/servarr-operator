@@ -73,46 +73,46 @@ nfd:
 defaultImages:
   sonarr:
     repository: linuxserver/sonarr
-    tag: "4.0.19"
+    tag: "4.0.18"
   radarr:
     repository: linuxserver/radarr
     tag: "6.2.1"
   lidarr:
     repository: linuxserver/lidarr
-    tag: "3.1.0"
+    tag: "3.0.1"
   prowlarr:
     repository: linuxserver/prowlarr
-    tag: "2.4.0"
+    tag: "2.3.5"
   sabnzbd:
     repository: linuxserver/sabnzbd
-    tag: "5.0.4"
+    tag: "4.5.5"
   transmission:
     repository: linuxserver/transmission
-    tag: "4.1.3"
+    tag: "4.1.2"
   tautulli:
     repository: linuxserver/tautulli
-    tag: "2.17.2"
+    tag: "2.17.1"
   overseerr:
     repository: linuxserver/overseerr
     tag: "1.35.0"
   maintainerr:
     repository: ghcr.io/maintainerr/maintainerr
-    tag: "3.17.0"
+    tag: "3.15.2"
   jackett:
     repository: linuxserver/jackett
-    tag: "0.24.2177"
+    tag: "0.24.2142"
   bazarr:
     repository: linuxserver/bazarr
-    tag: "1.6.0"
+    tag: "1.5.6"
   subgen:
     repository: mccloud/subgen
     tag: "2026.06.5"
   jellyfin:
     repository: linuxserver/jellyfin
-    tag: "10.11.11"
+    tag: "10.11.10"
   plex:
     repository: linuxserver/plex
-    tag: "1.43.2"
+    tag: "1.43.1"
   ssh-bastion:
     repository: quay.io/panubo/sshd
     tag: "1.10.0"
