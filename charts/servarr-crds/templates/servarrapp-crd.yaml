@@ -99,7 +99,60 @@ spec:
                   - sshBastion
                 - required:
                   - overseerr
+                - required:
+                  - lidarr
                 properties:
+                  lidarr:
+                    description: |-
+                      Configuration for Lidarr YouTube Downloader sidecar.
+
+                      The [Lidarr YouTube Downloader](https://github.com/dmzoneill/lidarr-youtube-downloader)
+                      is a companion container that monitors Lidarr's API for new track additions
+                      and automatically downloads the corresponding YouTube video.
+                    properties:
+                      youtubeDownloader:
+                        description: Enable the Lidarr YouTube Downloader sidecar container.
+                        nullable: true
+                        properties:
+                          blacklistKeywords:
+                            description: |-
+                              Comma-separated keywords that cause a YouTube result to be skipped.
+                              Example: "live,karaoke,cover"
+                            nullable: true
+                            type: string
+                          image:
+                            description: |-
+                              Container image for the YouTube downloader.
+                              Defaults to ghcr.io/dmzoneill/lidarr-youtube-downloader:latest.
+                            nullable: true
+                            type: string
+                          lidarrDbPath:
+                            description: |-
+                              Path to Lidarr's SQLite database file (e.g. /config/lidarr.db).
+                              The operator mounts the Lidarr config volume into the sidecar at this path.
+                            nullable: true
+                            type: string
+                          lidarrMusicPath:
+                            description: |-
+                              Path to Lidarr's music library on disk (e.g. /music).
+                              The operator mounts the Lidarr downloads volume into the sidecar at this path.
+                            nullable: true
+                            type: string
+                          matchThreshold:
+                            description: |-
+                              Fuzzy match threshold for track matching (0.0 to 1.0).
+                              Higher values require a closer match to the artist/track name.
+                            format: double
+                            nullable: true
+                            type: number
+                          ytCookiesFile:
+                            description: |-
+                              YouTube cookies file path for authenticated downloads (e.g. /config/cookies.txt).
+                              Mount a ConfigMap or Secret containing the cookies file at this path.
+                            nullable: true
+                            type: string
+                        type: object
+                    type: object
                   overseerr:
                     description: |-
                       Overseerr integration configuration.
