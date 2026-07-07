@@ -23,6 +23,14 @@ the user must be aware of. Patch/rolling bumps (e.g. Jackett indexer-definition 
 a one-line entry. CI/GitHub-Actions and Rust crate dependency bumps stay omitted unless they change
 operator behavior.
 
+### Changelog: group all app image updates together
+
+Within the `Changed` section, keep all "Update default <app> image" entries grouped together
+in a single contiguous block. Non-image entries (feature changes, behavior changes, config
+deprecations) go before or after the image block, never interleaved between individual image
+bumps. This prevents a single image update from being visually buried between unrelated entries
+and makes the image sweep easy to scan at a glance.
+
 ## Release Branch Workflow
 
 Work targeting milestone `X.Y` branches from and targets `release/X.Y.x`, not `main`. The
