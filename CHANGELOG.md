@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased] - ReleaseDate
 
+### Fixed
+
+- Fix webhook rejecting valid Lidarr `appConfig` sections. The `validate_app_config_match` check was missing a `Lidarr` variant arm, so any Lidarr `ServarrApp` with `spec.appConfig.lidarr` set was always rejected at admission (#301).
+
 ## [1.2.2] - 2026-07-07
 
 - Skip CRD publish when the CRD is unchanged.
