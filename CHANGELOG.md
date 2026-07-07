@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased] - ReleaseDate
 
+### Fixed
+
+- Fix lidarr-youtube-downloader sidecar missing volume mounts (#293).
+
 ## [1.2.0] - 2026-07-07
 
 ### Added
@@ -21,11 +25,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   on a Lidarr `ServarrApp` to deploy the companion container alongside Lidarr. Supports
   `image`, `lidarrDbPath`, `lidarrMusicPath`, `ytCookiesFile`, `matchThreshold`, and
   `blacklistKeywords` configuration (#213).
-
-### Fixed
-
-- Fix lidarr-youtube-downloader sidecar missing volume mounts (`config`, `downloads`),
-  preventing the container from reaching `LIDARR_DB` or `LIDARR_MUSIC_PATH` paths (#293).
 
 ### Security
 
