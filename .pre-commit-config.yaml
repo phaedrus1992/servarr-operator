@@ -76,7 +76,7 @@ repos:
               refs/tags/v*)
                 ver="${local_ref#refs/tags/v}"
                 if ! scripts/changelog-extract.sh "$ver" CHANGELOG.md > /dev/null 2>&1; then
-                  echo "::error tag $local_ref — no CHANGELOG.md section for version $ver" >&2
+                  echo "ERROR: tag $local_ref — no CHANGELOG.md section for version $ver" >&2
                   echo "  Add a changelog entry, or skip this check with: SKIP=validate-tag-changelog git push" >&2
                   failed=1
                 fi
