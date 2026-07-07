@@ -4109,4 +4109,18 @@ fn test_deployment_builder_lidarr_youtube_downloader() {
         env_names.contains(&"BLACKLIST_KEYWORDS"),
         "expected BLACKLIST_KEYWORDS env var"
     );
+
+    // Issue #293: verify the sidecar gets the same persistence volume mounts
+    let yt_mounts = yt
+        .volume_mounts
+        .as_ref()
+        .expect("lidarr-youtube-downloader must have volume_mounts");
+    assert!(
+        yt_mounts.iter().any(|m| m.name == "config"),
+        "expected 'config' volume mount, got: {yt_mounts:?}"
+    );
+    assert!(
+        yt_mounts.iter().any(|m| m.name == "downloads"),
+        "expected 'downloads' volume mount, got: {yt_mounts:?}"
+    );
 }

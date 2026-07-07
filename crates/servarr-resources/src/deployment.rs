@@ -136,6 +136,10 @@ pub fn build(app: &ServarrApp, image_overrides: &HashMap<String, ImageSpec>) -> 
     let container_ports = build_container_ports(svc_spec, app);
     let has_host_port = container_ports.iter().any(|p| p.host_port.is_some());
     let volume_mounts = build_volume_mounts(persistence, app);
+    // Clone for sidecar containers that share the main container's data volumes.
+    // Particularly the Lidarr YouTube Downloader which needs access to the config
+    // and music volumes at the paths its env vars reference (#293).
+    let yt_volume_mounts = volume_mounts.clone();
     let volumes = build_volumes(app, persistence);
     let env_vars = build_env_vars(app, &defaults, uid, gid, persistence);
     let (container_security, pod_security) = build_security_contexts(security, uid, gid);
@@ -299,6 +303,7 @@ pub fn build(app: &ServarrApp, image_overrides: &HashMap<String, ImageSpec>) -> 
             image: Some(yt_image),
             image_pull_policy: Some("IfNotPresent".into()),
             env: Some(yt_env),
+            volume_mounts: Some(yt_volume_mounts),
             ..Default::default()
         };
         containers.push(yt_container);

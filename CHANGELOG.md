@@ -20,6 +20,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `image`, `lidarrDbPath`, `lidarrMusicPath`, `ytCookiesFile`, `matchThreshold`, and
   `blacklistKeywords` configuration (#213).
 
+### Fixed
+
+- Fix lidarr-youtube-downloader sidecar missing volume mounts (`config`, `downloads`),
+  preventing the container from reaching `LIDARR_DB` or `LIDARR_MUSIC_PATH` paths (#293).
+
 ### Security
 
 - Redact credential-bearing API error response bodies in Maintainerr sync logs. If
@@ -59,11 +64,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
-- Update default Sonarr image to `4.0.18` (from `4.0.17`).
 - Decouple CRD Helm chart (`servarr-crds`) version from the operator chart. The CRD
   chart version now only bumps when CRD files actually change (schema, validation rules,
   new fields). Bump `charts/servarr-crds/Chart.yaml`'s `version` field manually as
   needed; the app chart continues to bump on every release as before (#162).
+- Update default Sonarr image to `4.0.18` (from `4.0.17`).
 - Update default Jackett image to `0.24.2140` (from `0.24.2116`), rolling up upstream
   indexer-definition updates.
 - Update default Subgen image to `2026.06.5` (from `2026.06.3`).
