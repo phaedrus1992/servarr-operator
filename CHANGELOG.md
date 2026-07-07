@@ -15,6 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   Secret containing a `plex-token` key (a plex.tv auth token); the operator discovers the
   in-cluster Plex `ServarrApp` and configures its hostname/port and auth token in
   Maintainerr automatically (#151).
+- Add Lidarr YouTube Downloader sidecar support. Set `spec.appConfig.lidarr.youtubeDownloader`
+  on a Lidarr `ServarrApp` to deploy the companion container alongside Lidarr. Supports
+  `image`, `lidarrDbPath`, `lidarrMusicPath`, `ytCookiesFile`, `matchThreshold`, and
+  `blacklistKeywords` configuration (#213).
 
 ### Security
 
@@ -28,6 +32,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Fix Maintainerr sync silently masking Kubernetes API errors (e.g. failing to read the
+  Plex token secret). The operator now surfaces these errors as warnings instead of
+  retrying silently (#265).
 - Fix panic in resource builders (`pvc`, `networkpolicy`, `service`, `deployment`) when app defaults are missing for unknown app types. Builders now log the error and return a safe fallback instead of crashing (#267).
 - Fix `maybe_run_backup` silently skipping backups when app defaults fail to load. Operator now logs a warning with the error context (#268).
 - Fix default liveness probe (`timeout_seconds: 1`, `failure_threshold: 3`) being too
@@ -53,9 +60,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Changed
 
 - Update default Sonarr image to `4.0.18` (from `4.0.17`).
-- Update default Jackett image to `0.24.2135` (from `0.24.2116`), rolling up upstream
+- Decouple CRD Helm chart (`servarr-crds`) version from the operator chart. The CRD
+  chart version now only bumps when CRD files actually change (schema, validation rules,
+  new fields). Bump `charts/servarr-crds/Chart.yaml`'s `version` field manually as
+  needed; the app chart continues to bump on every release as before (#162).
+- Update default Jackett image to `0.24.2140` (from `0.24.2116`), rolling up upstream
   indexer-definition updates.
-- Update default Subgen image to `2026.06.4` (from `2026.06.3`).
+- Update default Subgen image to `2026.06.5` (from `2026.06.3`).
 
 ## [1.1.1] - 2026-07-01
 
