@@ -912,20 +912,20 @@ spec:
 
 **Type:** `MaintainerrSyncSpec` -- **Optional**
 
-Configures Maintainerr cross-app synchronization. Only applies to `Maintainerr`-type apps. When enabled, the operator discovers Sonarr, Radarr, Overseerr, and Tautulli instances in the target namespace and registers them in Maintainerr. split4k Sonarr/Radarr instances are registered individually. The operator manages Maintainerr's API key automatically -- no `apiKeySecret` is required. Registration is idempotent: already-registered servers are skipped on subsequent reconciles. Sync results are reported via the `MaintainerrSyncReady` status condition.
+Configures Maintainerr cross-app synchronization. Only applies to `Maintainerr`-type apps. When enabled, the operator discovers Sonarr, Radarr, Overseerr, Tautulli, and Plex instances in the target namespace and registers them in Maintainerr. split4k Sonarr/Radarr instances are registered individually. The operator manages Maintainerr's API key automatically -- no `apiKeySecret` is required. Registration is idempotent: already-registered servers are skipped on subsequent reconciles. Sync results are reported via the `MaintainerrSyncReady` status condition.
 
-| Sub-field | Type | Default |
-|---|---|---|
-| `enabled` | `bool` | `false` |
-| `namespaceScope` | `string` | Same namespace as the Maintainerr CR |
-
-Plex is not yet auto-configured: Plex uses plex.tv account authentication rather than an operator-managed API key, so the operator has no token to inject (tracked in [#148](https://github.com/phaedrus1992/servarr-operator/issues/148)).
+| Sub-field | Type | Default | Description |
+|---|---|---|---|
+| `enabled` | `bool` | `false` | Enable Maintainerr cross-app sync |
+| `namespaceScope` | `string` | Same namespace as the Maintainerr CR | Namespace to discover companion apps in |
+| `plexTokenSecret` | `string` | -- | Name of a Secret containing a `plex-token` key (a plex.tv auth token). When set, the operator auto-configures Plex in Maintainerr.
 
 ```yaml
 spec:
   app: Maintainerr
   maintainerrSync:
     enabled: true
+    # optional: plexTokenSecret: my-plex-token
 ```
 
 ---
