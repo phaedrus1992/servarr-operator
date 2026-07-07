@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased] - ReleaseDate
 
+## [1.2.3] - 2026-07-07
+
 ### Fixed
 
 - Fix webhook rejecting valid Lidarr `appConfig` sections. The `validate_app_config_match` check was missing a `Lidarr` variant arm, so any Lidarr `ServarrApp` with `spec.appConfig.lidarr` set was always rejected at admission (#301).
@@ -258,7 +260,8 @@ lifecycle: deployment, storage, networking, backups, and cross-app integration.
   on each `v*` tag.
 
 <!-- next-url -->
-[Unreleased]: https://github.com/phaedrus1992/servarr-operator/compare/v1.2.2...HEAD
+[Unreleased]: https://github.com/phaedrus1992/servarr-operator/compare/v1.2.3...HEAD
+[1.2.3]: https://github.com/phaedrus1992/servarr-operator/compare/v1.2.2...v1.2.3
 [1.2.2]: https://github.com/phaedrus1992/servarr-operator/compare/v1.2.1...v1.2.2
 [1.2.1]: https://github.com/phaedrus1992/servarr-operator/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/phaedrus1992/servarr-operator/compare/v1.1.1...v1.2.0
