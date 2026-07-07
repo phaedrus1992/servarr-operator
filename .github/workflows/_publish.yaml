@@ -142,6 +142,7 @@ jobs:
           # The CRD chart is versioned independently — its version only bumps
           # when CRD files actually change. Read it from its own Chart.yaml.
           CRD_CHART_VERSION="$(grep '^version: ' charts/servarr-crds/Chart.yaml | awk '{print $2}')"
+          echo "CRD_CHART_VERSION=${CRD_CHART_VERSION}" >> "$GITHUB_ENV"
 
           # Package CRD chart with its own version.
           helm dependency build charts/servarr-crds/
@@ -168,9 +169,6 @@ jobs:
           IMAGE_VERSION_LABEL: ${{ inputs.image-version-label }}
         run: |
           set -euo pipefail
-
-          # CRD chart version — read from its own Chart.yaml
-          CRD_CHART_VERSION="$(grep '^version: ' charts/servarr-crds/Chart.yaml | awk '{print $2}')"
 
           cp -f /tmp/bin-amd64/servarr-operator /tmp/servarr-operator-linux-amd64
           cp -f /tmp/bin-arm64/servarr-operator /tmp/servarr-operator-linux-arm64
