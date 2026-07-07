@@ -49,6 +49,12 @@ multi-arch image + Helm charts to GHCR and creates the GitHub Release.
   `servarr-operator` crate's `[package.metadata.release]` (this is a virtual
   workspace, so the replacements are anchored to a single crate with `../../`
   paths and run exactly once).
+- The **CRD chart** (`servarr-crds`) is versioned independently: cargo-release
+  only bumps its `appVersion` (to indicate operator compatibility), not its
+  `version`. Bump `charts/servarr-crds/Chart.yaml`'s `version:` field manually
+  only when CRD files actually change (schema, validation rules, new fields).
+  The publish pipeline reads the CRD chart version from its own `Chart.yaml`,
+  so no CI changes are needed for a manual version bump.
 - The GitHub Release body is assembled in CI: the curated `CHANGELOG.md`
   section, Helm install/upgrade instructions, the image reference, and the
   auto-generated commit list last.

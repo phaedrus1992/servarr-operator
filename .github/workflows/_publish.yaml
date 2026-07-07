@@ -139,14 +139,26 @@ jobs:
         run: |
           echo "$GITHUB_TOKEN" | helm registry login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
 
-          for chart in servarr-crds servarr-operator; do
-            helm dependency build "charts/${chart}/"
-            helm package "charts/${chart}/" \
-              --version "${CHART_VERSION}" \
-              --app-version "${CHART_APP_VERSION}" \
-              -d /tmp/charts
-            helm push "/tmp/charts/${chart}-${CHART_VERSION}.tgz" "${HELM_REGISTRY}"
-          done
+          # The CRD chart is versioned independently — its version only bumps
+          # when CRD files actually change. Read it from its own Chart.yaml.
+          CRD_CHART_VERSION="$(grep '^version: ' charts/servarr-crds/Chart.yaml | awk '{print $2}')"
+          echo "CRD_CHART_VERSION=${CRD_CHART_VERSION}" >> "$GITHUB_ENV"
+
+          # Package CRD chart with its own version.
+          helm dependency build charts/servarr-crds/
+          helm package charts/servarr-crds/ \
+            --version "${CRD_CHART_VERSION}" \
+            --app-version "${CHART_APP_VERSION}" \
+            -d /tmp/charts
+          helm push "/tmp/charts/servarr-crds-${CRD_CHART_VERSION}.tgz" "${HELM_REGISTRY}"
+
+          # Package operator chart with the release version.
+          helm dependency build charts/servarr-operator/
+          helm package charts/servarr-operator/ \
+            --version "${CHART_VERSION}" \
+            --app-version "${CHART_APP_VERSION}" \
+            -d /tmp/charts
+          helm push "/tmp/charts/servarr-operator-${CHART_VERSION}.tgz" "${HELM_REGISTRY}"
 
       - name: Create GitHub Release
         if: inputs.create-github-release
@@ -181,7 +193,7 @@ jobs:
             echo '```bash'
             echo "# 1. Install/upgrade CRDs + webhook (do this first)"
             echo "helm upgrade --install servarr-crds \\"
-            echo "  oci://ghcr.io/phaedrus1992/servarr/servarr-crds --version ${CHART_VERSION}"
+            echo "  oci://ghcr.io/phaedrus1992/servarr/servarr-crds --version ${CRD_CHART_VERSION}"
             echo ""
             echo "# 2. Install/upgrade the operator"
             echo "helm upgrade --install servarr-operator \\"
