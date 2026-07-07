@@ -16,7 +16,9 @@ concurrency:
 jobs:
   forward-merge:
     runs-on: ubuntu-latest
-    if: github.actor != 'github-actions[bot]'
+    # Intentionally no actor filter: CI-initiated pushes (auto-commit version
+    # bumps from the release workflow) must also trigger the forward-merge
+    # cascade so the release branch stays in sync with main.
     permissions:
       contents: write
       pull-requests: write
