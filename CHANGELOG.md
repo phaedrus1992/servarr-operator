@@ -20,6 +20,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `image`, `lidarrDbPath`, `lidarrMusicPath`, `ytCookiesFile`, `matchThreshold`, and
   `blacklistKeywords` configuration (#213).
 
+### Fixed
+
+- Fix lidarr-youtube-downloader sidecar missing volume mounts (`config`, `downloads`),
+  preventing the container from reaching `LIDARR_DB` or `LIDARR_MUSIC_PATH` paths (#293).
+
 ### Security
 
 - Redact credential-bearing API error response bodies in Maintainerr sync logs. If
