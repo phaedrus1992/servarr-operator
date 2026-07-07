@@ -245,7 +245,6 @@ pub struct OverseerrServerDefaults4k {
     pub enable_season_folders: Option<bool>,
 }
 
-
 // --- Lidarr ---
 
 /// Configuration for Lidarr YouTube Downloader sidecar.
