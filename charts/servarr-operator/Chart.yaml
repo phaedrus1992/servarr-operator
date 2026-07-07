@@ -2,8 +2,8 @@ apiVersion: v2
 name: servarr-operator
 description: Kubernetes operator for managing Servarr media automation apps
 type: application
-version: 1.2.2
-appVersion: "1.2.2"
+version: 1.2.3
+appVersion: "1.2.3"
 dependencies:
   - name: node-feature-discovery
     version: "0.18.3"
