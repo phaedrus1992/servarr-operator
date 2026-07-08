@@ -28,14 +28,14 @@ downloads = true
 
 [lidarr]
 repository = "linuxserver/lidarr"
-tag = "3.0.1"
+tag = "3.1.0"
 port = 8686
 security = "linuxserver"
 downloads = true
 
 [prowlarr]
 repository = "linuxserver/prowlarr"
-tag = "2.3.5"
+tag = "2.4.0"
 port = 9696
 security = "linuxserver"
 downloads = false
@@ -78,7 +78,7 @@ downloads = false
 
 [jackett]
 repository = "linuxserver/jackett"
-tag = "0.24.2142"
+tag = "0.24.2151"
 port = 9117
 security = "linuxserver"
 downloads = false
