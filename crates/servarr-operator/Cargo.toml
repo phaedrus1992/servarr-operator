@@ -54,7 +54,7 @@ overseerr = "0.1"
 chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
 cron = "0.17.0"
 url = "2.5.8"
-rand = "0.10.1"
+rand = "0.10.2"
 sha2 = "0.11.0"
 hex = "0.4.3"
 md5 = "0.8"
