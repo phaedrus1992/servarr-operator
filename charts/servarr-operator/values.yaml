@@ -103,7 +103,7 @@ defaultImages:
     tag: "0.24.2173"
   bazarr:
     repository: linuxserver/bazarr
-    tag: "1.5.6"
+    tag: "1.6.0"
   subgen:
     repository: mccloud/subgen
     tag: "2026.06.5"
