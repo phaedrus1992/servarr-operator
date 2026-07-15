@@ -78,7 +78,7 @@ downloads = false
 
 [jackett]
 repository = "linuxserver/jackett"
-tag = "0.24.2184"
+tag = "0.24.2187"
 port = 9117
 security = "linuxserver"
 downloads = false
@@ -94,7 +94,7 @@ probe_path = "/api/system/ping"
 
 [subgen]
 repository = "mccloud/subgen"
-tag = "2026.06.5"
+tag = "2026.06.6"
 port = 9000
 security = "nonroot"
 downloads = false
