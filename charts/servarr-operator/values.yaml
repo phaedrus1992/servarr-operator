@@ -91,7 +91,7 @@ defaultImages:
     tag: "4.1.2"
   tautulli:
     repository: linuxserver/tautulli
-    tag: "2.17.1"
+    tag: "2.17.2"
   overseerr:
     repository: linuxserver/overseerr
     tag: "1.35.0"
@@ -100,7 +100,7 @@ defaultImages:
     tag: "3.15.2"
   jackett:
     repository: linuxserver/jackett
-    tag: "0.24.2187"
+    tag: "0.24.2196"
   bazarr:
     repository: linuxserver/bazarr
     tag: "1.6.0"

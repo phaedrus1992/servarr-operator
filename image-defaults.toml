@@ -56,7 +56,7 @@ downloads = true
 
 [tautulli]
 repository = "linuxserver/tautulli"
-tag = "2.17.1"
+tag = "2.17.2"
 port = 8181
 security = "linuxserver"
 downloads = false
@@ -78,7 +78,7 @@ downloads = false
 
 [jackett]
 repository = "linuxserver/jackett"
-tag = "0.24.2187"
+tag = "0.24.2196"
 port = 9117
 security = "linuxserver"
 downloads = false
