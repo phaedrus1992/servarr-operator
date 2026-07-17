@@ -73,7 +73,7 @@ nfd:
 defaultImages:
   sonarr:
     repository: linuxserver/sonarr
-    tag: "4.0.18"
+    tag: "4.0.19"
   radarr:
     repository: linuxserver/radarr
     tag: "6.2.1"
@@ -100,7 +100,7 @@ defaultImages:
     tag: "3.15.2"
   jackett:
     repository: linuxserver/jackett
-    tag: "0.24.2196"
+    tag: "0.24.2200"
   bazarr:
     repository: linuxserver/bazarr
     tag: "1.6.0"
