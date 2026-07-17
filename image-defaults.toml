@@ -14,7 +14,7 @@
 
 [sonarr]
 repository = "linuxserver/sonarr"
-tag = "4.0.18"
+tag = "4.0.19"
 port = 8989
 security = "linuxserver"
 downloads = true
@@ -78,7 +78,7 @@ downloads = false
 
 [jackett]
 repository = "linuxserver/jackett"
-tag = "0.24.2196"
+tag = "0.24.2200"
 port = 9117
 security = "linuxserver"
 downloads = false
