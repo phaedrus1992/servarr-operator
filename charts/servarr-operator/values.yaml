@@ -100,7 +100,7 @@ defaultImages:
     tag: "3.15.2"
   jackett:
     repository: linuxserver/jackett
-    tag: "0.24.2206"
+    tag: "0.24.2216"
   bazarr:
     repository: linuxserver/bazarr
     tag: "1.6.0"
@@ -112,7 +112,7 @@ defaultImages:
     tag: "10.11.10"
   plex:
     repository: linuxserver/plex
-    tag: "1.43.1"
+    tag: "1.43.2"
   ssh-bastion:
     repository: quay.io/panubo/sshd
     tag: "1.10.0"
