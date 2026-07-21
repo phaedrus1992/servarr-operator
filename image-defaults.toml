@@ -109,7 +109,7 @@ downloads = false
 
 [plex]
 repository = "linuxserver/plex"
-tag = "1.43.2"
+tag = "1.43.3"
 port = 32400
 security = "linuxserver"
 downloads = false
