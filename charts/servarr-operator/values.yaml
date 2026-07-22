@@ -112,7 +112,7 @@ defaultImages:
     tag: "10.11.10"
   plex:
     repository: linuxserver/plex
-    tag: "1.43.2"
+    tag: "1.43.3"
   ssh-bastion:
     repository: quay.io/panubo/sshd
     tag: "1.10.0"
