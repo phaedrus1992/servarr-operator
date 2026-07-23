@@ -46,7 +46,7 @@ prometheus = { version = "0.14", features = ["process"] }
 lazy_static = "1.5.0"
 axum = "0.8.9"
 axum-server = { version = "0.8.0", features = ["tls-rustls"] }
-clap = { version = "4.6.1", features = ["derive"] }
+clap = { version = "4.6.2", features = ["derive"] }
 flate2 = "1.1.9"
 base64 = "0.22.1"
 servarr-api = { path = "../servarr-api" }
