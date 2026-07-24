@@ -32,6 +32,19 @@
 
   // Specific Package Rules
   packageRules: [
+    // Pin cargo deps to exact versions instead of bumping the semver range.
+    // With the default rangeStrategy=bump, Cargo.toml keeps its caret range
+    // after the bump, so the follow-up `cargo update` (which has no concept
+    // of minimumReleaseAge) resolves Cargo.lock to whatever is truly newest
+    // on crates.io — not the version Renovate proposed in the PR. That
+    // mismatch is what fails the renovate/artifacts check and leaves PRs
+    // stuck (#358, #356, #354). Exact pins keep Cargo.lock in lockstep with
+    // the PR's proposed version. Recommended by Renovate itself for apps:
+    // https://docs.renovatebot.com/dependency-pinning/
+    {
+      matchManagers: ['cargo'],
+      rangeStrategy: 'pin',
+    },
     // Helm versioning applies to all updates (major included). Split from
     // the grouping rule below because Renovate disallows combining
     // matchUpdateTypes with versioning in a single rule.
