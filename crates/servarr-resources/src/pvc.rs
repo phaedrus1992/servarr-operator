@@ -2,7 +2,7 @@ use k8s_openapi::api::core::v1::{
     PersistentVolumeClaim, PersistentVolumeClaimSpec, VolumeResourceRequirements,
 };
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
-use servarr_crds::{AppConfig, AppDefaults, PersistenceSpec, PvcVolume, ServarrApp, SshMode};
+use servarr_crds::{AppConfig, AppDefaults, PvcVolume, ServarrApp, SshMode};
 use std::collections::BTreeMap;
 
 use crate::common;
@@ -15,14 +15,7 @@ pub fn build_all(app: &ServarrApp) -> Vec<PersistentVolumeClaim> {
             return vec![];
         }
     };
-    let merged: PersistenceSpec;
-    let persistence = match &app.spec.persistence {
-        None => &defaults.persistence,
-        Some(spec) => {
-            merged = spec.merge_with(&defaults.persistence);
-            &merged
-        }
-    };
+    let persistence = defaults.resolve_persistence(app);
 
     let mut pvcs: Vec<PersistentVolumeClaim> = persistence
         .volumes

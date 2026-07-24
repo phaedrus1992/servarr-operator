@@ -104,14 +104,7 @@ pub fn build(app: &ServarrApp, image_overrides: &HashMap<String, ImageSpec>) -> 
     // Always merge the app-type default persistence with the spec so that
     // app-type-specific PVCs (e.g. SshBastion's host-keys) are preserved even
     // when a MediaStack injects NFS mounts via stack defaults.
-    let merged_persistence: PersistenceSpec;
-    let persistence = match &app.spec.persistence {
-        None => &defaults.persistence,
-        Some(spec) => {
-            merged_persistence = spec.merge_with(&defaults.persistence);
-            &merged_persistence
-        }
-    };
+    let persistence = defaults.resolve_persistence(app);
     // Field-merge probes so partial overrides inherit missing fields from defaults (#59).
     // ProbeSpec::merge_with treats `self` as the user override (it wins per field),
     // so the user spec must be the receiver and the app default the argument.
@@ -134,13 +127,13 @@ pub fn build(app: &ServarrApp, image_overrides: &HashMap<String, ImageSpec>) -> 
 
     let container_ports = build_container_ports(svc_spec, app);
     let has_host_port = container_ports.iter().any(|p| p.host_port.is_some());
-    let volume_mounts = build_volume_mounts(persistence, app);
+    let volume_mounts = build_volume_mounts(&persistence, app);
     // Clone for sidecar containers that share the main container's data volumes.
     // Particularly the Lidarr YouTube Downloader which needs access to the config
     // and music volumes at the paths its env vars reference (#293).
     let yt_volume_mounts = volume_mounts.clone();
-    let volumes = build_volumes(app, persistence);
-    let env_vars = build_env_vars(app, &defaults, uid, gid, persistence);
+    let volumes = build_volumes(app, &persistence);
+    let env_vars = build_env_vars(app, &defaults, uid, gid, &persistence);
     let (container_security, pod_security) = build_security_contexts(security, uid, gid);
 
     // Auto-select exec probes for Transmission with auth enabled

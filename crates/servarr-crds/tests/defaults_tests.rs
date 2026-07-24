@@ -1,4 +1,20 @@
+use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 use servarr_crds::*;
+
+fn make_app(app_type: AppType) -> ServarrApp {
+    ServarrApp {
+        metadata: ObjectMeta {
+            name: Some("test-app".into()),
+            namespace: Some("media".into()),
+            ..Default::default()
+        },
+        spec: ServarrAppSpec {
+            app: app_type,
+            ..Default::default()
+        },
+        status: None,
+    }
+}
 
 // ---------------------------------------------------------------------------
 // SSH Bastion defaults
@@ -72,6 +88,106 @@ fn ssh_bastion_has_host_keys_volume() {
     assert_eq!(vol.mount_path, "/etc/ssh/keys");
     assert_eq!(vol.size, "10Mi");
     assert_eq!(vol.access_mode, "ReadWriteOnce");
+}
+
+// ---------------------------------------------------------------------------
+// resolve_persistence: host-keys must survive a persistence override (#305)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn resolve_persistence_keeps_host_keys_with_no_override() {
+    let defaults = AppDefaults::for_app(&AppType::SshBastion).unwrap();
+    let app = make_app(AppType::SshBastion);
+
+    let persistence = defaults.resolve_persistence(&app);
+
+    assert_eq!(persistence.volumes.len(), 1);
+    assert_eq!(persistence.volumes[0].name, "host-keys");
+    assert_eq!(persistence.volumes[0].mount_path, "/etc/ssh/keys");
+}
+
+/// A MediaStack-injected (or hand-written) persistence override that names
+/// unrelated volumes must not silently drop `host-keys` — that's the exact
+/// "REMOTE HOST IDENTIFICATION HAS CHANGED" regression from #305.
+#[test]
+fn resolve_persistence_restores_host_keys_dropped_by_override() {
+    let defaults = AppDefaults::for_app(&AppType::SshBastion).unwrap();
+    let mut app = make_app(AppType::SshBastion);
+    app.spec.persistence = Some(PersistenceSpec {
+        volumes: vec![PvcVolume {
+            name: "config".into(),
+            mount_path: "/config".into(),
+            access_mode: "ReadWriteOnce".into(),
+            size: "1Gi".into(),
+            storage_class: "fast-ssd".into(),
+            existing_claim_name: None,
+        }],
+        nfs_mounts: vec![],
+    });
+
+    let persistence = defaults.resolve_persistence(&app);
+
+    assert!(
+        persistence.volumes.iter().any(|v| v.name == "config"),
+        "user-specified volume must survive"
+    );
+    let host_keys = persistence
+        .volumes
+        .iter()
+        .find(|v| v.name == "host-keys")
+        .expect("host-keys volume must not be dropped by an unrelated persistence override");
+    assert_eq!(host_keys.mount_path, "/etc/ssh/keys");
+    assert_eq!(host_keys.size, "10Mi");
+}
+
+/// An override that explicitly names `host-keys` (e.g. to change its
+/// storage class or size) must win over the compiled default.
+#[test]
+fn resolve_persistence_respects_explicit_host_keys_override() {
+    let defaults = AppDefaults::for_app(&AppType::SshBastion).unwrap();
+    let mut app = make_app(AppType::SshBastion);
+    app.spec.persistence = Some(PersistenceSpec {
+        volumes: vec![PvcVolume {
+            name: "host-keys".into(),
+            mount_path: "/etc/ssh/keys".into(),
+            access_mode: "ReadWriteOnce".into(),
+            size: "50Mi".into(),
+            storage_class: "custom-class".into(),
+            existing_claim_name: None,
+        }],
+        nfs_mounts: vec![],
+    });
+
+    let persistence = defaults.resolve_persistence(&app);
+
+    assert_eq!(persistence.volumes.len(), 1);
+    assert_eq!(persistence.volumes[0].size, "50Mi");
+    assert_eq!(persistence.volumes[0].storage_class, "custom-class");
+}
+
+/// The host-keys restoration is SshBastion-specific — a non-bastion app's
+/// persistence override must not gain a volume it never asked for.
+#[test]
+fn resolve_persistence_does_not_inject_host_keys_for_non_bastion_apps() {
+    let defaults = AppDefaults::for_app(&AppType::Sonarr).unwrap();
+    let mut app = make_app(AppType::Sonarr);
+    app.spec.persistence = Some(PersistenceSpec {
+        volumes: vec![PvcVolume {
+            name: "data".into(),
+            mount_path: "/data".into(),
+            access_mode: "ReadWriteOnce".into(),
+            size: "10Gi".into(),
+            storage_class: String::new(),
+            existing_claim_name: None,
+        }],
+        nfs_mounts: vec![],
+    });
+
+    let persistence = defaults.resolve_persistence(&app);
+
+    assert_eq!(persistence.volumes.len(), 1);
+    assert_eq!(persistence.volumes[0].name, "data");
+    assert!(!persistence.volumes.iter().any(|v| v.name == "host-keys"));
 }
 
 #[test]
