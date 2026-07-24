@@ -287,6 +287,68 @@ fn test_pvc_builder_config_only() {
     assert_eq!(pvcs[0].metadata.name.as_deref(), Some("test-app-config"));
 }
 
+/// Regression test for #305: the `host-keys` PVC name and mount path are
+/// invariant — they must survive both the no-override path and a persistence
+/// override that replaces the volumes list with unrelated entries (as a
+/// MediaStack's stack-wide `persistence.volumes` does for a bastion member
+/// with no per-app override). Losing this PVC silently regenerates the
+/// bastion's SSH host key, breaking every client's known_hosts entry.
+#[test]
+fn test_pvc_ssh_bastion_host_keys_survives_persistence_override() {
+    let mut app = make_app(AppType::SshBastion);
+    app.spec.app_config = Some(AppConfig::SshBastion(SshBastionConfig::default()));
+    app.spec.persistence = Some(PersistenceSpec {
+        volumes: vec![PvcVolume {
+            name: "config".into(),
+            mount_path: "/config".into(),
+            access_mode: "ReadWriteOnce".into(),
+            size: "1Gi".into(),
+            storage_class: "fast-ssd".into(),
+            existing_claim_name: None,
+        }],
+        nfs_mounts: vec![],
+    });
+
+    let pvcs = servarr_resources::pvc::build_all(&app);
+    let host_keys = pvcs
+        .iter()
+        .find(|p| p.metadata.name.as_deref() == Some("test-app-host-keys"))
+        .expect("host-keys PVC must survive a persistence override");
+    let spec = host_keys.spec.as_ref().unwrap();
+    let storage = spec.resources.as_ref().unwrap().requests.as_ref().unwrap()["storage"]
+        .0
+        .as_str();
+    assert_eq!(storage, "10Mi");
+
+    let deploy = servarr_resources::deployment::build(&app, &std::collections::HashMap::new());
+    let pod_spec = deploy.spec.unwrap().template.spec.unwrap();
+    assert!(
+        pod_spec
+            .volumes
+            .as_ref()
+            .unwrap()
+            .iter()
+            .any(|v| v.name == "host-keys"),
+        "Deployment pod spec must still mount host-keys, or the \
+         generate-host-keys init container's volumeMount dangles"
+    );
+    let keygen = pod_spec
+        .init_containers
+        .as_ref()
+        .unwrap()
+        .iter()
+        .find(|c| c.name == "generate-host-keys")
+        .unwrap();
+    assert!(
+        keygen
+            .volume_mounts
+            .as_ref()
+            .unwrap()
+            .iter()
+            .any(|m| m.name == "host-keys" && m.mount_path == "/etc/ssh/keys")
+    );
+}
+
 #[test]
 fn test_pvc_ssh_bastion_shell_mode_creates_home_pvcs() {
     let app = ServarrApp {

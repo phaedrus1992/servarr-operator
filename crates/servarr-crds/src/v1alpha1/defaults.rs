@@ -126,6 +126,32 @@ impl AppDefaults {
         Self::try_for_app(app)
     }
 
+    /// Merge `app`'s persistence override with these compiled defaults, then
+    /// restore any volume the app type cannot function without if the merge
+    /// dropped it.
+    ///
+    /// `PersistenceSpec::merge_with` replaces `volumes` wholesale when the
+    /// override is non-empty (e.g. a MediaStack's stack-wide persistence
+    /// applied to a bastion with no per-app override). For most apps that's
+    /// fine, but SshBastion's `host-keys` volume is load-bearing: losing it
+    /// makes `generate-host-keys` regenerate the host's SSH identity, which
+    /// changes the fingerprint every client trusts (#305). An explicit
+    /// override that names `host-keys` itself still wins.
+    pub fn resolve_persistence(&self, app: &super::ServarrApp) -> PersistenceSpec {
+        let mut persistence = match &app.spec.persistence {
+            None => self.persistence.clone(),
+            Some(spec) => spec.merge_with(&self.persistence),
+        };
+        if matches!(app.spec.app, super::AppType::SshBastion)
+            && !persistence.volumes.iter().any(|v| v.name == "host-keys")
+        {
+            persistence
+                .volumes
+                .push(pvc("host-keys", "/etc/ssh/keys", "10Mi"));
+        }
+        persistence
+    }
+
     fn linuxserver_base(port: i32, downloads: bool, probe_path: &str) -> Self {
         let mut volumes = vec![pvc("config", "/config", "1Gi")];
         if downloads {
