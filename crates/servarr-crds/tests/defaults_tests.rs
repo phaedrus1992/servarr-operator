@@ -165,6 +165,31 @@ fn resolve_persistence_respects_explicit_host_keys_override() {
     assert_eq!(persistence.volumes[0].storage_class, "custom-class");
 }
 
+/// The host-keys restoration is SshBastion-specific — a non-bastion app's
+/// persistence override must not gain a volume it never asked for.
+#[test]
+fn resolve_persistence_does_not_inject_host_keys_for_non_bastion_apps() {
+    let defaults = AppDefaults::for_app(&AppType::Sonarr).unwrap();
+    let mut app = make_app(AppType::Sonarr);
+    app.spec.persistence = Some(PersistenceSpec {
+        volumes: vec![PvcVolume {
+            name: "data".into(),
+            mount_path: "/data".into(),
+            access_mode: "ReadWriteOnce".into(),
+            size: "10Gi".into(),
+            storage_class: String::new(),
+            existing_claim_name: None,
+        }],
+        nfs_mounts: vec![],
+    });
+
+    let persistence = defaults.resolve_persistence(&app);
+
+    assert_eq!(persistence.volumes.len(), 1);
+    assert_eq!(persistence.volumes[0].name, "data");
+    assert!(!persistence.volumes.iter().any(|v| v.name == "host-keys"));
+}
+
 #[test]
 fn ssh_bastion_has_no_nfs_mounts() {
     let defaults = AppDefaults::for_app(&AppType::SshBastion).unwrap();

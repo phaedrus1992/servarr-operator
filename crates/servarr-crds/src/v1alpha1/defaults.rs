@@ -144,10 +144,13 @@ impl AppDefaults {
         };
         if matches!(app.spec.app, super::AppType::SshBastion)
             && !persistence.volumes.iter().any(|v| v.name == "host-keys")
-        {
-            persistence
+            && let Some(host_keys) = self
+                .persistence
                 .volumes
-                .push(pvc("host-keys", "/etc/ssh/keys", "10Mi"));
+                .iter()
+                .find(|v| v.name == "host-keys")
+        {
+            persistence.volumes.push(host_keys.clone());
         }
         persistence
     }
