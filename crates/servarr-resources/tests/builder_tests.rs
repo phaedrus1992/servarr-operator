@@ -20,7 +20,8 @@ fn make_app(app_type: AppType) -> ServarrApp {
 #[test]
 fn test_deployment_builder_sonarr() {
     let app = make_app(AppType::Sonarr);
-    let deploy = servarr_resources::deployment::build(&app, &std::collections::HashMap::new());
+    let deploy =
+        servarr_resources::deployment::build(&app, &std::collections::HashMap::new()).unwrap();
 
     assert_eq!(deploy.metadata.name.as_deref(), Some("test-app"));
     assert_eq!(deploy.metadata.namespace.as_deref(), Some("media"));
@@ -83,7 +84,8 @@ fn test_deployment_builder_sonarr() {
 #[test]
 fn test_deployment_builder_maintainerr_nonroot() {
     let app = make_app(AppType::Maintainerr);
-    let deploy = servarr_resources::deployment::build(&app, &std::collections::HashMap::new());
+    let deploy =
+        servarr_resources::deployment::build(&app, &std::collections::HashMap::new()).unwrap();
 
     let pod_spec = deploy.spec.unwrap().template.spec.unwrap();
     let container = &pod_spec.containers[0];
@@ -132,7 +134,8 @@ fn test_deployment_builder_maintainerr_data_dir_follows_mount() {
         },
         status: None,
     };
-    let deploy = servarr_resources::deployment::build(&app, &std::collections::HashMap::new());
+    let deploy =
+        servarr_resources::deployment::build(&app, &std::collections::HashMap::new()).unwrap();
     let container = &deploy.spec.unwrap().template.spec.unwrap().containers[0];
     let env = container.env.as_ref().unwrap();
     let data_dir = env.iter().find(|e| e.name == "DATA_DIR").unwrap();
@@ -166,7 +169,8 @@ fn test_deployment_builder_transmission() {
         status: None,
     };
 
-    let deploy = servarr_resources::deployment::build(&app, &std::collections::HashMap::new());
+    let deploy =
+        servarr_resources::deployment::build(&app, &std::collections::HashMap::new()).unwrap();
     let pod_spec = deploy.spec.unwrap().template.spec.unwrap();
     let container = &pod_spec.containers[0];
 
@@ -210,7 +214,7 @@ fn test_deployment_builder_transmission() {
 #[test]
 fn test_service_builder() {
     let app = make_app(AppType::Radarr);
-    let svc = servarr_resources::service::build(&app);
+    let svc = servarr_resources::service::build(&app).unwrap();
 
     assert_eq!(svc.metadata.name.as_deref(), Some("test-app"));
     assert_eq!(svc.metadata.namespace.as_deref(), Some("media"));
@@ -227,7 +231,7 @@ fn test_service_builder() {
 fn test_service_builder_name_override() {
     let mut app = make_app(AppType::Transmission);
     app.spec.service_name = Some("transmission".into());
-    let svc = servarr_resources::service::build(&app);
+    let svc = servarr_resources::service::build(&app).unwrap();
 
     // Service name uses the override...
     assert_eq!(svc.metadata.name.as_deref(), Some("transmission"));
@@ -254,7 +258,7 @@ fn test_httproute_backend_uses_service_name_override() {
         }],
         ..Default::default()
     });
-    let route = servarr_resources::httproute::build(&app).unwrap();
+    let route = servarr_resources::httproute::build(&app).unwrap().unwrap();
     let backend = &route.data["spec"]["rules"][0]["backendRefs"][0]["name"];
     assert_eq!(backend, "sonarr");
     // Route object itself keeps the app name.
@@ -264,7 +268,7 @@ fn test_httproute_backend_uses_service_name_override() {
 #[test]
 fn test_pvc_builder() {
     let app = make_app(AppType::Sonarr);
-    let pvcs = servarr_resources::pvc::build_all(&app);
+    let pvcs = servarr_resources::pvc::build_all(&app).unwrap();
 
     assert_eq!(pvcs.len(), 2); // config + downloads
 
@@ -282,7 +286,7 @@ fn test_pvc_builder() {
 #[test]
 fn test_pvc_builder_config_only() {
     let app = make_app(AppType::Prowlarr);
-    let pvcs = servarr_resources::pvc::build_all(&app);
+    let pvcs = servarr_resources::pvc::build_all(&app).unwrap();
     assert_eq!(pvcs.len(), 1);
     assert_eq!(pvcs[0].metadata.name.as_deref(), Some("test-app-config"));
 }
@@ -309,7 +313,7 @@ fn test_pvc_ssh_bastion_host_keys_survives_persistence_override() {
         nfs_mounts: vec![],
     });
 
-    let pvcs = servarr_resources::pvc::build_all(&app);
+    let pvcs = servarr_resources::pvc::build_all(&app).unwrap();
     let host_keys = pvcs
         .iter()
         .find(|p| p.metadata.name.as_deref() == Some("test-app-host-keys"))
@@ -320,7 +324,8 @@ fn test_pvc_ssh_bastion_host_keys_survives_persistence_override() {
         .as_str();
     assert_eq!(storage, "10Mi");
 
-    let deploy = servarr_resources::deployment::build(&app, &std::collections::HashMap::new());
+    let deploy =
+        servarr_resources::deployment::build(&app, &std::collections::HashMap::new()).unwrap();
     let pod_spec = deploy.spec.unwrap().template.spec.unwrap();
     assert!(
         pod_spec
@@ -388,7 +393,7 @@ fn test_pvc_ssh_bastion_shell_mode_creates_home_pvcs() {
         status: None,
     };
 
-    let pvcs = servarr_resources::pvc::build_all(&app);
+    let pvcs = servarr_resources::pvc::build_all(&app).unwrap();
 
     // host-keys PVC from app defaults + one per user
     assert!(
@@ -443,7 +448,7 @@ fn test_pvc_ssh_bastion_non_shell_mode_no_home_pvcs() {
         status: None,
     };
 
-    let pvcs = servarr_resources::pvc::build_all(&app);
+    let pvcs = servarr_resources::pvc::build_all(&app).unwrap();
     assert!(
         !pvcs.iter().any(|p| p
             .metadata
@@ -483,7 +488,8 @@ fn test_deployment_ssh_bastion_shell_mode_home_mounts() {
         status: None,
     };
 
-    let deploy = servarr_resources::deployment::build(&app, &std::collections::HashMap::new());
+    let deploy =
+        servarr_resources::deployment::build(&app, &std::collections::HashMap::new()).unwrap();
     let pod_spec = deploy.spec.unwrap().template.spec.unwrap();
     let container = &pod_spec.containers[0];
     let mounts = container.volume_mounts.as_ref().unwrap();
@@ -516,7 +522,7 @@ fn test_deployment_ssh_bastion_shell_mode_home_mounts() {
 #[test]
 fn test_networkpolicy_builder() {
     let app = make_app(AppType::Sonarr);
-    let np = servarr_resources::networkpolicy::build(&app);
+    let np = servarr_resources::networkpolicy::build(&app).unwrap();
 
     assert_eq!(np.metadata.name.as_deref(), Some("test-app"));
     let spec = np.spec.unwrap();
@@ -571,7 +577,7 @@ fn test_configmap_transmission_chown_uses_shared_default_uid_gid() {
 #[test]
 fn test_httproute_builder_disabled() {
     let app = make_app(AppType::Sonarr);
-    let route = servarr_resources::httproute::build(&app);
+    let route = servarr_resources::httproute::build(&app).unwrap();
     assert!(route.is_none());
 }
 
@@ -602,7 +608,7 @@ fn test_httproute_builder_enabled() {
         status: None,
     };
 
-    let route = servarr_resources::httproute::build(&app);
+    let route = servarr_resources::httproute::build(&app).unwrap();
     assert!(route.is_some());
 }
 
@@ -632,7 +638,8 @@ fn test_custom_env_override() {
         status: None,
     };
 
-    let deploy = servarr_resources::deployment::build(&app, &std::collections::HashMap::new());
+    let deploy =
+        servarr_resources::deployment::build(&app, &std::collections::HashMap::new()).unwrap();
     let container = &deploy.spec.unwrap().template.spec.unwrap().containers[0];
     let env = container.env.as_ref().unwrap();
 
@@ -670,7 +677,8 @@ fn test_custom_image_override() {
         status: None,
     };
 
-    let deploy = servarr_resources::deployment::build(&app, &std::collections::HashMap::new());
+    let deploy =
+        servarr_resources::deployment::build(&app, &std::collections::HashMap::new()).unwrap();
     let container = &deploy.spec.unwrap().template.spec.unwrap().containers[0];
     assert_eq!(
         container.image.as_deref(),
@@ -701,7 +709,8 @@ fn test_image_tag_only_inherits_default_repository() {
         status: None,
     };
 
-    let deploy = servarr_resources::deployment::build(&app, &std::collections::HashMap::new());
+    let deploy =
+        servarr_resources::deployment::build(&app, &std::collections::HashMap::new()).unwrap();
     let container = &deploy.spec.unwrap().template.spec.unwrap().containers[0];
     assert_eq!(
         container.image.as_deref(),
@@ -730,7 +739,8 @@ fn test_image_repository_only_inherits_default_tag() {
         status: None,
     };
 
-    let deploy = servarr_resources::deployment::build(&app, &std::collections::HashMap::new());
+    let deploy =
+        servarr_resources::deployment::build(&app, &std::collections::HashMap::new()).unwrap();
     let container = &deploy.spec.unwrap().template.spec.unwrap().containers[0];
     let sonarr_tag = AppDefaults::for_app(&AppType::Sonarr)
         .expect("sonarr defaults")
@@ -764,7 +774,8 @@ fn test_image_digest_override() {
         status: None,
     };
 
-    let deploy = servarr_resources::deployment::build(&app, &std::collections::HashMap::new());
+    let deploy =
+        servarr_resources::deployment::build(&app, &std::collections::HashMap::new()).unwrap();
     let container = &deploy.spec.unwrap().template.spec.unwrap().containers[0];
     assert_eq!(
         container.image.as_deref(),
@@ -805,7 +816,8 @@ fn test_nfs_mounts() {
         status: None,
     };
 
-    let deploy = servarr_resources::deployment::build(&app, &std::collections::HashMap::new());
+    let deploy =
+        servarr_resources::deployment::build(&app, &std::collections::HashMap::new()).unwrap();
     let pod_spec = deploy.spec.unwrap().template.spec.unwrap();
     let container = &pod_spec.containers[0];
 
@@ -836,7 +848,7 @@ fn test_image_override_from_env() {
         },
     );
 
-    let deploy = servarr_resources::deployment::build(&app, &overrides);
+    let deploy = servarr_resources::deployment::build(&app, &overrides).unwrap();
     let container = &deploy.spec.unwrap().template.spec.unwrap().containers[0];
     assert_eq!(
         container.image.as_deref(),
@@ -847,7 +859,8 @@ fn test_image_override_from_env() {
 #[test]
 fn test_deployment_builder_plex() {
     let app = make_app(AppType::Plex);
-    let deploy = servarr_resources::deployment::build(&app, &std::collections::HashMap::new());
+    let deploy =
+        servarr_resources::deployment::build(&app, &std::collections::HashMap::new()).unwrap();
 
     let spec = deploy.spec.unwrap();
     let pod_spec = spec.template.spec.unwrap();
@@ -895,7 +908,8 @@ fn test_deployment_builder_plex() {
 #[test]
 fn test_deployment_builder_jellyfin() {
     let app = make_app(AppType::Jellyfin);
-    let deploy = servarr_resources::deployment::build(&app, &std::collections::HashMap::new());
+    let deploy =
+        servarr_resources::deployment::build(&app, &std::collections::HashMap::new()).unwrap();
 
     let spec = deploy.spec.unwrap();
     let pod_spec = spec.template.spec.unwrap();
@@ -963,7 +977,7 @@ fn test_cr_image_overrides_env_override() {
         },
     );
 
-    let deploy = servarr_resources::deployment::build(&app, &overrides);
+    let deploy = servarr_resources::deployment::build(&app, &overrides).unwrap();
     let container = &deploy.spec.unwrap().template.spec.unwrap().containers[0];
     // CR-level should win
     assert_eq!(container.image.as_deref(), Some("cr-level/sonarr:cr-tag"));
@@ -1293,7 +1307,7 @@ fn test_certificate_custom_secret_name() {
 #[test]
 fn test_tcproute_no_gateway_returns_none() {
     let app = make_app(AppType::Sonarr);
-    let route = servarr_resources::tcproute::build(&app);
+    let route = servarr_resources::tcproute::build(&app).unwrap();
     assert!(route.is_none());
 }
 
@@ -1316,7 +1330,7 @@ fn test_tcproute_gateway_disabled_returns_none() {
         },
         status: None,
     };
-    let route = servarr_resources::tcproute::build(&app);
+    let route = servarr_resources::tcproute::build(&app).unwrap();
     assert!(route.is_none());
 }
 
@@ -1346,7 +1360,7 @@ fn test_tcproute_http_route_no_tls_returns_none() {
         },
         status: None,
     };
-    let route = servarr_resources::tcproute::build(&app);
+    let route = servarr_resources::tcproute::build(&app).unwrap();
     assert!(route.is_none());
 }
 
@@ -1376,7 +1390,7 @@ fn test_tcproute_tcp_route_type_returns_some() {
         },
         status: None,
     };
-    let route = servarr_resources::tcproute::build(&app);
+    let route = servarr_resources::tcproute::build(&app).unwrap();
     assert!(route.is_some());
 
     let route = route.unwrap();
@@ -1428,7 +1442,7 @@ fn test_tcproute_http_route_with_tls_enabled_returns_some() {
         status: None,
     };
     // TLS enabled forces TCP mode even when route_type is Http
-    let route = servarr_resources::tcproute::build(&app);
+    let route = servarr_resources::tcproute::build(&app).unwrap();
     assert!(route.is_some());
 
     let route = route.unwrap();
@@ -1463,7 +1477,7 @@ fn test_tcproute_parent_refs_with_namespace_and_section_name() {
         },
         status: None,
     };
-    let route = servarr_resources::tcproute::build(&app).unwrap();
+    let route = servarr_resources::tcproute::build(&app).unwrap().unwrap();
 
     let parent_refs = route.data["spec"]["parentRefs"].as_array().unwrap();
     assert_eq!(parent_refs.len(), 1);
@@ -1862,7 +1876,8 @@ fn test_deployment_ssh_bastion_init_containers() {
         status: None,
     };
 
-    let deploy = servarr_resources::deployment::build(&app, &std::collections::HashMap::new());
+    let deploy =
+        servarr_resources::deployment::build(&app, &std::collections::HashMap::new()).unwrap();
     let pod_spec = deploy.spec.unwrap().template.spec.unwrap();
 
     // Should have init containers: generate-host-keys, copy-authorized-keys, and patch-entry.
@@ -1997,7 +2012,8 @@ fn test_deployment_ssh_bastion_rsync_mode_uses_restricted_rsync() {
         status: None,
     };
 
-    let deploy = servarr_resources::deployment::build(&app, &std::collections::HashMap::new());
+    let deploy =
+        servarr_resources::deployment::build(&app, &std::collections::HashMap::new()).unwrap();
     let pod_spec = deploy.spec.unwrap().template.spec.unwrap();
     let container = &pod_spec.containers[0];
     let mounts = container.volume_mounts.as_ref().unwrap();
@@ -2055,7 +2071,8 @@ fn test_deployment_ssh_bastion_shell_package_installed() {
         status: None,
     };
 
-    let deploy = servarr_resources::deployment::build(&app, &std::collections::HashMap::new());
+    let deploy =
+        servarr_resources::deployment::build(&app, &std::collections::HashMap::new()).unwrap();
     let pod_spec = deploy.spec.unwrap().template.spec.unwrap();
     let init = pod_spec.init_containers.as_ref().unwrap();
     let patch = init.iter().find(|c| c.name == "patch-entry").unwrap();
@@ -2099,7 +2116,8 @@ fn test_deployment_ssh_bastion_default_shell_no_install() {
         status: None,
     };
 
-    let deploy = servarr_resources::deployment::build(&app, &std::collections::HashMap::new());
+    let deploy =
+        servarr_resources::deployment::build(&app, &std::collections::HashMap::new()).unwrap();
     let pod_spec = deploy.spec.unwrap().template.spec.unwrap();
     let init = pod_spec.init_containers.as_ref().unwrap();
     let patch = init.iter().find(|c| c.name == "patch-entry").unwrap();
@@ -2132,7 +2150,8 @@ fn test_deployment_sabnzbd_host_whitelist_init_container() {
         status: None,
     };
 
-    let deploy = servarr_resources::deployment::build(&app, &std::collections::HashMap::new());
+    let deploy =
+        servarr_resources::deployment::build(&app, &std::collections::HashMap::new()).unwrap();
     let pod_spec = deploy.spec.unwrap().template.spec.unwrap();
 
     let init = pod_spec.init_containers.as_ref().unwrap();
@@ -2170,7 +2189,8 @@ fn test_deployment_sabnzbd_tar_unpack_init_containers() {
         status: None,
     };
 
-    let deploy = servarr_resources::deployment::build(&app, &std::collections::HashMap::new());
+    let deploy =
+        servarr_resources::deployment::build(&app, &std::collections::HashMap::new()).unwrap();
     let pod_spec = deploy.spec.unwrap().template.spec.unwrap();
 
     let init = pod_spec.init_containers.as_ref().unwrap();
@@ -2209,7 +2229,8 @@ fn test_deployment_prowlarr_definitions_volume() {
         status: None,
     };
 
-    let deploy = servarr_resources::deployment::build(&app, &std::collections::HashMap::new());
+    let deploy =
+        servarr_resources::deployment::build(&app, &std::collections::HashMap::new()).unwrap();
     let pod_spec = deploy.spec.unwrap().template.spec.unwrap();
     let container = &pod_spec.containers[0];
 
@@ -2256,7 +2277,8 @@ fn test_deployment_custom_resources() {
         status: None,
     };
 
-    let deploy = servarr_resources::deployment::build(&app, &std::collections::HashMap::new());
+    let deploy =
+        servarr_resources::deployment::build(&app, &std::collections::HashMap::new()).unwrap();
     let container = &deploy.spec.unwrap().template.spec.unwrap().containers[0];
     let resources = container.resources.as_ref().unwrap();
 
@@ -2303,7 +2325,8 @@ fn test_deployment_custom_probes() {
         status: None,
     };
 
-    let deploy = servarr_resources::deployment::build(&app, &std::collections::HashMap::new());
+    let deploy =
+        servarr_resources::deployment::build(&app, &std::collections::HashMap::new()).unwrap();
     let container = &deploy.spec.unwrap().template.spec.unwrap().containers[0];
 
     let liveness = container.liveness_probe.as_ref().unwrap();
@@ -2343,7 +2366,8 @@ fn test_deployment_gpu_resources() {
         status: None,
     };
 
-    let deploy = servarr_resources::deployment::build(&app, &std::collections::HashMap::new());
+    let deploy =
+        servarr_resources::deployment::build(&app, &std::collections::HashMap::new()).unwrap();
     let container = &deploy.spec.unwrap().template.spec.unwrap().containers[0];
     let resources = container.resources.as_ref().unwrap();
 
@@ -2391,7 +2415,7 @@ fn test_networkpolicy_gateway_namespace_ingress() {
         status: None,
     };
 
-    let np = servarr_resources::networkpolicy::build(&app);
+    let np = servarr_resources::networkpolicy::build(&app).unwrap();
     let spec = np.spec.unwrap();
     let ingress = spec.ingress.unwrap();
 
@@ -2433,7 +2457,7 @@ fn test_networkpolicy_ssh_bastion_ingress() {
         status: None,
     };
 
-    let np = servarr_resources::networkpolicy::build(&app);
+    let np = servarr_resources::networkpolicy::build(&app).unwrap();
     let spec = np.spec.unwrap();
     let ingress = spec.ingress.unwrap();
 
@@ -2475,7 +2499,7 @@ fn test_networkpolicy_transmission_peer_port() {
         status: None,
     };
 
-    let np = servarr_resources::networkpolicy::build(&app);
+    let np = servarr_resources::networkpolicy::build(&app).unwrap();
     let spec = np.spec.unwrap();
     let ingress = spec.ingress.unwrap();
 
@@ -2516,7 +2540,7 @@ fn test_networkpolicy_internet_egress_default_denied_cidrs() {
         status: None,
     };
 
-    let np = servarr_resources::networkpolicy::build(&app);
+    let np = servarr_resources::networkpolicy::build(&app).unwrap();
     let spec = np.spec.unwrap();
     let egress = spec.egress.unwrap();
 
@@ -2565,7 +2589,7 @@ fn test_networkpolicy_internet_egress_custom_denied_cidrs() {
         status: None,
     };
 
-    let np = servarr_resources::networkpolicy::build(&app);
+    let np = servarr_resources::networkpolicy::build(&app).unwrap();
     let spec = np.spec.unwrap();
     let egress = spec.egress.unwrap();
 
@@ -2624,7 +2648,7 @@ fn test_networkpolicy_custom_egress_rules() {
         status: None,
     };
 
-    let np = servarr_resources::networkpolicy::build(&app);
+    let np = servarr_resources::networkpolicy::build(&app).unwrap();
     let spec = np.spec.unwrap();
     let egress = spec.egress.unwrap();
 
@@ -2682,7 +2706,7 @@ fn test_networkpolicy_ssh_bastion_nfs_egress() {
         status: None,
     };
 
-    let np = servarr_resources::networkpolicy::build(&app);
+    let np = servarr_resources::networkpolicy::build(&app).unwrap();
     let spec = np.spec.unwrap();
     let egress = spec.egress.unwrap();
 
@@ -2723,7 +2747,7 @@ fn test_networkpolicy_allow_dns_false() {
         status: None,
     };
 
-    let np = servarr_resources::networkpolicy::build(&app);
+    let np = servarr_resources::networkpolicy::build(&app).unwrap();
     let spec = np.spec.unwrap();
     let egress = spec.egress.unwrap();
 
@@ -2919,7 +2943,7 @@ fn test_common_owner_ref_alias() {
 #[test]
 fn test_service_builder_radarr_default_port() {
     let app = make_app(AppType::Radarr);
-    let svc = servarr_resources::service::build(&app);
+    let svc = servarr_resources::service::build(&app).unwrap();
 
     let spec = svc.spec.unwrap();
     let ports = spec.ports.unwrap();
@@ -2932,7 +2956,7 @@ fn test_service_builder_radarr_default_port() {
 #[test]
 fn test_service_builder_sonarr_default_port() {
     let app = make_app(AppType::Sonarr);
-    let svc = servarr_resources::service::build(&app);
+    let svc = servarr_resources::service::build(&app).unwrap();
 
     let spec = svc.spec.unwrap();
     let ports = spec.ports.unwrap();
@@ -2943,7 +2967,7 @@ fn test_service_builder_sonarr_default_port() {
 #[test]
 fn test_service_builder_prowlarr_default_port() {
     let app = make_app(AppType::Prowlarr);
-    let svc = servarr_resources::service::build(&app);
+    let svc = servarr_resources::service::build(&app).unwrap();
 
     let spec = svc.spec.unwrap();
     let ports = spec.ports.unwrap();
@@ -2975,7 +2999,7 @@ fn test_service_builder_transmission_with_peer_port() {
         status: None,
     };
 
-    let svc = servarr_resources::service::build(&app);
+    let svc = servarr_resources::service::build(&app).unwrap();
     let spec = svc.spec.unwrap();
     let ports = spec.ports.unwrap();
 
@@ -2996,7 +3020,7 @@ fn test_service_builder_transmission_with_peer_port() {
 #[test]
 fn test_service_builder_selector_labels() {
     let app = make_app(AppType::Sonarr);
-    let svc = servarr_resources::service::build(&app);
+    let svc = servarr_resources::service::build(&app).unwrap();
 
     let spec = svc.spec.unwrap();
     let selector = spec.selector.unwrap();
@@ -3007,7 +3031,7 @@ fn test_service_builder_selector_labels() {
 #[test]
 fn test_service_builder_clusterip_type() {
     let app = make_app(AppType::Sonarr);
-    let svc = servarr_resources::service::build(&app);
+    let svc = servarr_resources::service::build(&app).unwrap();
 
     let spec = svc.spec.unwrap();
     assert_eq!(spec.type_.as_deref(), Some("ClusterIP"));
@@ -3016,7 +3040,7 @@ fn test_service_builder_clusterip_type() {
 #[test]
 fn test_service_builder_owner_references() {
     let app = make_app(AppType::Sonarr);
-    let svc = servarr_resources::service::build(&app);
+    let svc = servarr_resources::service::build(&app).unwrap();
 
     let owner_refs = svc.metadata.owner_references.unwrap();
     assert_eq!(owner_refs.len(), 1);
@@ -3046,7 +3070,7 @@ fn test_networkpolicy_allow_same_namespace_false() {
         status: None,
     };
 
-    let np = servarr_resources::networkpolicy::build(&app);
+    let np = servarr_resources::networkpolicy::build(&app).unwrap();
     let spec = np.spec.unwrap();
     let ingress = spec.ingress.unwrap();
 
@@ -3095,7 +3119,8 @@ fn test_deployment_ssh_bastion_advanced_env_vars() {
         status: None,
     };
 
-    let deploy = servarr_resources::deployment::build(&app, &std::collections::HashMap::new());
+    let deploy =
+        servarr_resources::deployment::build(&app, &std::collections::HashMap::new()).unwrap();
     let pod_spec = deploy.spec.unwrap().template.spec.unwrap();
     let container = &pod_spec.containers[0];
     let env = container.env.as_ref().unwrap();
@@ -3151,7 +3176,8 @@ fn test_deployment_ssh_bastion_managed_env_ignored() {
         status: None,
     };
 
-    let deploy = servarr_resources::deployment::build(&app, &std::collections::HashMap::new());
+    let deploy =
+        servarr_resources::deployment::build(&app, &std::collections::HashMap::new()).unwrap();
     let pod_spec = deploy.spec.unwrap().template.spec.unwrap();
     let container = &pod_spec.containers[0];
     let env = container.env.as_ref().unwrap();
@@ -3224,7 +3250,8 @@ fn test_deployment_ssh_bastion_host_keys_preserved_with_nfs_mounts() {
         status: None,
     };
 
-    let deploy = servarr_resources::deployment::build(&app, &std::collections::HashMap::new());
+    let deploy =
+        servarr_resources::deployment::build(&app, &std::collections::HashMap::new()).unwrap();
     let pod_spec = deploy.spec.unwrap().template.spec.unwrap();
 
     let volumes = pod_spec.volumes.as_ref().expect("pod should have volumes");
@@ -3430,7 +3457,8 @@ fn test_nfs_server_service_selector_labels() {
 #[test]
 fn test_deployment_no_gpu_no_node_selector() {
     let app = make_app(AppType::Sonarr);
-    let deploy = servarr_resources::deployment::build(&app, &std::collections::HashMap::new());
+    let deploy =
+        servarr_resources::deployment::build(&app, &std::collections::HashMap::new()).unwrap();
     let pod_spec = deploy.spec.unwrap().template.spec.unwrap();
     assert!(
         pod_spec.node_selector.is_none(),
@@ -3445,7 +3473,8 @@ fn test_deployment_intel_gpu_adds_nfd_node_selector() {
         intel: Some(1),
         ..Default::default()
     });
-    let deploy = servarr_resources::deployment::build(&app, &std::collections::HashMap::new());
+    let deploy =
+        servarr_resources::deployment::build(&app, &std::collections::HashMap::new()).unwrap();
     let pod_spec = deploy.spec.unwrap().template.spec.unwrap();
     let sel = pod_spec
         .node_selector
@@ -3465,7 +3494,8 @@ fn test_deployment_nvidia_gpu_adds_nfd_node_selector() {
         nvidia: Some(1),
         ..Default::default()
     });
-    let deploy = servarr_resources::deployment::build(&app, &std::collections::HashMap::new());
+    let deploy =
+        servarr_resources::deployment::build(&app, &std::collections::HashMap::new()).unwrap();
     let pod_spec = deploy.spec.unwrap().template.spec.unwrap();
     let sel = pod_spec
         .node_selector
@@ -3485,7 +3515,8 @@ fn test_deployment_amd_gpu_adds_nfd_node_selector() {
         amd: Some(1),
         ..Default::default()
     });
-    let deploy = servarr_resources::deployment::build(&app, &std::collections::HashMap::new());
+    let deploy =
+        servarr_resources::deployment::build(&app, &std::collections::HashMap::new()).unwrap();
     let pod_spec = deploy.spec.unwrap().template.spec.unwrap();
     let sel = pod_spec
         .node_selector
@@ -3512,7 +3543,8 @@ fn test_deployment_user_node_selector_preserved_with_gpu() {
         )]),
         ..Default::default()
     });
-    let deploy = servarr_resources::deployment::build(&app, &std::collections::HashMap::new());
+    let deploy =
+        servarr_resources::deployment::build(&app, &std::collections::HashMap::new()).unwrap();
     let pod_spec = deploy.spec.unwrap().template.spec.unwrap();
     let sel = pod_spec.node_selector.expect("nodeSelector must be set");
     assert_eq!(
@@ -3537,7 +3569,8 @@ fn find_env<'a>(
 }
 
 fn get_env(app: &ServarrApp) -> Vec<k8s_openapi::api::core::v1::EnvVar> {
-    let deploy = servarr_resources::deployment::build(app, &std::collections::HashMap::new());
+    let deploy =
+        servarr_resources::deployment::build(app, &std::collections::HashMap::new()).unwrap();
     deploy
         .spec
         .unwrap()
@@ -3661,7 +3694,8 @@ fn test_admin_credentials_transmission_mounts_secret_volume() {
     app.spec.admin_credentials = Some(AdminCredentialsSpec {
         secret_name: "creds".into(),
     });
-    let deploy = servarr_resources::deployment::build(&app, &std::collections::HashMap::new());
+    let deploy =
+        servarr_resources::deployment::build(&app, &std::collections::HashMap::new()).unwrap();
     let pod_spec = deploy.spec.unwrap().template.spec.unwrap();
 
     // Volume must exist
@@ -3695,7 +3729,8 @@ fn test_admin_credentials_transmission_mounts_auth_script_to_custom_cont_init() 
     app.spec.admin_credentials = Some(AdminCredentialsSpec {
         secret_name: "creds".into(),
     });
-    let deploy = servarr_resources::deployment::build(&app, &std::collections::HashMap::new());
+    let deploy =
+        servarr_resources::deployment::build(&app, &std::collections::HashMap::new()).unwrap();
     let pod_spec = deploy.spec.unwrap().template.spec.unwrap();
 
     // The custom-cont-init.d script must be mounted in the main container via subPath.
@@ -3743,7 +3778,8 @@ fn test_admin_credentials_transmission_uses_exec_probe() {
     app.spec.admin_credentials = Some(AdminCredentialsSpec {
         secret_name: "creds".into(),
     });
-    let deploy = servarr_resources::deployment::build(&app, &std::collections::HashMap::new());
+    let deploy =
+        servarr_resources::deployment::build(&app, &std::collections::HashMap::new()).unwrap();
     let container = &deploy.spec.unwrap().template.spec.unwrap().containers[0];
 
     let liveness = container
@@ -3843,7 +3879,9 @@ fn test_httproute_ssa_body_has_type_meta() {
         status: None,
     };
 
-    let route = servarr_resources::httproute::build(&app).expect("should build HTTPRoute");
+    let route = servarr_resources::httproute::build(&app)
+        .unwrap()
+        .expect("should build HTTPRoute");
     let body = serde_json::to_value(&route).expect("should serialize");
 
     assert_eq!(
@@ -3886,7 +3924,7 @@ fn test_sshbastion_gateway_defaults_to_tcp() {
     // TCPRoute should be built for SshBastion with gateway enabled,
     // even if routeType is not explicitly set, because SshBastion
     // needs TCP not HTTP.
-    let route = servarr_resources::tcproute::build(&app);
+    let route = servarr_resources::tcproute::build(&app).unwrap();
     assert!(
         route.is_some(),
         "SshBastion with enabled gateway should build TCPRoute (routeType should default to Tcp)"
@@ -3894,7 +3932,7 @@ fn test_sshbastion_gateway_defaults_to_tcp() {
 
     // The actual #49 bug: HTTPRoute must NOT be built for SshBastion.
     // SSH is TCP-only, so an HTTPRoute would silently fail to expose it.
-    let http_route = servarr_resources::httproute::build(&app);
+    let http_route = servarr_resources::httproute::build(&app).unwrap();
     assert!(
         http_route.is_none(),
         "HTTPRoute must not be built for SshBastion — SSH is TCP only"
@@ -3989,7 +4027,8 @@ fn test_deployment_builder_lidarr_youtube_downloader() {
         status: None,
     };
 
-    let deploy = servarr_resources::deployment::build(&app, &std::collections::HashMap::new());
+    let deploy =
+        servarr_resources::deployment::build(&app, &std::collections::HashMap::new()).unwrap();
     let spec = deploy.spec.unwrap();
     let pod_spec = spec.template.spec.unwrap();
 

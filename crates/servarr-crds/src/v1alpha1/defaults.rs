@@ -21,9 +21,10 @@ impl AppDefaults {
     /// Load defaults for `app`, returning an error if the app has no entry in
     /// `image-defaults.toml` or its security profile is unrecognised.
     ///
-    /// Use [`for_app`] in the hot reconcile path (it panics on bad data, which
-    /// should only happen if `image-defaults.toml` is incomplete); call
-    /// [`validate_all`] at startup to catch that early.
+    /// [`for_app`] is an alias for this used in the hot reconcile path; both
+    /// propagate the error to the caller rather than panicking. Call
+    /// [`validate_all`] at startup to catch a broken `image-defaults.toml`
+    /// before the first reconcile.
     ///
     /// # Errors
     ///
@@ -127,30 +128,31 @@ impl AppDefaults {
     }
 
     /// Merge `app`'s persistence override with these compiled defaults, then
-    /// restore any volume the app type cannot function without if the merge
-    /// dropped it.
+    /// restore any default volume the merge dropped.
     ///
     /// `PersistenceSpec::merge_with` replaces `volumes` wholesale when the
     /// override is non-empty (e.g. a MediaStack's stack-wide persistence
-    /// applied to a bastion with no per-app override). For most apps that's
-    /// fine, but SshBastion's `host-keys` volume is load-bearing: losing it
-    /// makes `generate-host-keys` regenerate the host's SSH identity, which
-    /// changes the fingerprint every client trusts (#305). An explicit
-    /// override that names `host-keys` itself still wins.
+    /// applied to a member with no per-app override). Every app-type default
+    /// volume is load-bearing for that app — SshBastion's `host-keys` losing
+    /// it regenerates the host's SSH identity and breaks every client's
+    /// trust (#305); Subgen's `models`, the `downloads` volume, and
+    /// Maintainerr's relocated `config` volume are equally load-bearing for
+    /// their apps. Rather than special-case one app type, restore *any*
+    /// compiled default volume the override's whole-list replace dropped. An
+    /// explicit override that names a default volume itself still wins.
     pub fn resolve_persistence(&self, app: &super::ServarrApp) -> PersistenceSpec {
         let mut persistence = match &app.spec.persistence {
             None => self.persistence.clone(),
             Some(spec) => spec.merge_with(&self.persistence),
         };
-        if matches!(app.spec.app, super::AppType::SshBastion)
-            && !persistence.volumes.iter().any(|v| v.name == "host-keys")
-            && let Some(host_keys) = self
-                .persistence
+        for default_vol in &self.persistence.volumes {
+            if !persistence
                 .volumes
                 .iter()
-                .find(|v| v.name == "host-keys")
-        {
-            persistence.volumes.push(host_keys.clone());
+                .any(|v| v.name == default_vol.name)
+            {
+                persistence.volumes.push(default_vol.clone());
+            }
         }
         persistence
     }

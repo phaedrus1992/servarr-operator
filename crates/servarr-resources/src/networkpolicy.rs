@@ -15,23 +15,9 @@ const DEFAULT_DENIED_CIDRS: &[&str] = &[
     "169.254.0.0/16", // link-local, includes cloud metadata (169.254.169.254)
 ];
 
-pub fn build(app: &ServarrApp) -> NetworkPolicy {
-    let defaults = match AppDefaults::for_app(&app.spec.app) {
-        Ok(d) => d,
-        Err(e) => {
-            tracing::error!(app_type = ?app.spec.app, error = %e, "failed to get app defaults; returning minimal NetworkPolicy");
-            return NetworkPolicy {
-                metadata: ObjectMeta {
-                    name: Some(common::app_name(app)),
-                    namespace: Some(common::app_namespace(app)),
-                    labels: Some(common::labels(app)),
-                    owner_references: Some(vec![common::owner_reference(app)]),
-                    ..Default::default()
-                },
-                spec: None,
-            };
-        }
-    };
+pub fn build(app: &ServarrApp) -> Result<NetworkPolicy, String> {
+    let defaults = AppDefaults::for_app(&app.spec.app)
+        .inspect_err(|e| common::log_app_defaults_error(app, e))?;
     let svc_spec = app.spec.service.as_ref().unwrap_or(&defaults.service);
     let mut config = app.spec.network_policy_config.clone().unwrap_or_default();
 
@@ -82,7 +68,7 @@ pub fn build(app: &ServarrApp) -> NetworkPolicy {
     // --- Egress rules ---
     let egress = build_egress_rules(&config);
 
-    NetworkPolicy {
+    Ok(NetworkPolicy {
         metadata: ObjectMeta {
             name: Some(common::app_name(app)),
             namespace: Some(common::app_namespace(app)),
@@ -99,7 +85,7 @@ pub fn build(app: &ServarrApp) -> NetworkPolicy {
             egress: Some(egress),
             policy_types: Some(vec!["Ingress".into(), "Egress".into()]),
         }),
-    }
+    })
 }
 
 fn build_ingress_rules(
