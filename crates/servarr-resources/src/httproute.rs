@@ -4,10 +4,12 @@ use servarr_crds::{AppDefaults, RouteType, ServarrApp};
 
 use crate::common;
 
-pub fn build(app: &ServarrApp) -> Option<DynamicObject> {
-    let gateway = app.spec.gateway.as_ref()?;
+pub fn build(app: &ServarrApp) -> Result<Option<DynamicObject>, String> {
+    let Some(gateway) = app.spec.gateway.as_ref() else {
+        return Ok(None);
+    };
     if !gateway.is_enabled() {
-        return None;
+        return Ok(None);
     }
 
     // Only build HTTPRoute when route_type is Http (don't build for apps like SshBastion
@@ -15,10 +17,11 @@ pub fn build(app: &ServarrApp) -> Option<DynamicObject> {
     if matches!(gateway.effective_route_type(&app.spec.app), RouteType::Tcp)
         || gateway.tls.as_ref().is_some_and(|t| t.enabled)
     {
-        return None;
+        return Ok(None);
     }
 
-    let defaults = AppDefaults::for_app(&app.spec.app).expect("missing app defaults");
+    let defaults = AppDefaults::for_app(&app.spec.app)
+        .inspect_err(|e| common::log_app_defaults_error(app, e))?;
     let svc_spec = app.spec.service.as_ref().unwrap_or(&defaults.service);
     let first_port = svc_spec.ports.first().map(|p| p.port).unwrap_or(80);
 
@@ -65,5 +68,5 @@ pub fn build(app: &ServarrApp) -> Option<DynamicObject> {
         },
     });
 
-    serde_json::from_value(route).ok()
+    Ok(serde_json::from_value(route).ok())
 }

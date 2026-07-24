@@ -42,6 +42,8 @@ pub enum Error {
     Kube(#[source] kube::Error),
     #[error("Serialization error: {0}")]
     Serialization(#[source] serde_json::Error),
+    #[error("app defaults error: {0}")]
+    AppDefaults(String),
 }
 
 pub fn print_crd() -> Result<()> {
@@ -280,7 +282,8 @@ pub async fn reconcile(app: Arc<ServarrApp>, ctx: Arc<Context>) -> Result<Action
     };
 
     // Build and apply Deployment
-    let deployment = servarr_resources::deployment::build(&app, &ctx.image_overrides);
+    let deployment = servarr_resources::deployment::build(&app, &ctx.image_overrides)
+        .map_err(Error::AppDefaults)?;
     let deploy_api = Api::<Deployment>::namespaced(client.clone(), &ns);
     tracing::debug!(%name, "SSA: applying Deployment");
     deploy_api
@@ -339,7 +342,7 @@ pub async fn reconcile(app: Arc<ServarrApp>, ctx: Arc<Context>) -> Result<Action
 
     // Build and apply Service. The Service name may differ from the app name
     // when `service_name` is set, so the SSA URL must use the service name.
-    let service = servarr_resources::service::build(&app);
+    let service = servarr_resources::service::build(&app).map_err(Error::AppDefaults)?;
     let svc_name = servarr_resources::common::service_name(&app);
     let svc_api = Api::<Service>::namespaced(client.clone(), &ns);
     tracing::debug!(%svc_name, "SSA: applying Service");
@@ -349,7 +352,7 @@ pub async fn reconcile(app: Arc<ServarrApp>, ctx: Arc<Context>) -> Result<Action
         .map_err(Error::Kube)?;
 
     // Build and apply PVCs (get-or-create to avoid mutating immutable fields)
-    let pvcs = servarr_resources::pvc::build_all(&app);
+    let pvcs = servarr_resources::pvc::build_all(&app).map_err(Error::AppDefaults)?;
     let pvc_api = Api::<PersistentVolumeClaim>::namespaced(client.clone(), &ns);
     for pvc in &pvcs {
         let pvc_name = pvc.metadata.name.as_deref().unwrap_or("unknown");
@@ -379,7 +382,7 @@ pub async fn reconcile(app: Arc<ServarrApp>, ctx: Arc<Context>) -> Result<Action
         );
     }
     if network_policy_enabled {
-        let np = servarr_resources::networkpolicy::build(&app);
+        let np = servarr_resources::networkpolicy::build(&app).map_err(Error::AppDefaults)?;
         let np_api = Api::<NetworkPolicy>::namespaced(client.clone(), &ns);
         tracing::debug!(%name, "SSA: applying NetworkPolicy");
         np_api
@@ -478,7 +481,7 @@ pub async fn reconcile(app: Arc<ServarrApp>, ctx: Arc<Context>) -> Result<Action
 
     // Build and apply HTTPRoute or TCPRoute (if gateway enabled)
     // Gateway API types use DynamicObject since they're not in k8s-openapi
-    if let Some(route) = servarr_resources::tcproute::build(&app) {
+    if let Some(route) = servarr_resources::tcproute::build(&app).map_err(Error::AppDefaults)? {
         // TCPRoute takes precedence when route_type is Tcp or TLS is enabled
         let api_resource = kube::discovery::ApiResource {
             group: "gateway.networking.k8s.io".into(),
@@ -495,7 +498,9 @@ pub async fn reconcile(app: Arc<ServarrApp>, ctx: Arc<Context>) -> Result<Action
             .patch(&name, &pp, &Patch::Apply(route_data))
             .await
             .map_err(Error::Kube)?;
-    } else if let Some(route) = servarr_resources::httproute::build(&app) {
+    } else if let Some(route) =
+        servarr_resources::httproute::build(&app).map_err(Error::AppDefaults)?
+    {
         let api_resource = kube::discovery::ApiResource {
             group: "gateway.networking.k8s.io".into(),
             version: "v1".into(),
