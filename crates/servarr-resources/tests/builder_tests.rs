@@ -214,7 +214,7 @@ fn test_deployment_builder_transmission() {
 #[test]
 fn test_service_builder() {
     let app = make_app(AppType::Radarr);
-    let svc = servarr_resources::service::build(&app);
+    let svc = servarr_resources::service::build(&app).unwrap();
 
     assert_eq!(svc.metadata.name.as_deref(), Some("test-app"));
     assert_eq!(svc.metadata.namespace.as_deref(), Some("media"));
@@ -231,7 +231,7 @@ fn test_service_builder() {
 fn test_service_builder_name_override() {
     let mut app = make_app(AppType::Transmission);
     app.spec.service_name = Some("transmission".into());
-    let svc = servarr_resources::service::build(&app);
+    let svc = servarr_resources::service::build(&app).unwrap();
 
     // Service name uses the override...
     assert_eq!(svc.metadata.name.as_deref(), Some("transmission"));
@@ -258,7 +258,7 @@ fn test_httproute_backend_uses_service_name_override() {
         }],
         ..Default::default()
     });
-    let route = servarr_resources::httproute::build(&app).unwrap();
+    let route = servarr_resources::httproute::build(&app).unwrap().unwrap();
     let backend = &route.data["spec"]["rules"][0]["backendRefs"][0]["name"];
     assert_eq!(backend, "sonarr");
     // Route object itself keeps the app name.
@@ -522,7 +522,7 @@ fn test_deployment_ssh_bastion_shell_mode_home_mounts() {
 #[test]
 fn test_networkpolicy_builder() {
     let app = make_app(AppType::Sonarr);
-    let np = servarr_resources::networkpolicy::build(&app);
+    let np = servarr_resources::networkpolicy::build(&app).unwrap();
 
     assert_eq!(np.metadata.name.as_deref(), Some("test-app"));
     let spec = np.spec.unwrap();
@@ -577,7 +577,7 @@ fn test_configmap_transmission_chown_uses_shared_default_uid_gid() {
 #[test]
 fn test_httproute_builder_disabled() {
     let app = make_app(AppType::Sonarr);
-    let route = servarr_resources::httproute::build(&app);
+    let route = servarr_resources::httproute::build(&app).unwrap();
     assert!(route.is_none());
 }
 
@@ -608,7 +608,7 @@ fn test_httproute_builder_enabled() {
         status: None,
     };
 
-    let route = servarr_resources::httproute::build(&app);
+    let route = servarr_resources::httproute::build(&app).unwrap();
     assert!(route.is_some());
 }
 
@@ -1307,7 +1307,7 @@ fn test_certificate_custom_secret_name() {
 #[test]
 fn test_tcproute_no_gateway_returns_none() {
     let app = make_app(AppType::Sonarr);
-    let route = servarr_resources::tcproute::build(&app);
+    let route = servarr_resources::tcproute::build(&app).unwrap();
     assert!(route.is_none());
 }
 
@@ -1330,7 +1330,7 @@ fn test_tcproute_gateway_disabled_returns_none() {
         },
         status: None,
     };
-    let route = servarr_resources::tcproute::build(&app);
+    let route = servarr_resources::tcproute::build(&app).unwrap();
     assert!(route.is_none());
 }
 
@@ -1360,7 +1360,7 @@ fn test_tcproute_http_route_no_tls_returns_none() {
         },
         status: None,
     };
-    let route = servarr_resources::tcproute::build(&app);
+    let route = servarr_resources::tcproute::build(&app).unwrap();
     assert!(route.is_none());
 }
 
@@ -1390,7 +1390,7 @@ fn test_tcproute_tcp_route_type_returns_some() {
         },
         status: None,
     };
-    let route = servarr_resources::tcproute::build(&app);
+    let route = servarr_resources::tcproute::build(&app).unwrap();
     assert!(route.is_some());
 
     let route = route.unwrap();
@@ -1442,7 +1442,7 @@ fn test_tcproute_http_route_with_tls_enabled_returns_some() {
         status: None,
     };
     // TLS enabled forces TCP mode even when route_type is Http
-    let route = servarr_resources::tcproute::build(&app);
+    let route = servarr_resources::tcproute::build(&app).unwrap();
     assert!(route.is_some());
 
     let route = route.unwrap();
@@ -1477,7 +1477,7 @@ fn test_tcproute_parent_refs_with_namespace_and_section_name() {
         },
         status: None,
     };
-    let route = servarr_resources::tcproute::build(&app).unwrap();
+    let route = servarr_resources::tcproute::build(&app).unwrap().unwrap();
 
     let parent_refs = route.data["spec"]["parentRefs"].as_array().unwrap();
     assert_eq!(parent_refs.len(), 1);
@@ -2415,7 +2415,7 @@ fn test_networkpolicy_gateway_namespace_ingress() {
         status: None,
     };
 
-    let np = servarr_resources::networkpolicy::build(&app);
+    let np = servarr_resources::networkpolicy::build(&app).unwrap();
     let spec = np.spec.unwrap();
     let ingress = spec.ingress.unwrap();
 
@@ -2457,7 +2457,7 @@ fn test_networkpolicy_ssh_bastion_ingress() {
         status: None,
     };
 
-    let np = servarr_resources::networkpolicy::build(&app);
+    let np = servarr_resources::networkpolicy::build(&app).unwrap();
     let spec = np.spec.unwrap();
     let ingress = spec.ingress.unwrap();
 
@@ -2499,7 +2499,7 @@ fn test_networkpolicy_transmission_peer_port() {
         status: None,
     };
 
-    let np = servarr_resources::networkpolicy::build(&app);
+    let np = servarr_resources::networkpolicy::build(&app).unwrap();
     let spec = np.spec.unwrap();
     let ingress = spec.ingress.unwrap();
 
@@ -2540,7 +2540,7 @@ fn test_networkpolicy_internet_egress_default_denied_cidrs() {
         status: None,
     };
 
-    let np = servarr_resources::networkpolicy::build(&app);
+    let np = servarr_resources::networkpolicy::build(&app).unwrap();
     let spec = np.spec.unwrap();
     let egress = spec.egress.unwrap();
 
@@ -2589,7 +2589,7 @@ fn test_networkpolicy_internet_egress_custom_denied_cidrs() {
         status: None,
     };
 
-    let np = servarr_resources::networkpolicy::build(&app);
+    let np = servarr_resources::networkpolicy::build(&app).unwrap();
     let spec = np.spec.unwrap();
     let egress = spec.egress.unwrap();
 
@@ -2648,7 +2648,7 @@ fn test_networkpolicy_custom_egress_rules() {
         status: None,
     };
 
-    let np = servarr_resources::networkpolicy::build(&app);
+    let np = servarr_resources::networkpolicy::build(&app).unwrap();
     let spec = np.spec.unwrap();
     let egress = spec.egress.unwrap();
 
@@ -2706,7 +2706,7 @@ fn test_networkpolicy_ssh_bastion_nfs_egress() {
         status: None,
     };
 
-    let np = servarr_resources::networkpolicy::build(&app);
+    let np = servarr_resources::networkpolicy::build(&app).unwrap();
     let spec = np.spec.unwrap();
     let egress = spec.egress.unwrap();
 
@@ -2747,7 +2747,7 @@ fn test_networkpolicy_allow_dns_false() {
         status: None,
     };
 
-    let np = servarr_resources::networkpolicy::build(&app);
+    let np = servarr_resources::networkpolicy::build(&app).unwrap();
     let spec = np.spec.unwrap();
     let egress = spec.egress.unwrap();
 
@@ -2943,7 +2943,7 @@ fn test_common_owner_ref_alias() {
 #[test]
 fn test_service_builder_radarr_default_port() {
     let app = make_app(AppType::Radarr);
-    let svc = servarr_resources::service::build(&app);
+    let svc = servarr_resources::service::build(&app).unwrap();
 
     let spec = svc.spec.unwrap();
     let ports = spec.ports.unwrap();
@@ -2956,7 +2956,7 @@ fn test_service_builder_radarr_default_port() {
 #[test]
 fn test_service_builder_sonarr_default_port() {
     let app = make_app(AppType::Sonarr);
-    let svc = servarr_resources::service::build(&app);
+    let svc = servarr_resources::service::build(&app).unwrap();
 
     let spec = svc.spec.unwrap();
     let ports = spec.ports.unwrap();
@@ -2967,7 +2967,7 @@ fn test_service_builder_sonarr_default_port() {
 #[test]
 fn test_service_builder_prowlarr_default_port() {
     let app = make_app(AppType::Prowlarr);
-    let svc = servarr_resources::service::build(&app);
+    let svc = servarr_resources::service::build(&app).unwrap();
 
     let spec = svc.spec.unwrap();
     let ports = spec.ports.unwrap();
@@ -2999,7 +2999,7 @@ fn test_service_builder_transmission_with_peer_port() {
         status: None,
     };
 
-    let svc = servarr_resources::service::build(&app);
+    let svc = servarr_resources::service::build(&app).unwrap();
     let spec = svc.spec.unwrap();
     let ports = spec.ports.unwrap();
 
@@ -3020,7 +3020,7 @@ fn test_service_builder_transmission_with_peer_port() {
 #[test]
 fn test_service_builder_selector_labels() {
     let app = make_app(AppType::Sonarr);
-    let svc = servarr_resources::service::build(&app);
+    let svc = servarr_resources::service::build(&app).unwrap();
 
     let spec = svc.spec.unwrap();
     let selector = spec.selector.unwrap();
@@ -3031,7 +3031,7 @@ fn test_service_builder_selector_labels() {
 #[test]
 fn test_service_builder_clusterip_type() {
     let app = make_app(AppType::Sonarr);
-    let svc = servarr_resources::service::build(&app);
+    let svc = servarr_resources::service::build(&app).unwrap();
 
     let spec = svc.spec.unwrap();
     assert_eq!(spec.type_.as_deref(), Some("ClusterIP"));
@@ -3040,7 +3040,7 @@ fn test_service_builder_clusterip_type() {
 #[test]
 fn test_service_builder_owner_references() {
     let app = make_app(AppType::Sonarr);
-    let svc = servarr_resources::service::build(&app);
+    let svc = servarr_resources::service::build(&app).unwrap();
 
     let owner_refs = svc.metadata.owner_references.unwrap();
     assert_eq!(owner_refs.len(), 1);
@@ -3070,7 +3070,7 @@ fn test_networkpolicy_allow_same_namespace_false() {
         status: None,
     };
 
-    let np = servarr_resources::networkpolicy::build(&app);
+    let np = servarr_resources::networkpolicy::build(&app).unwrap();
     let spec = np.spec.unwrap();
     let ingress = spec.ingress.unwrap();
 
@@ -3879,7 +3879,9 @@ fn test_httproute_ssa_body_has_type_meta() {
         status: None,
     };
 
-    let route = servarr_resources::httproute::build(&app).expect("should build HTTPRoute");
+    let route = servarr_resources::httproute::build(&app)
+        .unwrap()
+        .expect("should build HTTPRoute");
     let body = serde_json::to_value(&route).expect("should serialize");
 
     assert_eq!(
@@ -3922,7 +3924,7 @@ fn test_sshbastion_gateway_defaults_to_tcp() {
     // TCPRoute should be built for SshBastion with gateway enabled,
     // even if routeType is not explicitly set, because SshBastion
     // needs TCP not HTTP.
-    let route = servarr_resources::tcproute::build(&app);
+    let route = servarr_resources::tcproute::build(&app).unwrap();
     assert!(
         route.is_some(),
         "SshBastion with enabled gateway should build TCPRoute (routeType should default to Tcp)"
@@ -3930,7 +3932,7 @@ fn test_sshbastion_gateway_defaults_to_tcp() {
 
     // The actual #49 bug: HTTPRoute must NOT be built for SshBastion.
     // SSH is TCP-only, so an HTTPRoute would silently fail to expose it.
-    let http_route = servarr_resources::httproute::build(&app);
+    let http_route = servarr_resources::httproute::build(&app).unwrap();
     assert!(
         http_route.is_none(),
         "HTTPRoute must not be built for SshBastion — SSH is TCP only"

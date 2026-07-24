@@ -21,9 +21,10 @@ impl AppDefaults {
     /// Load defaults for `app`, returning an error if the app has no entry in
     /// `image-defaults.toml` or its security profile is unrecognised.
     ///
-    /// Use [`for_app`] in the hot reconcile path (it panics on bad data, which
-    /// should only happen if `image-defaults.toml` is incomplete); call
-    /// [`validate_all`] at startup to catch that early.
+    /// [`for_app`] is an alias for this used in the hot reconcile path; both
+    /// propagate the error to the caller rather than panicking. Call
+    /// [`validate_all`] at startup to catch a broken `image-defaults.toml`
+    /// before the first reconcile.
     ///
     /// # Errors
     ///

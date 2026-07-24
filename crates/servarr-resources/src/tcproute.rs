@@ -8,10 +8,12 @@ use crate::common;
 ///
 /// Returns `Some` only when the gateway is enabled and `route_type` is `Tcp`
 /// (or TLS is enabled, which forces TCP mode).
-pub fn build(app: &ServarrApp) -> Option<DynamicObject> {
-    let gateway = app.spec.gateway.as_ref()?;
+pub fn build(app: &ServarrApp) -> Result<Option<DynamicObject>, String> {
+    let Some(gateway) = app.spec.gateway.as_ref() else {
+        return Ok(None);
+    };
     if !gateway.is_enabled() {
-        return None;
+        return Ok(None);
     }
 
     // Only build a TCPRoute when route_type is Tcp or TLS is enabled.
@@ -20,10 +22,12 @@ pub fn build(app: &ServarrApp) -> Option<DynamicObject> {
         || gateway.tls.as_ref().is_some_and(|t| t.enabled);
 
     if !use_tcp {
-        return None;
+        return Ok(None);
     }
 
-    let defaults = AppDefaults::for_app(&app.spec.app).expect("missing app defaults");
+    let defaults = AppDefaults::for_app(&app.spec.app).inspect_err(|e| {
+        tracing::error!(app_type = ?app.spec.app, error = %e, "failed to get app defaults");
+    })?;
     let svc_spec = app.spec.service.as_ref().unwrap_or(&defaults.service);
     let first_port = svc_spec.ports.first().map(|p| p.port).unwrap_or(80);
 
@@ -67,5 +71,5 @@ pub fn build(app: &ServarrApp) -> Option<DynamicObject> {
         },
     });
 
-    serde_json::from_value(route).ok()
+    Ok(serde_json::from_value(route).ok())
 }

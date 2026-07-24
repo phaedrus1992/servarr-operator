@@ -8,7 +8,9 @@ use std::collections::BTreeMap;
 use crate::common;
 
 pub fn build_all(app: &ServarrApp) -> Result<Vec<PersistentVolumeClaim>, String> {
-    let defaults = AppDefaults::for_app(&app.spec.app)?;
+    let defaults = AppDefaults::for_app(&app.spec.app).inspect_err(|e| {
+        tracing::error!(app_type = ?app.spec.app, error = %e, "failed to get app defaults");
+    })?;
     let persistence = defaults.resolve_persistence(app);
 
     let mut pvcs: Vec<PersistentVolumeClaim> = persistence
