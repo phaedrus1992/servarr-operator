@@ -20,9 +20,8 @@ pub fn build(app: &ServarrApp) -> Result<Option<DynamicObject>, String> {
         return Ok(None);
     }
 
-    let defaults = AppDefaults::for_app(&app.spec.app).inspect_err(|e| {
-        tracing::error!(app_type = ?app.spec.app, error = %e, "failed to get app defaults");
-    })?;
+    let defaults = AppDefaults::for_app(&app.spec.app)
+        .inspect_err(|e| common::log_app_defaults_error(app, e))?;
     let svc_spec = app.spec.service.as_ref().unwrap_or(&defaults.service);
     let first_port = svc_spec.ports.first().map(|p| p.port).unwrap_or(80);
 

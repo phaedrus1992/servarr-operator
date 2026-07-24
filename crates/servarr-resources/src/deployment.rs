@@ -61,9 +61,8 @@ pub fn build(
     app: &ServarrApp,
     image_overrides: &HashMap<String, ImageSpec>,
 ) -> Result<Deployment, String> {
-    let mut defaults = AppDefaults::for_app(&app.spec.app).inspect_err(|e| {
-        tracing::error!(app_type = ?app.spec.app, error = %e, "failed to get app defaults");
-    })?;
+    let mut defaults = AppDefaults::for_app(&app.spec.app)
+        .inspect_err(|e| common::log_app_defaults_error(app, e))?;
 
     // Apply image override from operator config (env vars / Helm values).
     // Merge rather than replace: a partial override (e.g. only the repository

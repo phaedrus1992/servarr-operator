@@ -6,6 +6,10 @@ use std::collections::BTreeMap;
 
 pub const MANAGER: &str = "servarr-operator";
 
+pub fn log_app_defaults_error(app: &ServarrApp, error: &str) {
+    tracing::error!(app_type = ?app.spec.app, error, "failed to get app defaults");
+}
+
 pub fn app_name(app: &ServarrApp) -> String {
     app.metadata
         .name
