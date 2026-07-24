@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased] - ReleaseDate
 
+### Fixed
+
+- Fix SSH bastion host key changing after a persistence override (e.g. a MediaStack's
+  stack-wide `persistence.volumes` applied to a bastion with no per-app override) silently
+  dropped the `host-keys` PVC volume, causing the bastion to generate a fresh SSH host key
+  on next deploy and breaking every client's `known_hosts` trust (#305).
+
 ## [1.2.3] - 2026-07-07
 
 ### Fixed
