@@ -14,7 +14,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Fix SSH bastion host key changing after a persistence override (e.g. a MediaStack's
   stack-wide `persistence.volumes` applied to a bastion with no per-app override) silently
   dropped the `host-keys` PVC volume, causing the bastion to generate a fresh SSH host key
-  on next deploy and breaking every client's `known_hosts` trust (#305).
+  on next deploy and breaking every client's `known_hosts` trust (#305). This protection is
+  now generalized to every app type's default persistence volumes, not just SshBastion's
+  `host-keys` — a persistence override can no longer silently drop Subgen's `models` volume,
+  the `downloads` volume on Sonarr/Radarr/Lidarr/SABnzbd/Transmission, or Maintainerr's
+  relocated `config` volume (#367).
+- Fix the Deployment, Service, NetworkPolicy, PVC, HTTPRoute, and TCPRoute builders silently
+  applying an empty or invalid resource — or, for HTTPRoute/TCPRoute, panicking — instead of
+  failing the reconcile loudly when an app's compiled defaults fail to load (#368).
 
 ## [1.2.3] - 2026-07-07
 
