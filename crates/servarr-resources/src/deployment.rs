@@ -57,24 +57,11 @@ pub fn config_checksum(app: &ServarrApp) -> Option<String> {
     has_data.then(|| hex::encode(hasher.finalize()))
 }
 
-pub fn build(app: &ServarrApp, image_overrides: &HashMap<String, ImageSpec>) -> Deployment {
-    let mut defaults = match AppDefaults::for_app(&app.spec.app) {
-        Ok(d) => d,
-        Err(e) => {
-            tracing::error!(app_type = ?app.spec.app, error = %e, "failed to get app defaults; returning minimal Deployment");
-            return Deployment {
-                metadata: ObjectMeta {
-                    name: Some(common::app_name(app)),
-                    namespace: Some(common::app_namespace(app)),
-                    labels: Some(common::labels(app)),
-                    owner_references: Some(vec![common::owner_reference(app)]),
-                    ..Default::default()
-                },
-                spec: None,
-                ..Default::default()
-            };
-        }
-    };
+pub fn build(
+    app: &ServarrApp,
+    image_overrides: &HashMap<String, ImageSpec>,
+) -> Result<Deployment, String> {
+    let mut defaults = AppDefaults::for_app(&app.spec.app)?;
 
     // Apply image override from operator config (env vars / Helm values).
     // Merge rather than replace: a partial override (e.g. only the repository
@@ -366,7 +353,7 @@ pub fn build(app: &ServarrApp, image_overrides: &HashMap<String, ImageSpec>) -> 
         None
     };
 
-    Deployment {
+    Ok(Deployment {
         metadata: ObjectMeta {
             name: Some(name),
             namespace: Some(ns),
@@ -425,7 +412,7 @@ pub fn build(app: &ServarrApp, image_overrides: &HashMap<String, ImageSpec>) -> 
             ..Default::default()
         }),
         ..Default::default()
-    }
+    })
 }
 
 fn build_container_ports(svc_spec: &ServiceSpec, app: &ServarrApp) -> Vec<ContainerPort> {

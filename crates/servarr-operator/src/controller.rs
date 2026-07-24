@@ -42,6 +42,8 @@ pub enum Error {
     Kube(#[source] kube::Error),
     #[error("Serialization error: {0}")]
     Serialization(#[source] serde_json::Error),
+    #[error("app defaults error: {0}")]
+    AppDefaults(String),
 }
 
 pub fn print_crd() -> Result<()> {
@@ -258,7 +260,8 @@ pub async fn reconcile(app: Arc<ServarrApp>, ctx: Arc<Context>) -> Result<Action
     };
 
     // Build and apply Deployment
-    let deployment = servarr_resources::deployment::build(&app, &ctx.image_overrides);
+    let deployment = servarr_resources::deployment::build(&app, &ctx.image_overrides)
+        .map_err(Error::AppDefaults)?;
     let deploy_api = Api::<Deployment>::namespaced(client.clone(), &ns);
     tracing::debug!(%name, "SSA: applying Deployment");
     deploy_api
@@ -327,7 +330,7 @@ pub async fn reconcile(app: Arc<ServarrApp>, ctx: Arc<Context>) -> Result<Action
         .map_err(Error::Kube)?;
 
     // Build and apply PVCs (get-or-create to avoid mutating immutable fields)
-    let pvcs = servarr_resources::pvc::build_all(&app);
+    let pvcs = servarr_resources::pvc::build_all(&app).map_err(Error::AppDefaults)?;
     let pvc_api = Api::<PersistentVolumeClaim>::namespaced(client.clone(), &ns);
     for pvc in &pvcs {
         let pvc_name = pvc.metadata.name.as_deref().unwrap_or("unknown");
