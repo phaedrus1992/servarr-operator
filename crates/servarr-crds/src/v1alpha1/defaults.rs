@@ -136,11 +136,28 @@ impl AppDefaults {
     /// compiled default volume the override's whole-list replace dropped. An
     /// explicit override that names a default volume itself still wins.
     pub fn resolve_persistence(&self, app: &super::ServarrApp) -> PersistenceSpec {
-        let mut persistence = match &app.spec.persistence {
+        let override_spec = app.spec.persistence.as_ref();
+
+        let mut persistence = match override_spec {
             None => self.persistence.clone(),
             Some(spec) => spec.merge_with(&self.persistence),
         };
+
+        // A tombstoned name is dropped unless the override itself re-lists
+        // that volume explicitly — explicit still wins over "remove this".
+        let tombstoned = override_spec
+            .map(|spec| spec.removed_default_volumes.as_slice())
+            .unwrap_or(&[]);
+        let explicitly_kept: std::collections::HashSet<&str> = override_spec
+            .map(|spec| spec.volumes.iter().map(|v| v.name.as_str()).collect())
+            .unwrap_or_default();
+        let is_removed =
+            |name: &str| tombstoned.iter().any(|n| n == name) && !explicitly_kept.contains(name);
+
         for default_vol in &self.persistence.volumes {
+            if is_removed(&default_vol.name) {
+                continue;
+            }
             if !persistence
                 .volumes
                 .iter()
@@ -149,6 +166,8 @@ impl AppDefaults {
                 persistence.volumes.push(default_vol.clone());
             }
         }
+        persistence.volumes.retain(|v| !is_removed(&v.name));
+
         persistence
     }
 

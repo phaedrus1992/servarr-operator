@@ -672,3 +672,28 @@ fn subgen_has_higher_memory_for_whisper_inference() {
         "Subgen should request 512Mi"
     );
 }
+
+/// An admin who explicitly tombstones a default volume via
+/// `removedDefaultVolumes` must have it actually removed — not silently
+/// restored by the very safety net #367 added (#376).
+#[test]
+fn resolve_persistence_honors_removed_default_volumes_tombstone() {
+    let defaults = AppDefaults::try_for_app(&AppType::Sonarr).unwrap();
+    let mut app = make_app(AppType::Sonarr);
+    app.spec.persistence = Some(PersistenceSpec {
+        volumes: vec![],
+        nfs_mounts: vec![],
+        removed_default_volumes: vec!["downloads".into()],
+    });
+
+    let persistence = defaults.resolve_persistence(&app);
+
+    assert!(
+        !persistence.volumes.iter().any(|v| v.name == "downloads"),
+        "tombstoned default volume must not be restored"
+    );
+    assert!(
+        persistence.volumes.iter().any(|v| v.name == "config"),
+        "non-tombstoned default volumes must still be restored"
+    );
+}
