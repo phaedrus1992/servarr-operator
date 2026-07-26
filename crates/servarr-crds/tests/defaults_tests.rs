@@ -99,7 +99,7 @@ fn resolve_persistence_keeps_host_keys_with_no_override() {
     let defaults = AppDefaults::try_for_app(&AppType::SshBastion).unwrap();
     let app = make_app(AppType::SshBastion);
 
-    let persistence = defaults.resolve_persistence(&app);
+    let persistence = defaults.resolve_persistence(&app).unwrap();
 
     assert_eq!(persistence.volumes.len(), 1);
     assert_eq!(persistence.volumes[0].name, "host-keys");
@@ -126,7 +126,7 @@ fn resolve_persistence_restores_host_keys_dropped_by_override() {
         ..Default::default()
     });
 
-    let persistence = defaults.resolve_persistence(&app);
+    let persistence = defaults.resolve_persistence(&app).unwrap();
 
     assert!(
         persistence.volumes.iter().any(|v| v.name == "config"),
@@ -160,7 +160,7 @@ fn resolve_persistence_respects_explicit_host_keys_override() {
         ..Default::default()
     });
 
-    let persistence = defaults.resolve_persistence(&app);
+    let persistence = defaults.resolve_persistence(&app).unwrap();
 
     assert_eq!(persistence.volumes.len(), 1);
     assert_eq!(persistence.volumes[0].size, "50Mi");
@@ -187,7 +187,7 @@ fn resolve_persistence_restores_dropped_default_volumes_for_any_app_type() {
         ..Default::default()
     });
 
-    let persistence = defaults.resolve_persistence(&app);
+    let persistence = defaults.resolve_persistence(&app).unwrap();
 
     assert!(
         persistence.volumes.iter().any(|v| v.name == "data"),
@@ -223,7 +223,7 @@ fn resolve_persistence_restores_subgen_models_volume() {
         ..Default::default()
     });
 
-    let persistence = defaults.resolve_persistence(&app);
+    let persistence = defaults.resolve_persistence(&app).unwrap();
 
     let models = persistence
         .volumes
@@ -252,7 +252,7 @@ fn resolve_persistence_restores_maintainerr_config_with_relocated_mount() {
         ..Default::default()
     });
 
-    let persistence = defaults.resolve_persistence(&app);
+    let persistence = defaults.resolve_persistence(&app).unwrap();
 
     let config = persistence
         .volumes
@@ -686,7 +686,7 @@ fn resolve_persistence_honors_removed_default_volumes_tombstone() {
         removed_default_volumes: vec!["downloads".into()],
     });
 
-    let persistence = defaults.resolve_persistence(&app);
+    let persistence = defaults.resolve_persistence(&app).unwrap();
 
     assert!(
         !persistence.volumes.iter().any(|v| v.name == "downloads"),
@@ -695,5 +695,73 @@ fn resolve_persistence_honors_removed_default_volumes_tombstone() {
     assert!(
         persistence.volumes.iter().any(|v| v.name == "config"),
         "non-tombstoned default volumes must still be restored"
+    );
+}
+
+/// Two persistence entries claiming the same `mount_path` produce an invalid
+/// pod spec downstream (two `volumeMounts` at one path) — this must fail the
+/// reconcile loudly instead of silently reaching the API server (#376).
+#[test]
+fn resolve_persistence_errors_on_mount_path_collision() {
+    let defaults = AppDefaults::try_for_app(&AppType::Sonarr).unwrap();
+    let mut app = make_app(AppType::Sonarr);
+    app.spec.persistence = Some(PersistenceSpec {
+        volumes: vec![],
+        nfs_mounts: vec![NfsMount {
+            name: "downloads-nfs".into(),
+            server: "nas.local".into(),
+            path: "/export/downloads".into(),
+            mount_path: "/downloads".into(),
+            read_only: false,
+        }],
+        removed_default_volumes: vec![],
+    });
+
+    let err = defaults.resolve_persistence(&app).expect_err(
+        "an NFS mount colliding with the still-restored 'downloads' default PVC must fail loudly",
+    );
+
+    assert!(
+        err.contains("/downloads"),
+        "error should name the colliding mount_path, got: {err}"
+    );
+}
+
+/// Tombstoning the colliding default volume (rather than leaving it to
+/// collide) is exactly how an admin is meant to resolve this (#376) — it
+/// must not also trip the collision check.
+#[test]
+fn resolve_persistence_removed_default_volume_allows_nfs_mount_at_same_path() {
+    let defaults = AppDefaults::try_for_app(&AppType::Sonarr).unwrap();
+    let mut app = make_app(AppType::Sonarr);
+    app.spec.persistence = Some(PersistenceSpec {
+        volumes: vec![],
+        nfs_mounts: vec![NfsMount {
+            name: "downloads-nfs".into(),
+            server: "nas.local".into(),
+            path: "/export/downloads".into(),
+            mount_path: "/downloads".into(),
+            read_only: false,
+        }],
+        removed_default_volumes: vec!["downloads".into()],
+    });
+
+    let persistence = defaults.resolve_persistence(&app).expect(
+        "tombstoning the colliding default volume must let the override's NFS mount through",
+    );
+
+    assert!(
+        !persistence.volumes.iter().any(|v| v.name == "downloads"),
+        "tombstoned default volume must not be restored"
+    );
+    assert!(
+        persistence
+            .nfs_mounts
+            .iter()
+            .any(|m| m.mount_path == "/downloads")
+    );
+    assert!(
+        persistence.volumes.iter().any(|v| v.name == "config"),
+        "other default volumes must still be restored"
     );
 }

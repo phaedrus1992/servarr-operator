@@ -10,7 +10,9 @@ use crate::common;
 pub fn build_all(app: &ServarrApp) -> Result<Vec<PersistentVolumeClaim>, String> {
     let defaults = AppDefaults::try_for_app(&app.spec.app)
         .inspect_err(|e| common::log_app_defaults_error(app, e))?;
-    let persistence = defaults.resolve_persistence(app);
+    let persistence = defaults
+        .resolve_persistence(app)
+        .inspect_err(|e| common::log_app_defaults_error(app, e))?;
 
     let mut pvcs: Vec<PersistentVolumeClaim> = persistence
         .volumes

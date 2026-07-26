@@ -135,7 +135,7 @@ impl AppDefaults {
     /// their apps. Rather than special-case one app type, restore *any*
     /// compiled default volume the override's whole-list replace dropped. An
     /// explicit override that names a default volume itself still wins.
-    pub fn resolve_persistence(&self, app: &super::ServarrApp) -> PersistenceSpec {
+    pub fn resolve_persistence(&self, app: &super::ServarrApp) -> Result<PersistenceSpec, String> {
         let override_spec = app.spec.persistence.as_ref();
 
         let mut persistence = match override_spec {
@@ -168,7 +168,12 @@ impl AppDefaults {
         }
         persistence.volumes.retain(|v| !is_removed(&v.name));
 
-        persistence
+        if let Some(msg) = find_mount_path_collision(&persistence.volumes, &persistence.nfs_mounts)
+        {
+            return Err(msg);
+        }
+
+        Ok(persistence)
     }
 
     fn linuxserver_base(port: i32, downloads: bool, probe_path: &str) -> Self {
@@ -262,6 +267,31 @@ impl AppDefaults {
             app_config: None,
         }
     }
+}
+
+/// Kubernetes rejects a pod spec with two `volumeMounts` at the same path —
+/// this catches that at resolve time (across both PVC volumes and NFS
+/// mounts) so the reconcile fails loudly with a clear cause instead of
+/// producing an invalid pod spec the API server silently rejects (#376).
+fn find_mount_path_collision(volumes: &[PvcVolume], nfs_mounts: &[NfsMount]) -> Option<String> {
+    let mut seen: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
+    for v in volumes {
+        if let Some(prior) = seen.insert(v.mount_path.as_str(), v.name.as_str()) {
+            return Some(format!(
+                "persistence volumes '{prior}' and '{}' both mount at '{}'",
+                v.name, v.mount_path
+            ));
+        }
+    }
+    for m in nfs_mounts {
+        if let Some(prior) = seen.insert(m.mount_path.as_str(), m.name.as_str()) {
+            return Some(format!(
+                "persistence entries '{prior}' and '{}' both mount at '{}'",
+                m.name, m.mount_path
+            ));
+        }
+    }
+    None
 }
 
 fn image(repo: &str, tag: &str) -> ImageSpec {
