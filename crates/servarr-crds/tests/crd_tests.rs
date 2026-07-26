@@ -103,6 +103,7 @@ fn test_crd_serde_roundtrip_all_fields() {
                 mount_path: "/media".into(),
                 read_only: false,
             }],
+            ..Default::default()
         }),
         env: vec![EnvVar {
             name: "TZ".into(),

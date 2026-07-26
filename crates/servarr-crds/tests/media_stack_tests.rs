@@ -207,6 +207,7 @@ fn test_merge_persistence_app_pvc_replaces_stack() {
                 ..Default::default()
             }],
             nfs_mounts: Vec::new(),
+            ..Default::default()
         }),
         ..Default::default()
     };
@@ -220,6 +221,7 @@ fn test_merge_persistence_app_pvc_replaces_stack() {
             ..Default::default()
         }],
         nfs_mounts: Vec::new(),
+        ..Default::default()
     });
 
     let spec = app.to_servarr_spec(Some(&defaults));
@@ -249,6 +251,7 @@ fn test_merge_persistence_nfs_additive_dedup() {
                     read_only: true,
                 },
             ],
+            ..Default::default()
         }),
         ..Default::default()
     };
@@ -263,6 +266,7 @@ fn test_merge_persistence_nfs_additive_dedup() {
             mount_path: "/media".into(),
             read_only: true,
         }],
+        ..Default::default()
     });
 
     let spec = app.to_servarr_spec(Some(&defaults));
@@ -966,6 +970,7 @@ fn test_nfs_inject_user_mounts_preserved_by_name() {
             mount_path: "/tv".to_string(),
             read_only: true,
         }],
+        ..Default::default()
     });
     let nfs = nfs_in_cluster();
     let result = app.expand("mystack", "media", None, Some(&nfs)).unwrap();
@@ -1073,6 +1078,7 @@ fn test_nfs_inject_split4k_user_override_via_split4k_overrides() {
                 mount_path: "/tv".to_string(),
                 read_only: false,
             }],
+            ..Default::default()
         }),
         ..Default::default()
     });

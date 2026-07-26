@@ -90,6 +90,15 @@ pub struct PersistenceSpec {
     pub volumes: Vec<PvcVolume>,
     #[serde(default)]
     pub nfs_mounts: Vec<NfsMount>,
+    /// Names of compiled default volumes (see
+    /// `AppDefaults::resolve_persistence`) this override intentionally
+    /// removes rather than replaces. Without this, `resolve_persistence`
+    /// always restores any default volume a whole-list-replace override
+    /// drops (#367), so there was previously no way to say "I mean to drop
+    /// this one" (#376). An explicit override that re-lists the same name in
+    /// `volumes` still wins over the tombstone.
+    #[serde(default)]
+    pub removed_default_volumes: Vec<String>,
 }
 
 impl PersistenceSpec {
@@ -117,6 +126,7 @@ impl PersistenceSpec {
         PersistenceSpec {
             volumes,
             nfs_mounts: nfs_map.into_values().collect(),
+            removed_default_volumes: self.removed_default_volumes.clone(),
         }
     }
 }

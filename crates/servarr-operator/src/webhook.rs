@@ -1160,6 +1160,7 @@ mod tests {
                 },
             ],
             nfs_mounts: vec![],
+            ..Default::default()
         });
         let mut errors = Vec::new();
         validate_unique_volume_names(&spec, &mut errors);
@@ -1183,6 +1184,7 @@ mod tests {
                 },
             ],
             nfs_mounts: vec![],
+            ..Default::default()
         });
         let mut errors = Vec::new();
         validate_unique_volume_names(&spec, &mut errors);
@@ -1211,6 +1213,7 @@ mod tests {
                     ..Default::default()
                 },
             ],
+            ..Default::default()
         });
         let mut errors = Vec::new();
         validate_unique_volume_names(&spec, &mut errors);
@@ -1445,6 +1448,7 @@ mod tests {
                 ..Default::default()
             }],
             nfs_mounts: vec![],
+            ..Default::default()
         });
         let mut errors = Vec::new();
         validate_ssh_security_context(&spec, &mut errors);
@@ -1512,6 +1516,7 @@ mod tests {
                 ..Default::default()
             }],
             nfs_mounts: vec![],
+            ..Default::default()
         });
         let mut errors = Vec::new();
         validate_ssh_security_context(&spec, &mut errors);
@@ -1571,6 +1576,7 @@ mod tests {
                 ..Default::default()
             }],
             nfs_mounts: vec![],
+            ..Default::default()
         });
         let mut errors = Vec::new();
         validate_ssh_security_context(&spec, &mut errors);

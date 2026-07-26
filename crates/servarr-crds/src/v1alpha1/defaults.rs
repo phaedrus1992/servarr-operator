@@ -169,6 +169,7 @@ impl AppDefaults {
             persistence: PersistenceSpec {
                 volumes,
                 nfs_mounts: vec![],
+                ..Default::default()
             },
             probes: http_probes(probe_path, 30, 10),
             resources: std_resources("1", mem_limit, "100m", mem_request),
@@ -196,6 +197,7 @@ impl AppDefaults {
             persistence: PersistenceSpec {
                 volumes,
                 nfs_mounts: vec![],
+                ..Default::default()
             },
             probes: http_probes(probe_path, 30, 10),
             resources: std_resources("1", mem_limit, "100m", mem_request),
@@ -231,6 +233,7 @@ impl AppDefaults {
             persistence: PersistenceSpec {
                 volumes: vec![pvc("host-keys", "/etc/ssh/keys", "10Mi")],
                 nfs_mounts: vec![],
+                ..Default::default()
             },
             probes: tcp_probes(30, 10),
             resources: std_resources("500m", "256Mi", "100m", "128Mi"),

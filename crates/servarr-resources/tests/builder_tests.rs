@@ -129,6 +129,7 @@ fn test_deployment_builder_maintainerr_data_dir_follows_mount() {
                     size: String::new(),
                 }],
                 nfs_mounts: vec![],
+                ..Default::default()
             }),
             ..Default::default()
         },
@@ -311,6 +312,7 @@ fn test_pvc_ssh_bastion_host_keys_survives_persistence_override() {
             existing_claim_name: None,
         }],
         nfs_mounts: vec![],
+        ..Default::default()
     });
 
     let pvcs = servarr_resources::pvc::build_all(&app).unwrap();
@@ -810,6 +812,7 @@ fn test_nfs_mounts() {
                     mount_path: "/media".into(),
                     read_only: true,
                 }],
+                ..Default::default()
             }),
             ..Default::default()
         },
@@ -2700,6 +2703,7 @@ fn test_networkpolicy_ssh_bastion_nfs_egress() {
                     mount_path: "/media".into(),
                     read_only: true,
                 }],
+                ..Default::default()
             }),
             ..Default::default()
         },
@@ -3232,6 +3236,7 @@ fn test_deployment_ssh_bastion_host_keys_preserved_with_nfs_mounts() {
                         read_only: false,
                     },
                 ],
+                ..Default::default()
             }),
             app_config: Some(AppConfig::SshBastion(SshBastionConfig {
                 users: vec![SshUser {

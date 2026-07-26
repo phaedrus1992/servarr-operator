@@ -123,6 +123,7 @@ fn resolve_persistence_restores_host_keys_dropped_by_override() {
             existing_claim_name: None,
         }],
         nfs_mounts: vec![],
+        ..Default::default()
     });
 
     let persistence = defaults.resolve_persistence(&app);
@@ -156,6 +157,7 @@ fn resolve_persistence_respects_explicit_host_keys_override() {
             existing_claim_name: None,
         }],
         nfs_mounts: vec![],
+        ..Default::default()
     });
 
     let persistence = defaults.resolve_persistence(&app);
@@ -182,6 +184,7 @@ fn resolve_persistence_restores_dropped_default_volumes_for_any_app_type() {
             existing_claim_name: None,
         }],
         nfs_mounts: vec![],
+        ..Default::default()
     });
 
     let persistence = defaults.resolve_persistence(&app);
@@ -217,6 +220,7 @@ fn resolve_persistence_restores_subgen_models_volume() {
             existing_claim_name: None,
         }],
         nfs_mounts: vec![],
+        ..Default::default()
     });
 
     let persistence = defaults.resolve_persistence(&app);
@@ -245,6 +249,7 @@ fn resolve_persistence_restores_maintainerr_config_with_relocated_mount() {
             existing_claim_name: None,
         }],
         nfs_mounts: vec![],
+        ..Default::default()
     });
 
     let persistence = defaults.resolve_persistence(&app);
@@ -255,6 +260,37 @@ fn resolve_persistence_restores_maintainerr_config_with_relocated_mount() {
         .find(|v| v.name == "config")
         .expect("Maintainerr's config volume must not be dropped by an unrelated override");
     assert_eq!(config.mount_path, "/opt/data");
+}
+
+/// `PersistenceSpec::merge_with` treats `self` (the override) as the source
+/// of truth for `removed_default_volumes` — the compiled-defaults side never
+/// populates it, so there's nothing to fall back to.
+#[test]
+fn persistence_merge_with_carries_removed_default_volumes() {
+    let override_spec = PersistenceSpec {
+        volumes: vec![],
+        nfs_mounts: vec![],
+        removed_default_volumes: vec!["downloads".into()],
+    };
+    let base = PersistenceSpec {
+        volumes: vec![PvcVolume {
+            name: "downloads".into(),
+            mount_path: "/downloads".into(),
+            access_mode: "ReadWriteOnce".into(),
+            size: "100Gi".into(),
+            storage_class: String::new(),
+            existing_claim_name: None,
+        }],
+        nfs_mounts: vec![],
+        removed_default_volumes: vec![],
+    };
+
+    let merged = override_spec.merge_with(&base);
+
+    assert_eq!(
+        merged.removed_default_volumes,
+        vec!["downloads".to_string()]
+    );
 }
 
 #[test]
