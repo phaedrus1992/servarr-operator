@@ -16,7 +16,7 @@ const DEFAULT_DENIED_CIDRS: &[&str] = &[
 ];
 
 pub fn build(app: &ServarrApp) -> Result<NetworkPolicy, String> {
-    let defaults = AppDefaults::for_app(&app.spec.app)
+    let defaults = AppDefaults::try_for_app(&app.spec.app)
         .inspect_err(|e| common::log_app_defaults_error(app, e))?;
     let svc_spec = app.spec.service.as_ref().unwrap_or(&defaults.service);
     let mut config = app.spec.network_policy_config.clone().unwrap_or_default();

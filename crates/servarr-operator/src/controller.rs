@@ -892,7 +892,7 @@ async fn sync_admin_credentials(client: &Client, app: &ServarrApp) -> Option<Con
     };
 
     let app_name = servarr_resources::common::service_name(app);
-    let defaults = match servarr_crds::AppDefaults::for_app(&app.spec.app) {
+    let defaults = match servarr_crds::AppDefaults::try_for_app(&app.spec.app) {
         Ok(d) => d,
         Err(e) => {
             warn!(app = %app.name_any(), error = %e, "sync_admin_credentials: failed to load app defaults");
@@ -1137,7 +1137,7 @@ pub(crate) async fn check_api_health(
     };
 
     let app_name = servarr_resources::common::service_name(app);
-    let defaults = match servarr_crds::AppDefaults::for_app(&app.spec.app) {
+    let defaults = match servarr_crds::AppDefaults::try_for_app(&app.spec.app) {
         Ok(d) => d,
         Err(e) => {
             warn!(error = %e, "check_api_health: failed to load app defaults");
@@ -1622,7 +1622,7 @@ async fn maybe_run_backup(
     }
 
     let app_name = servarr_resources::common::service_name(app);
-    let defaults = match servarr_crds::AppDefaults::for_app(&app.spec.app) {
+    let defaults = match servarr_crds::AppDefaults::try_for_app(&app.spec.app) {
         Ok(d) => d,
         Err(e) => {
             warn!(app = %app_name, error = %e, "failed to load app defaults; skipping backup");
@@ -1901,7 +1901,7 @@ async fn try_restore(
         .map_err(|e| anyhow::anyhow!("failed to read API key for restore: {e}"))?;
 
     let app_name = servarr_resources::common::service_name(app);
-    let defaults = servarr_crds::AppDefaults::for_app(&app.spec.app)
+    let defaults = servarr_crds::AppDefaults::try_for_app(&app.spec.app)
         .map_err(|e| anyhow::anyhow!("failed to load app defaults: {e}"))?;
     let svc_spec = app.spec.service.as_ref().unwrap_or(&defaults.service);
     let port = svc_spec.ports.first().map(|p| p.port).unwrap_or(80);
@@ -2022,7 +2022,7 @@ pub(crate) async fn discover_namespace_apps(
         };
 
         let app_name = servarr_resources::common::service_name(app);
-        let defaults = servarr_crds::AppDefaults::for_app(&app.spec.app)
+        let defaults = servarr_crds::AppDefaults::try_for_app(&app.spec.app)
             .map_err(|e| anyhow::anyhow!("failed to load app defaults: {e}"))?;
         let svc_spec = app.spec.service.as_ref().unwrap_or(&defaults.service);
         let port = svc_spec.ports.first().map(|p| p.port).unwrap_or(80);
@@ -2061,7 +2061,7 @@ async fn sync_prowlarr_apps(
     let prowlarr_key = servarr_api::read_secret_key(client, &ns, secret_name, "api-key").await?;
 
     let prowlarr_app_name = servarr_resources::common::service_name(prowlarr);
-    let defaults = servarr_crds::AppDefaults::for_app(&prowlarr.spec.app)
+    let defaults = servarr_crds::AppDefaults::try_for_app(&prowlarr.spec.app)
         .map_err(|e| anyhow::anyhow!("failed to load app defaults: {e}"))?;
     let svc_spec = prowlarr.spec.service.as_ref().unwrap_or(&defaults.service);
     let port = svc_spec.ports.first().map(|p| p.port).unwrap_or(80);
@@ -2216,7 +2216,7 @@ async fn cleanup_prowlarr_registration(
     use kube::api::ListParams;
 
     let app_name_str = servarr_resources::common::service_name(app);
-    let defaults = servarr_crds::AppDefaults::for_app(&app.spec.app)
+    let defaults = servarr_crds::AppDefaults::try_for_app(&app.spec.app)
         .map_err(|e| anyhow::anyhow!("failed to load app defaults: {e}"))?;
     let svc_spec = app.spec.service.as_ref().unwrap_or(&defaults.service);
     let port = svc_spec.ports.first().map(|p| p.port).unwrap_or(80);
@@ -2243,7 +2243,7 @@ async fn cleanup_prowlarr_registration(
         servarr_api::read_secret_key(client, namespace, secret_name, "api-key").await?;
 
     let prowlarr_app_name = servarr_resources::common::service_name(prowlarr);
-    let prowlarr_defaults = servarr_crds::AppDefaults::for_app(&prowlarr.spec.app)
+    let prowlarr_defaults = servarr_crds::AppDefaults::try_for_app(&prowlarr.spec.app)
         .map_err(|e| anyhow::anyhow!("failed to load app defaults: {e}"))?;
     let prowlarr_svc = prowlarr
         .spec
@@ -2306,7 +2306,7 @@ async fn sync_overseerr_servers(
     let overseerr_key = servarr_api::read_secret_key(client, &ns, secret_name, "api-key").await?;
 
     let overseerr_app_name = servarr_resources::common::service_name(overseerr);
-    let defaults = servarr_crds::AppDefaults::for_app(&overseerr.spec.app)
+    let defaults = servarr_crds::AppDefaults::try_for_app(&overseerr.spec.app)
         .map_err(|e| anyhow::anyhow!("failed to load app defaults: {e}"))?;
     let svc_spec = overseerr.spec.service.as_ref().unwrap_or(&defaults.service);
     let port = svc_spec.ports.first().map(|p| p.port).unwrap_or(80);
@@ -2538,7 +2538,7 @@ async fn sync_bazarr_apps(
     let bazarr_key = servarr_api::read_secret_key(client, &ns, &api_key_secret, "api-key").await?;
 
     let bazarr_app_name = servarr_resources::common::service_name(bazarr);
-    let defaults = servarr_crds::AppDefaults::for_app(&bazarr.spec.app)
+    let defaults = servarr_crds::AppDefaults::try_for_app(&bazarr.spec.app)
         .map_err(|e| anyhow::anyhow!("failed to load app defaults: {e}"))?;
     let svc_spec = bazarr.spec.service.as_ref().unwrap_or(&defaults.service);
     let port = svc_spec.ports.first().map(|p| p.port).unwrap_or(80);
@@ -2643,7 +2643,7 @@ async fn sync_maintainerr_servers(
         servarr_api::read_secret_key(client, &ns, &api_key_secret, "api-key").await?;
 
     let maintainerr_app_name = servarr_resources::common::service_name(maintainerr);
-    let defaults = servarr_crds::AppDefaults::for_app(&maintainerr.spec.app)
+    let defaults = servarr_crds::AppDefaults::try_for_app(&maintainerr.spec.app)
         .map_err(|e| anyhow::anyhow!("failed to load app defaults: {e}"))?;
     let svc_spec = maintainerr
         .spec
@@ -2846,7 +2846,7 @@ async fn sync_maintainerr_servers(
         let plex_name = plex.name_any();
         let plex_ns = plex.namespace().unwrap_or_else(|| "default".into());
         let (plex_defaults, plex_defaults_failed) =
-            match servarr_crds::AppDefaults::for_app(&plex.spec.app) {
+            match servarr_crds::AppDefaults::try_for_app(&plex.spec.app) {
                 Ok(defaults) => (defaults.service, false),
                 Err(e) => {
                     warn!(maintainerr = %maintainerr_name, plex = %plex_name, error = %e,
@@ -2949,7 +2949,7 @@ async fn sync_subgen_jellyfin(
         .map_err(|e| anyhow::anyhow!("Jellyfin API key secret {jf_secret_name} unreadable: {e}"))?;
 
     let jf_app_name = servarr_resources::common::service_name(jellyfin);
-    let jf_defaults = servarr_crds::AppDefaults::for_app(&jellyfin.spec.app)
+    let jf_defaults = servarr_crds::AppDefaults::try_for_app(&jellyfin.spec.app)
         .map_err(|e| anyhow::anyhow!("failed to load app defaults: {e}"))?;
     let jf_svc_spec = jellyfin
         .spec
@@ -3026,7 +3026,7 @@ async fn cleanup_overseerr_registration(
     use kube::api::ListParams;
 
     let app_name_str = servarr_resources::common::service_name(app);
-    let defaults_for_app = servarr_crds::AppDefaults::for_app(&app.spec.app)
+    let defaults_for_app = servarr_crds::AppDefaults::try_for_app(&app.spec.app)
         .map_err(|e| anyhow::anyhow!("failed to load app defaults: {e}"))?;
     let svc_spec = app
         .spec
@@ -3059,7 +3059,7 @@ async fn cleanup_overseerr_registration(
         servarr_api::read_secret_key(client, &overseerr_ns, secret_name, "api-key").await?;
 
     let overseerr_app_name = servarr_resources::common::service_name(overseerr);
-    let overseerr_defaults = servarr_crds::AppDefaults::for_app(&overseerr.spec.app)
+    let overseerr_defaults = servarr_crds::AppDefaults::try_for_app(&overseerr.spec.app)
         .map_err(|e| anyhow::anyhow!("failed to load app defaults: {e}"))?;
     let overseerr_svc = overseerr
         .spec
@@ -4116,7 +4116,7 @@ mod tests {
         let m_server = MockServer::start().await;
 
         let maintainerr = maintainerr_app_with_plex_sync(Some("plex-token-secret"));
-        let port = servarr_crds::AppDefaults::for_app(&AppType::Plex)
+        let port = servarr_crds::AppDefaults::try_for_app(&AppType::Plex)
             .expect("Plex defaults")
             .service
             .ports[0]

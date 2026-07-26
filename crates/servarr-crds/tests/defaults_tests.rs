@@ -22,7 +22,7 @@ fn make_app(app_type: AppType) -> ServarrApp {
 
 #[test]
 fn ssh_bastion_uses_custom_security_profile() {
-    let defaults = AppDefaults::for_app(&AppType::SshBastion).unwrap();
+    let defaults = AppDefaults::try_for_app(&AppType::SshBastion).unwrap();
     assert!(matches!(
         defaults.security.profile_type,
         SecurityProfileType::Custom
@@ -31,7 +31,7 @@ fn ssh_bastion_uses_custom_security_profile() {
 
 #[test]
 fn ssh_bastion_runs_as_root() {
-    let defaults = AppDefaults::for_app(&AppType::SshBastion).unwrap();
+    let defaults = AppDefaults::try_for_app(&AppType::SshBastion).unwrap();
     assert_eq!(defaults.security.user, 0);
     assert_eq!(defaults.security.group, 0);
     assert_eq!(defaults.uid, 0);
@@ -40,7 +40,7 @@ fn ssh_bastion_runs_as_root() {
 
 #[test]
 fn ssh_bastion_has_required_capabilities() {
-    let defaults = AppDefaults::for_app(&AppType::SshBastion).unwrap();
+    let defaults = AppDefaults::try_for_app(&AppType::SshBastion).unwrap();
     let caps = &defaults.security.capabilities_add;
 
     let required = [
@@ -58,13 +58,13 @@ fn ssh_bastion_has_required_capabilities() {
 
 #[test]
 fn ssh_bastion_drops_all_capabilities() {
-    let defaults = AppDefaults::for_app(&AppType::SshBastion).unwrap();
+    let defaults = AppDefaults::try_for_app(&AppType::SshBastion).unwrap();
     assert_eq!(defaults.security.capabilities_drop, vec!["ALL".to_string()]);
 }
 
 #[test]
 fn ssh_bastion_security_flags() {
-    let defaults = AppDefaults::for_app(&AppType::SshBastion).unwrap();
+    let defaults = AppDefaults::try_for_app(&AppType::SshBastion).unwrap();
     assert_eq!(defaults.security.run_as_non_root, Some(false));
     assert_eq!(defaults.security.read_only_root_filesystem, Some(false));
     assert_eq!(defaults.security.allow_privilege_escalation, Some(false));
@@ -72,7 +72,7 @@ fn ssh_bastion_security_flags() {
 
 #[test]
 fn ssh_bastion_service_port_is_ssh() {
-    let defaults = AppDefaults::for_app(&AppType::SshBastion).unwrap();
+    let defaults = AppDefaults::try_for_app(&AppType::SshBastion).unwrap();
     assert_eq!(defaults.service.ports.len(), 1);
     assert_eq!(defaults.service.ports[0].name, "ssh");
     assert_eq!(defaults.service.ports[0].protocol, "TCP");
@@ -81,7 +81,7 @@ fn ssh_bastion_service_port_is_ssh() {
 
 #[test]
 fn ssh_bastion_has_host_keys_volume() {
-    let defaults = AppDefaults::for_app(&AppType::SshBastion).unwrap();
+    let defaults = AppDefaults::try_for_app(&AppType::SshBastion).unwrap();
     assert_eq!(defaults.persistence.volumes.len(), 1);
     let vol = &defaults.persistence.volumes[0];
     assert_eq!(vol.name, "host-keys");
@@ -96,7 +96,7 @@ fn ssh_bastion_has_host_keys_volume() {
 
 #[test]
 fn resolve_persistence_keeps_host_keys_with_no_override() {
-    let defaults = AppDefaults::for_app(&AppType::SshBastion).unwrap();
+    let defaults = AppDefaults::try_for_app(&AppType::SshBastion).unwrap();
     let app = make_app(AppType::SshBastion);
 
     let persistence = defaults.resolve_persistence(&app);
@@ -111,7 +111,7 @@ fn resolve_persistence_keeps_host_keys_with_no_override() {
 /// "REMOTE HOST IDENTIFICATION HAS CHANGED" regression from #305.
 #[test]
 fn resolve_persistence_restores_host_keys_dropped_by_override() {
-    let defaults = AppDefaults::for_app(&AppType::SshBastion).unwrap();
+    let defaults = AppDefaults::try_for_app(&AppType::SshBastion).unwrap();
     let mut app = make_app(AppType::SshBastion);
     app.spec.persistence = Some(PersistenceSpec {
         volumes: vec![PvcVolume {
@@ -144,7 +144,7 @@ fn resolve_persistence_restores_host_keys_dropped_by_override() {
 /// storage class or size) must win over the compiled default.
 #[test]
 fn resolve_persistence_respects_explicit_host_keys_override() {
-    let defaults = AppDefaults::for_app(&AppType::SshBastion).unwrap();
+    let defaults = AppDefaults::try_for_app(&AppType::SshBastion).unwrap();
     let mut app = make_app(AppType::SshBastion);
     app.spec.persistence = Some(PersistenceSpec {
         volumes: vec![PvcVolume {
@@ -170,7 +170,7 @@ fn resolve_persistence_respects_explicit_host_keys_override() {
 /// `host-keys` — an unrelated override must not silently drop them.
 #[test]
 fn resolve_persistence_restores_dropped_default_volumes_for_any_app_type() {
-    let defaults = AppDefaults::for_app(&AppType::Sonarr).unwrap();
+    let defaults = AppDefaults::try_for_app(&AppType::Sonarr).unwrap();
     let mut app = make_app(AppType::Sonarr);
     app.spec.persistence = Some(PersistenceSpec {
         volumes: vec![PvcVolume {
@@ -205,7 +205,7 @@ fn resolve_persistence_restores_dropped_default_volumes_for_any_app_type() {
 /// the base security-profile volumes) must also survive a dropped override.
 #[test]
 fn resolve_persistence_restores_subgen_models_volume() {
-    let defaults = AppDefaults::for_app(&AppType::Subgen).unwrap();
+    let defaults = AppDefaults::try_for_app(&AppType::Subgen).unwrap();
     let mut app = make_app(AppType::Subgen);
     app.spec.persistence = Some(PersistenceSpec {
         volumes: vec![PvcVolume {
@@ -233,7 +233,7 @@ fn resolve_persistence_restores_subgen_models_volume() {
 /// restored volume must carry that relocation, not the generic `/config`.
 #[test]
 fn resolve_persistence_restores_maintainerr_config_with_relocated_mount() {
-    let defaults = AppDefaults::for_app(&AppType::Maintainerr).unwrap();
+    let defaults = AppDefaults::try_for_app(&AppType::Maintainerr).unwrap();
     let mut app = make_app(AppType::Maintainerr);
     app.spec.persistence = Some(PersistenceSpec {
         volumes: vec![PvcVolume {
@@ -259,13 +259,13 @@ fn resolve_persistence_restores_maintainerr_config_with_relocated_mount() {
 
 #[test]
 fn ssh_bastion_has_no_nfs_mounts() {
-    let defaults = AppDefaults::for_app(&AppType::SshBastion).unwrap();
+    let defaults = AppDefaults::try_for_app(&AppType::SshBastion).unwrap();
     assert!(defaults.persistence.nfs_mounts.is_empty());
 }
 
 #[test]
 fn ssh_bastion_resources() {
-    let defaults = AppDefaults::for_app(&AppType::SshBastion).unwrap();
+    let defaults = AppDefaults::try_for_app(&AppType::SshBastion).unwrap();
     assert_eq!(defaults.resources.limits.cpu, "500m");
     assert_eq!(defaults.resources.limits.memory, "256Mi");
     assert_eq!(defaults.resources.requests.cpu, "100m");
@@ -274,7 +274,7 @@ fn ssh_bastion_resources() {
 
 #[test]
 fn ssh_bastion_has_tz_env() {
-    let defaults = AppDefaults::for_app(&AppType::SshBastion).unwrap();
+    let defaults = AppDefaults::try_for_app(&AppType::SshBastion).unwrap();
     assert_eq!(defaults.env.len(), 1);
     assert_eq!(defaults.env[0].name, "TZ");
     assert_eq!(defaults.env[0].value, "UTC");
@@ -282,7 +282,7 @@ fn ssh_bastion_has_tz_env() {
 
 #[test]
 fn ssh_bastion_has_no_app_config() {
-    let defaults = AppDefaults::for_app(&AppType::SshBastion).unwrap();
+    let defaults = AppDefaults::try_for_app(&AppType::SshBastion).unwrap();
     assert!(defaults.app_config.is_none());
 }
 
@@ -292,7 +292,7 @@ fn ssh_bastion_has_no_app_config() {
 
 #[test]
 fn ssh_bastion_uses_tcp_probes() {
-    let defaults = AppDefaults::for_app(&AppType::SshBastion).unwrap();
+    let defaults = AppDefaults::try_for_app(&AppType::SshBastion).unwrap();
 
     assert!(matches!(
         defaults.probes.liveness.probe_type,
@@ -306,7 +306,7 @@ fn ssh_bastion_uses_tcp_probes() {
 
 #[test]
 fn tcp_probe_liveness_parameters() {
-    let defaults = AppDefaults::for_app(&AppType::SshBastion).unwrap();
+    let defaults = AppDefaults::try_for_app(&AppType::SshBastion).unwrap();
     let liveness = &defaults.probes.liveness;
 
     assert_eq!(liveness.initial_delay_seconds, 30);
@@ -321,7 +321,7 @@ fn tcp_probe_liveness_parameters() {
 
 #[test]
 fn tcp_probe_readiness_parameters() {
-    let defaults = AppDefaults::for_app(&AppType::SshBastion).unwrap();
+    let defaults = AppDefaults::try_for_app(&AppType::SshBastion).unwrap();
     let readiness = &defaults.probes.readiness;
 
     assert_eq!(readiness.initial_delay_seconds, 10);
@@ -332,7 +332,7 @@ fn tcp_probe_readiness_parameters() {
 
 #[test]
 fn tcp_probes_have_empty_command() {
-    let defaults = AppDefaults::for_app(&AppType::SshBastion).unwrap();
+    let defaults = AppDefaults::try_for_app(&AppType::SshBastion).unwrap();
     assert!(defaults.probes.liveness.command.is_empty());
     assert!(defaults.probes.readiness.command.is_empty());
 }
@@ -351,7 +351,7 @@ fn http_apps_use_http_probes_not_tcp() {
     ];
 
     for app_type in &http_apps {
-        let defaults = AppDefaults::for_app(app_type).unwrap();
+        let defaults = AppDefaults::try_for_app(app_type).unwrap();
         assert!(
             matches!(defaults.probes.liveness.probe_type, ProbeType::Http),
             "{app_type} should use Http liveness probe"
@@ -376,7 +376,7 @@ fn http_apps_liveness_timeout_tolerates_dotnet_gc_pauses() {
     let dotnet_apps = vec![AppType::Sonarr, AppType::Radarr, AppType::Lidarr];
 
     for app_type in &dotnet_apps {
-        let defaults = AppDefaults::for_app(app_type).unwrap();
+        let defaults = AppDefaults::try_for_app(app_type).unwrap();
         assert_eq!(
             defaults.probes.liveness.timeout_seconds, 5,
             "{app_type} liveness timeout should tolerate brief GC-pause stalls"
@@ -498,7 +498,7 @@ fn subgen_sync_spec_default_values() {
 
 #[test]
 fn subgen_has_models_pvc() {
-    let defaults = AppDefaults::for_app(&AppType::Subgen).unwrap();
+    let defaults = AppDefaults::try_for_app(&AppType::Subgen).unwrap();
     let has_models = defaults
         .persistence
         .volumes
@@ -512,7 +512,7 @@ fn subgen_has_models_pvc() {
 
 #[test]
 fn subgen_default_env_includes_transcribe_device() {
-    let defaults = AppDefaults::for_app(&AppType::Subgen).unwrap();
+    let defaults = AppDefaults::try_for_app(&AppType::Subgen).unwrap();
     let has_device = defaults
         .env
         .iter()
@@ -522,7 +522,7 @@ fn subgen_default_env_includes_transcribe_device() {
 
 #[test]
 fn subgen_default_env_includes_whisper_model() {
-    let defaults = AppDefaults::for_app(&AppType::Subgen).unwrap();
+    let defaults = AppDefaults::try_for_app(&AppType::Subgen).unwrap();
     let has_model = defaults
         .env
         .iter()
@@ -532,7 +532,7 @@ fn subgen_default_env_includes_whisper_model() {
 
 #[test]
 fn bazarr_defaults_are_linuxserver_profile() {
-    let defaults = AppDefaults::for_app(&AppType::Bazarr).unwrap();
+    let defaults = AppDefaults::try_for_app(&AppType::Bazarr).unwrap();
     // Bazarr uses linuxserver security profile — verify it builds without panicking
     // (build.rs codegen would have panicked at compile time if image-defaults.toml was
     // wrong)
@@ -544,7 +544,7 @@ fn bazarr_defaults_are_linuxserver_profile() {
 // ---------------------------------------------------------------------------
 
 fn assert_download_memory(app: &AppType) {
-    let defaults = AppDefaults::for_app(app).unwrap();
+    let defaults = AppDefaults::try_for_app(app).unwrap();
     assert_eq!(defaults.resources.limits.memory, "1Gi");
     assert_eq!(defaults.resources.requests.memory, "256Mi");
 }
@@ -565,7 +565,7 @@ fn download_apps_get_higher_memory_default() {
 #[test]
 fn non_download_apps_keep_lower_memory_default() {
     // Prowlarr is an indexer, not a download client
-    let defaults = AppDefaults::for_app(&AppType::Prowlarr).unwrap();
+    let defaults = AppDefaults::try_for_app(&AppType::Prowlarr).unwrap();
     assert_eq!(defaults.resources.limits.memory, "512Mi");
     assert_eq!(defaults.resources.requests.memory, "128Mi");
 }
@@ -578,7 +578,7 @@ fn non_download_apps_keep_lower_memory_default() {
 fn maintainerr_config_volume_mount_path() {
     // Issue #131: Maintainerr v3 stores data at /opt/data, not /config
     let defaults =
-        AppDefaults::for_app(&AppType::Maintainerr).expect("Maintainerr defaults should load");
+        AppDefaults::try_for_app(&AppType::Maintainerr).expect("Maintainerr defaults should load");
     let config_vol = defaults
         .persistence
         .volumes
@@ -612,7 +612,7 @@ fn maintainerr_config_volume_mount_path_via_try_for_app() {
 fn maintainerr_has_higher_memory_for_large_scans() {
     // Issue #138: Maintainerr needs ≥1Gi for large library scans
     let defaults =
-        AppDefaults::for_app(&AppType::Maintainerr).expect("Maintainerr defaults should load");
+        AppDefaults::try_for_app(&AppType::Maintainerr).expect("Maintainerr defaults should load");
     assert_eq!(
         defaults.resources.limits.memory, "2Gi",
         "Maintainerr needs 2Gi memory limit for large library scans"
@@ -626,7 +626,7 @@ fn maintainerr_has_higher_memory_for_large_scans() {
 #[test]
 fn subgen_has_higher_memory_for_whisper_inference() {
     // Subgen uses Whisper medium model by default, needs ≥1.5Gi memory
-    let defaults = AppDefaults::for_app(&AppType::Subgen).expect("Subgen defaults should load");
+    let defaults = AppDefaults::try_for_app(&AppType::Subgen).expect("Subgen defaults should load");
     assert_eq!(
         defaults.resources.limits.memory, "2Gi",
         "Subgen needs 2Gi memory limit for Whisper inference"

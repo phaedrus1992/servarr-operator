@@ -21,8 +21,7 @@ impl AppDefaults {
     /// Load defaults for `app`, returning an error if the app has no entry in
     /// `image-defaults.toml` or its security profile is unrecognised.
     ///
-    /// [`for_app`] is an alias for this used in the hot reconcile path; both
-    /// propagate the error to the caller rather than panicking. Call
+    /// Propagates the error to the caller rather than panicking. Call
     /// [`validate_all`] at startup to catch a broken `image-defaults.toml`
     /// before the first reconcile.
     ///
@@ -121,10 +120,6 @@ impl AppDefaults {
         } else {
             Err(errors.join("; "))
         }
-    }
-
-    pub fn for_app(app: &super::AppType) -> Result<Self, String> {
-        Self::try_for_app(app)
     }
 
     /// Merge `app`'s persistence override with these compiled defaults, then
