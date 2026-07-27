@@ -51,13 +51,17 @@ impl Error {
     ///
     /// Kubernetes Events are visible to anyone with `get/list events` RBAC
     /// in the namespace — typically broader than operator-admin access.
-    /// This method strips internal details (file paths, app names, error
-    /// codes) that should only appear in operator structured logs.
+    /// This method strips internal details (file paths, error codes) that
+    /// should only appear in operator structured logs. `AppDefaults` is
+    /// exempt: its message is built entirely from the user's own spec (e.g.
+    /// a mount-path collision naming their own volumes), so surfacing it
+    /// verbatim leaks nothing and is the only way the user can self-diagnose
+    /// the misconfiguration from `kubectl describe`.
     pub fn sanitized_message(&self) -> String {
         match self {
             Error::Kube(_) => "Kubernetes API error".to_string(),
             Error::Serialization(_) => "Serialization error".to_string(),
-            Error::AppDefaults(_) => "Application configuration error".to_string(),
+            Error::AppDefaults(msg) => msg.clone(),
         }
     }
 }

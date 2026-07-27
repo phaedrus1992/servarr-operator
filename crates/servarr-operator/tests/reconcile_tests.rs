@@ -590,7 +590,7 @@ fn test_error_sanitized_message_all_variants() {
     );
     assert_eq!(
         app_err.sanitized_message(),
-        "Application configuration error"
+        "no image defaults for app: sonarr"
     );
 }
 
