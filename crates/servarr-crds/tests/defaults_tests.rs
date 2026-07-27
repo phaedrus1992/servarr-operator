@@ -262,9 +262,8 @@ fn resolve_persistence_restores_maintainerr_config_with_relocated_mount() {
     assert_eq!(config.mount_path, "/opt/data");
 }
 
-/// `PersistenceSpec::merge_with` treats `self` (the override) as the source
-/// of truth for `removed_default_volumes` — the compiled-defaults side never
-/// populates it, so there's nothing to fall back to.
+/// `PersistenceSpec::merge_with` carries the override's own tombstones
+/// through even when the base has none.
 #[test]
 fn persistence_merge_with_carries_removed_default_volumes() {
     let override_spec = PersistenceSpec {
@@ -290,6 +289,45 @@ fn persistence_merge_with_carries_removed_default_volumes() {
     assert_eq!(
         merged.removed_default_volumes,
         vec!["downloads".to_string()]
+    );
+}
+
+/// A base-layer tombstone (e.g. a MediaStack's `spec.defaults.persistence`)
+/// is a removal policy, not an overridable value — it must survive a member
+/// app that sets its own persistence override, or the tombstoned volume
+/// silently comes back and collides (#386).
+#[test]
+fn persistence_merge_with_unions_removed_default_volumes_from_base() {
+    let override_spec = PersistenceSpec {
+        volumes: vec![PvcVolume {
+            name: "media".into(),
+            mount_path: "/media".into(),
+            access_mode: "ReadWriteOnce".into(),
+            size: "50Gi".into(),
+            storage_class: String::new(),
+            existing_claim_name: None,
+        }],
+        nfs_mounts: vec![],
+        removed_default_volumes: vec!["config".into()],
+    };
+    let base = PersistenceSpec {
+        volumes: vec![],
+        nfs_mounts: vec![],
+        removed_default_volumes: vec!["downloads".into()],
+    };
+
+    let merged = override_spec.merge_with(&base);
+
+    assert_eq!(merged.removed_default_volumes.len(), 2);
+    assert!(
+        merged
+            .removed_default_volumes
+            .contains(&"downloads".to_string())
+    );
+    assert!(
+        merged
+            .removed_default_volumes
+            .contains(&"config".to_string())
     );
 }
 
