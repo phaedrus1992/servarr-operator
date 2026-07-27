@@ -21,7 +21,7 @@ downloads = true
 
 [radarr]
 repository = "linuxserver/radarr"
-tag = "6.2.1"
+tag = "6.3.0"
 port = 7878
 security = "linuxserver"
 downloads = true
