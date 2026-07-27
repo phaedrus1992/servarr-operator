@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased] - ReleaseDate
 
+### Added
+
+- Add `persistence.removedDefaultVolumes` to `ServarrApp` and `MediaStack`. The automatic
+  restore added for #367 always brings back a default volume a persistence override drops —
+  this field lets you say "I mean to drop this one" instead. Entries must name an actual
+  default volume for the app type; a typo is rejected at admission rather than silently
+  no-opping (#386).
+
+### Changed
+
+- Two persistence entries mounting at the same path now fail the reconcile with a clear error
+  naming both volumes and the colliding path, instead of producing an invalid pod spec the API
+  server silently rejects (#386).
+- `ReconcileError` Kubernetes Events for app-configuration problems (e.g. the mount-path
+  collision above) now include the actual cause instead of a generic "Application
+  configuration error" — the cause is always derived from your own spec, so nothing internal
+  leaks (#386).
+
 ### Fixed
 
 - Fix SSH bastion host key changing after a persistence override (e.g. a MediaStack's
