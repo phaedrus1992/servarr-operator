@@ -21,8 +21,7 @@ impl AppDefaults {
     /// Load defaults for `app`, returning an error if the app has no entry in
     /// `image-defaults.toml` or its security profile is unrecognised.
     ///
-    /// [`for_app`] is an alias for this used in the hot reconcile path; both
-    /// propagate the error to the caller rather than panicking. Call
+    /// Propagates the error to the caller rather than panicking. Call
     /// [`validate_all`] at startup to catch a broken `image-defaults.toml`
     /// before the first reconcile.
     ///
@@ -123,10 +122,6 @@ impl AppDefaults {
         }
     }
 
-    pub fn for_app(app: &super::AppType) -> Result<Self, String> {
-        Self::try_for_app(app)
-    }
-
     /// Merge `app`'s persistence override with these compiled defaults, then
     /// restore any default volume the merge dropped.
     ///
@@ -140,11 +135,26 @@ impl AppDefaults {
     /// their apps. Rather than special-case one app type, restore *any*
     /// compiled default volume the override's whole-list replace dropped. An
     /// explicit override that names a default volume itself still wins.
-    pub fn resolve_persistence(&self, app: &super::ServarrApp) -> PersistenceSpec {
-        let mut persistence = match &app.spec.persistence {
+    pub fn resolve_persistence(&self, app: &super::ServarrApp) -> Result<PersistenceSpec, String> {
+        let override_spec = app.spec.persistence.as_ref();
+
+        let mut persistence = match override_spec {
             None => self.persistence.clone(),
             Some(spec) => spec.merge_with(&self.persistence),
         };
+
+        // A tombstoned name is dropped unless the override itself re-lists
+        // that volume explicitly — explicit still wins over "remove this".
+        let tombstoned = override_spec
+            .map(|spec| spec.removed_default_volumes.as_slice())
+            .unwrap_or(&[]);
+        let explicitly_kept = override_spec
+            .map(|spec| spec.volumes.as_slice())
+            .unwrap_or(&[]);
+        let is_removed = |name: &str| {
+            tombstoned.iter().any(|n| n == name) && !explicitly_kept.iter().any(|v| v.name == name)
+        };
+
         for default_vol in &self.persistence.volumes {
             if !persistence
                 .volumes
@@ -154,7 +164,11 @@ impl AppDefaults {
                 persistence.volumes.push(default_vol.clone());
             }
         }
-        persistence
+        persistence.volumes.retain(|v| !is_removed(&v.name));
+
+        find_mount_path_collision(&persistence.volumes, &persistence.nfs_mounts)?;
+
+        Ok(persistence)
     }
 
     fn linuxserver_base(port: i32, downloads: bool, probe_path: &str) -> Self {
@@ -174,6 +188,7 @@ impl AppDefaults {
             persistence: PersistenceSpec {
                 volumes,
                 nfs_mounts: vec![],
+                ..Default::default()
             },
             probes: http_probes(probe_path, 30, 10),
             resources: std_resources("1", mem_limit, "100m", mem_request),
@@ -201,6 +216,7 @@ impl AppDefaults {
             persistence: PersistenceSpec {
                 volumes,
                 nfs_mounts: vec![],
+                ..Default::default()
             },
             probes: http_probes(probe_path, 30, 10),
             resources: std_resources("1", mem_limit, "100m", mem_request),
@@ -236,6 +252,7 @@ impl AppDefaults {
             persistence: PersistenceSpec {
                 volumes: vec![pvc("host-keys", "/etc/ssh/keys", "10Mi")],
                 nfs_mounts: vec![],
+                ..Default::default()
             },
             probes: tcp_probes(30, 10),
             resources: std_resources("500m", "256Mi", "100m", "128Mi"),
@@ -245,6 +262,30 @@ impl AppDefaults {
             app_config: None,
         }
     }
+}
+
+/// Kubernetes rejects a pod spec with two `volumeMounts` at the same path —
+/// this catches that at resolve time (across both PVC volumes and NFS
+/// mounts) so the reconcile fails loudly with a clear cause instead of
+/// producing an invalid pod spec the API server silently rejects (#376).
+fn find_mount_path_collision(volumes: &[PvcVolume], nfs_mounts: &[NfsMount]) -> Result<(), String> {
+    let mut seen: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
+    let entries = volumes
+        .iter()
+        .map(|v| (v.mount_path.as_str(), v.name.as_str()))
+        .chain(
+            nfs_mounts
+                .iter()
+                .map(|m| (m.mount_path.as_str(), m.name.as_str())),
+        );
+    for (mount_path, name) in entries {
+        if let Some(prior) = seen.insert(mount_path, name) {
+            return Err(format!(
+                "persistence entries '{prior}' and '{name}' both mount at '{mount_path}'"
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn image(repo: &str, tag: &str) -> ImageSpec {

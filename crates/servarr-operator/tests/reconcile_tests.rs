@@ -581,6 +581,23 @@ async fn test_error_policy_returns_requeue_60s() {
     );
 }
 
+/// Verify `Error::sanitized_message` returns safe strings for every variant.
+#[test]
+fn test_error_sanitized_message_all_variants() {
+    let ser_err = servarr_operator::controller::Error::Serialization(
+        serde_json::from_str::<serde_json::Value>("invalid").unwrap_err(),
+    );
+    assert_eq!(ser_err.sanitized_message(), "Serialization error");
+
+    let app_err = servarr_operator::controller::Error::AppDefaults(
+        "no image defaults for app: sonarr".to_string(),
+    );
+    assert_eq!(
+        app_err.sanitized_message(),
+        "no image defaults for app: sonarr"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Test 4: MediaStack reconcile with one Sonarr app
 // ---------------------------------------------------------------------------

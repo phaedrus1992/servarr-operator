@@ -105,11 +105,15 @@ fn arb_persistence() -> impl Strategy<Value = PersistenceSpec> {
     (
         prop::collection::vec(arb_pvc(), 0..4),
         prop::collection::vec(arb_nfs_mount(), 0..4),
+        prop::collection::vec(arb_string(), 0..3),
     )
-        .prop_map(|(volumes, nfs_mounts)| PersistenceSpec {
-            volumes,
-            nfs_mounts,
-        })
+        .prop_map(
+            |(volumes, nfs_mounts, removed_default_volumes)| PersistenceSpec {
+                volumes,
+                nfs_mounts,
+                removed_default_volumes,
+            },
+        )
 }
 
 fn arb_service_port() -> impl Strategy<Value = ServicePort> {

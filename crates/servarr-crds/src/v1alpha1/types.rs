@@ -90,6 +90,15 @@ pub struct PersistenceSpec {
     pub volumes: Vec<PvcVolume>,
     #[serde(default)]
     pub nfs_mounts: Vec<NfsMount>,
+    /// Names of compiled default volumes (see
+    /// `AppDefaults::resolve_persistence`) this override intentionally
+    /// removes rather than replaces. Without this, `resolve_persistence`
+    /// always restores any default volume a whole-list-replace override
+    /// drops (#367), so there was previously no way to say "I mean to drop
+    /// this one" (#376). An explicit override that re-lists the same name in
+    /// `volumes` still wins over the tombstone.
+    #[serde(default)]
+    pub removed_default_volumes: Vec<String>,
 }
 
 impl PersistenceSpec {
@@ -99,6 +108,8 @@ impl PersistenceSpec {
     /// - PVC volumes: `self.volumes` replaces entirely when non-empty; base
     ///   volumes are used when `self.volumes` is empty.
     /// - NFS mounts: additive, deduplicated by name (`self` wins on conflict).
+    /// - `removed_default_volumes`: additive (union), not receiver-wins — a
+    ///   tombstone is a removal policy that must survive either layer setting it.
     pub fn merge_with(&self, base: &PersistenceSpec) -> PersistenceSpec {
         let volumes = if self.volumes.is_empty() {
             base.volumes.clone()
@@ -114,9 +125,20 @@ impl PersistenceSpec {
             nfs_map.insert(m.name.clone(), m.clone());
         }
 
+        // A tombstone is a removal policy, not an overridable value — union
+        // rather than replace, so a stack-level tombstone survives a member
+        // app that also sets its own persistence override (#386).
+        let mut removed_default_volumes = base.removed_default_volumes.clone();
+        for name in &self.removed_default_volumes {
+            if !removed_default_volumes.contains(name) {
+                removed_default_volumes.push(name.clone());
+            }
+        }
+
         PersistenceSpec {
             volumes,
             nfs_mounts: nfs_map.into_values().collect(),
+            removed_default_volumes,
         }
     }
 }

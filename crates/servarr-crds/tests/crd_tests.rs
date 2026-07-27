@@ -103,6 +103,7 @@ fn test_crd_serde_roundtrip_all_fields() {
                 mount_path: "/media".into(),
                 read_only: false,
             }],
+            ..Default::default()
         }),
         env: vec![EnvVar {
             name: "TZ".into(),
@@ -162,7 +163,7 @@ fn test_defaults_for_all_app_types() {
     ];
 
     for app_type in &app_types {
-        let defaults = AppDefaults::for_app(app_type).unwrap();
+        let defaults = AppDefaults::try_for_app(app_type).unwrap();
         assert!(
             !defaults.image.repository.is_empty(),
             "{app_type}: empty image repo"
@@ -193,7 +194,7 @@ fn test_linuxserver_apps_have_downloads_pvc() {
     ];
 
     for app_type in &with_downloads {
-        let defaults = AppDefaults::for_app(app_type).unwrap();
+        let defaults = AppDefaults::try_for_app(app_type).unwrap();
         let has_downloads = defaults
             .persistence
             .volumes
@@ -216,7 +217,7 @@ fn test_config_only_apps() {
     ];
 
     for app_type in &config_only {
-        let defaults = AppDefaults::for_app(app_type).unwrap();
+        let defaults = AppDefaults::try_for_app(app_type).unwrap();
         assert_eq!(
             defaults.persistence.volumes.len(),
             1,
@@ -228,7 +229,7 @@ fn test_config_only_apps() {
 
 #[test]
 fn test_maintainerr_is_nonroot() {
-    let defaults = AppDefaults::for_app(&AppType::Maintainerr).unwrap();
+    let defaults = AppDefaults::try_for_app(&AppType::Maintainerr).unwrap();
     assert!(matches!(
         defaults.security.profile_type,
         SecurityProfileType::NonRoot
@@ -237,7 +238,7 @@ fn test_maintainerr_is_nonroot() {
 
 #[test]
 fn test_transmission_has_app_config() {
-    let defaults = AppDefaults::for_app(&AppType::Transmission).unwrap();
+    let defaults = AppDefaults::try_for_app(&AppType::Transmission).unwrap();
     assert!(matches!(
         defaults.app_config,
         Some(AppConfig::Transmission(_))

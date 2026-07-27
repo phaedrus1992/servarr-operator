@@ -34,7 +34,7 @@ fn test_deployment_builder_sonarr() {
 
     let container = &pod_spec.containers[0];
     assert_eq!(container.name, "sonarr");
-    let sonarr_defaults = AppDefaults::for_app(&AppType::Sonarr).expect("sonarr defaults");
+    let sonarr_defaults = AppDefaults::try_for_app(&AppType::Sonarr).expect("sonarr defaults");
     let expected_sonarr_image = format!(
         "{}:{}",
         sonarr_defaults.image.repository, sonarr_defaults.image.tag
@@ -135,6 +135,7 @@ fn test_deployment_builder_maintainerr_data_dir_follows_mount() {
                     size: String::new(),
                 }],
                 nfs_mounts: vec![],
+                ..Default::default()
             }),
             ..Default::default()
         },
@@ -317,6 +318,7 @@ fn test_pvc_ssh_bastion_host_keys_survives_persistence_override() {
             existing_claim_name: None,
         }],
         nfs_mounts: vec![],
+        ..Default::default()
     });
 
     let pvcs = servarr_resources::pvc::build_all(&app).unwrap();
@@ -748,7 +750,7 @@ fn test_image_repository_only_inherits_default_tag() {
     let deploy =
         servarr_resources::deployment::build(&app, &std::collections::HashMap::new()).unwrap();
     let container = &deploy.spec.unwrap().template.spec.unwrap().containers[0];
-    let sonarr_tag = AppDefaults::for_app(&AppType::Sonarr)
+    let sonarr_tag = AppDefaults::try_for_app(&AppType::Sonarr)
         .expect("sonarr defaults")
         .image
         .tag;
@@ -816,6 +818,7 @@ fn test_nfs_mounts() {
                     mount_path: "/media".into(),
                     read_only: true,
                 }],
+                ..Default::default()
             }),
             ..Default::default()
         },
@@ -873,7 +876,7 @@ fn test_deployment_builder_plex() {
     let container = &pod_spec.containers[0];
 
     assert_eq!(container.name, "plex");
-    let plex_defaults = AppDefaults::for_app(&AppType::Plex).expect("plex defaults");
+    let plex_defaults = AppDefaults::try_for_app(&AppType::Plex).expect("plex defaults");
     let expected_plex_image = format!(
         "{}:{}",
         plex_defaults.image.repository, plex_defaults.image.tag
@@ -922,7 +925,7 @@ fn test_deployment_builder_jellyfin() {
     let container = &pod_spec.containers[0];
 
     assert_eq!(container.name, "jellyfin");
-    let jf_defaults = AppDefaults::for_app(&AppType::Jellyfin).expect("jellyfin defaults");
+    let jf_defaults = AppDefaults::try_for_app(&AppType::Jellyfin).expect("jellyfin defaults");
     let expected_jf_image = format!("{}:{}", jf_defaults.image.repository, jf_defaults.image.tag);
     assert_eq!(container.image.as_deref(), Some(expected_jf_image.as_str()));
 
@@ -2706,6 +2709,7 @@ fn test_networkpolicy_ssh_bastion_nfs_egress() {
                     mount_path: "/media".into(),
                     read_only: true,
                 }],
+                ..Default::default()
             }),
             ..Default::default()
         },
@@ -3238,6 +3242,7 @@ fn test_deployment_ssh_bastion_host_keys_preserved_with_nfs_mounts() {
                         read_only: false,
                     },
                 ],
+                ..Default::default()
             }),
             app_config: Some(AppConfig::SshBastion(SshBastionConfig {
                 users: vec![SshUser {

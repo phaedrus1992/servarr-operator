@@ -298,6 +298,7 @@ Configures persistent storage. Supports PVC-backed volumes and NFS mounts.
 |---|---|---|
 | `volumes` | `[]PvcVolume` | Per-app defaults |
 | `nfsMounts` | `[]NfsMount` | `[]` |
+| `removedDefaultVolumes` | `[]string` | `[]` |
 
 **PvcVolume fields:**
 
@@ -323,6 +324,12 @@ instead of creating a new one (it does not own or delete the claim).
 | `mountPath` | `string` | -- |
 | `readOnly` | `bool` | `false` |
 
+**`removedDefaultVolumes`:** names of compiled default volumes (e.g. `downloads`, `config`)
+this app-type would normally get automatically that the override intentionally removes, rather
+than replaces. Without naming a volume here, the operator always restores any app-type default
+volume a `volumes` override drops -- there is no other way to opt out of a default volume. Listing
+the same name in `volumes` still wins over a tombstone here.
+
 ```yaml
 spec:
   persistence:
@@ -337,6 +344,17 @@ spec:
         path: /volume1/media
         mountPath: /media
         readOnly: false
+      # Replace the app-type's default `downloads` PVC with this NFS mount at
+      # the same path -- requires removedDefaultVolumes below, otherwise the
+      # operator restores the dropped `downloads` PVC and the reconcile fails
+      # on the mount_path collision.
+      - name: downloads-nfs
+        server: nas.local
+        path: /volume1/downloads
+        mountPath: /downloads
+        readOnly: false
+    removedDefaultVolumes:
+      - downloads
 ```
 
 ---
