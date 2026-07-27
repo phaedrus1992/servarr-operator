@@ -148,16 +148,14 @@ impl AppDefaults {
         let tombstoned = override_spec
             .map(|spec| spec.removed_default_volumes.as_slice())
             .unwrap_or(&[]);
-        let explicitly_kept: std::collections::HashSet<&str> = override_spec
-            .map(|spec| spec.volumes.iter().map(|v| v.name.as_str()).collect())
-            .unwrap_or_default();
-        let is_removed =
-            |name: &str| tombstoned.iter().any(|n| n == name) && !explicitly_kept.contains(name);
+        let explicitly_kept = override_spec
+            .map(|spec| spec.volumes.as_slice())
+            .unwrap_or(&[]);
+        let is_removed = |name: &str| {
+            tombstoned.iter().any(|n| n == name) && !explicitly_kept.iter().any(|v| v.name == name)
+        };
 
         for default_vol in &self.persistence.volumes {
-            if is_removed(&default_vol.name) {
-                continue;
-            }
             if !persistence
                 .volumes
                 .iter()
@@ -168,10 +166,7 @@ impl AppDefaults {
         }
         persistence.volumes.retain(|v| !is_removed(&v.name));
 
-        if let Some(msg) = find_mount_path_collision(&persistence.volumes, &persistence.nfs_mounts)
-        {
-            return Err(msg);
-        }
+        find_mount_path_collision(&persistence.volumes, &persistence.nfs_mounts)?;
 
         Ok(persistence)
     }
@@ -273,25 +268,24 @@ impl AppDefaults {
 /// this catches that at resolve time (across both PVC volumes and NFS
 /// mounts) so the reconcile fails loudly with a clear cause instead of
 /// producing an invalid pod spec the API server silently rejects (#376).
-fn find_mount_path_collision(volumes: &[PvcVolume], nfs_mounts: &[NfsMount]) -> Option<String> {
+fn find_mount_path_collision(volumes: &[PvcVolume], nfs_mounts: &[NfsMount]) -> Result<(), String> {
     let mut seen: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
-    for v in volumes {
-        if let Some(prior) = seen.insert(v.mount_path.as_str(), v.name.as_str()) {
-            return Some(format!(
-                "persistence volumes '{prior}' and '{}' both mount at '{}'",
-                v.name, v.mount_path
+    let entries = volumes
+        .iter()
+        .map(|v| (v.mount_path.as_str(), v.name.as_str()))
+        .chain(
+            nfs_mounts
+                .iter()
+                .map(|m| (m.mount_path.as_str(), m.name.as_str())),
+        );
+    for (mount_path, name) in entries {
+        if let Some(prior) = seen.insert(mount_path, name) {
+            return Err(format!(
+                "persistence entries '{prior}' and '{name}' both mount at '{mount_path}'"
             ));
         }
     }
-    for m in nfs_mounts {
-        if let Some(prior) = seen.insert(m.mount_path.as_str(), m.name.as_str()) {
-            return Some(format!(
-                "persistence entries '{prior}' and '{}' both mount at '{}'",
-                m.name, m.mount_path
-            ));
-        }
-    }
-    None
+    Ok(())
 }
 
 fn image(repo: &str, tag: &str) -> ImageSpec {
