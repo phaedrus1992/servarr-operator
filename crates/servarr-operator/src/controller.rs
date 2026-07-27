@@ -46,6 +46,22 @@ pub enum Error {
     AppDefaults(String),
 }
 
+impl Error {
+    /// Return a user-facing message safe for Kubernetes Events.
+    ///
+    /// Kubernetes Events are visible to anyone with `get/list events` RBAC
+    /// in the namespace — typically broader than operator-admin access.
+    /// This method strips internal details (file paths, app names, error
+    /// codes) that should only appear in operator structured logs.
+    pub fn sanitized_message(&self) -> String {
+        match self {
+            Error::Kube(_) => "Kubernetes API error".to_string(),
+            Error::Serialization(_) => "Serialization error".to_string(),
+            Error::AppDefaults(_) => "Application configuration error".to_string(),
+        }
+    }
+}
+
 pub fn print_crd() -> Result<()> {
     let crd = ServarrApp::crd();
     let yaml = serde_yaml::to_string(&crd)?;
@@ -1495,7 +1511,7 @@ pub fn error_policy(app: Arc<ServarrApp>, error: &Error, ctx: Arc<Context>) -> A
 
     let recorder = Recorder::new(ctx.client.clone(), ctx.reporter.clone());
     let obj_ref = app.object_ref(&());
-    let error_msg = error.to_string();
+    let error_msg = error.sanitized_message();
     tokio::spawn(async move {
         let _ = recorder
             .publish(

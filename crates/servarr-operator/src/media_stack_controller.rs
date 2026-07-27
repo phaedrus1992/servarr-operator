@@ -36,6 +36,17 @@ pub enum Error {
     Internal(&'static str),
 }
 
+impl Error {
+    /// Return a user-facing message safe for Kubernetes Events.
+    pub fn sanitized_message(&self) -> String {
+        match self {
+            Error::Kube(_) => "Kubernetes API error".to_string(),
+            Error::Serialization(_) => "Serialization error".to_string(),
+            Error::Internal(_) => "Internal error".to_string(),
+        }
+    }
+}
+
 pub fn print_crd() -> Result<()> {
     let crd = MediaStack::crd();
     let yaml = serde_yaml::to_string(&crd)?;
