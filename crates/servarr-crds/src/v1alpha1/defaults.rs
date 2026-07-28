@@ -166,7 +166,11 @@ impl AppDefaults {
         }
         persistence.volumes.retain(|v| !is_removed(&v.name));
 
-        find_mount_path_collision(&persistence.volumes, &persistence.nfs_mounts)?;
+        find_mount_path_collision(
+            &persistence.volumes,
+            &persistence.nfs_mounts,
+            &operator_reserved_mounts(app),
+        )?;
 
         Ok(persistence)
     }
@@ -264,25 +268,88 @@ impl AppDefaults {
     }
 }
 
+/// Mount paths the operator injects outside `PersistenceSpec` for certain app
+/// types — see `servarr_resources::deployment::build_volume_mounts`, the
+/// single source of truth for what actually gets mounted. A user's
+/// persistence override must not collide with these either, even though
+/// they never appear in `PersistenceSpec` (#402). Scoped to the fixed,
+/// non-per-user mounts a real override could plausibly name; per-user paths
+/// (SSH bastion's `/home/<user>/.ssh`, restricted-rsync scripts) are
+/// parameterized by user name and not sensible collision targets for a
+/// persistence override.
+fn operator_reserved_mounts(app: &super::ServarrApp) -> Vec<(&'static str, &'static str)> {
+    let mut reserved = Vec::new();
+    if matches!(app.spec.app, super::AppType::Transmission) {
+        reserved.push(("/watch", "watch"));
+        if app.spec.admin_credentials.is_some() {
+            reserved.push(("/run/secrets/admin", "admin-credentials"));
+            reserved.push(("/custom-cont-init.d/99-transmission-auth.sh", "scripts"));
+        }
+    }
+    if let Some(super::AppConfig::Prowlarr(pc)) = &app.spec.app_config
+        && !pc.custom_definitions.is_empty()
+    {
+        reserved.push(("/config/Definitions/Custom", "prowlarr-definitions"));
+    }
+    if let Some(super::AppConfig::SshBastion(sc)) = &app.spec.app_config
+        && sc.users.iter().any(|u| !u.public_keys.is_empty())
+    {
+        reserved.push(("/etc/authorized_keys.src", "authorized-keys-src"));
+        reserved.push(("/etc/authorized_keys", "authorized-keys"));
+    }
+    reserved
+}
+
+/// Kubernetes treats a trailing slash, a doubled slash, or a `.` segment as
+/// the same path component sequence (`/downloads`, `/downloads/`, and
+/// `/downloads//` are one mount point), so paths are normalized to their
+/// component sequence before compare — trimming only a single trailing slash
+/// missed `/downloads//` (#402 follow-up).
+fn normalize_mount_path(path: &str) -> String {
+    let mut normalized = path
+        .split('/')
+        .filter(|segment| !segment.is_empty() && *segment != ".")
+        .collect::<Vec<_>>()
+        .join("/");
+    normalized.insert(0, '/');
+    normalized
+}
+
 /// Kubernetes rejects a pod spec with two `volumeMounts` at the same path —
-/// this catches that at resolve time (across both PVC volumes and NFS
-/// mounts) so the reconcile fails loudly with a clear cause instead of
-/// producing an invalid pod spec the API server silently rejects (#376).
-fn find_mount_path_collision(volumes: &[PvcVolume], nfs_mounts: &[NfsMount]) -> Result<(), String> {
-    let mut seen: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
+/// this catches that at resolve time (across PVC volumes, NFS mounts, and
+/// operator-injected mounts) so the reconcile fails loudly with a clear cause
+/// instead of producing an invalid pod spec the API server silently rejects
+/// (#376, #402).
+fn find_mount_path_collision(
+    volumes: &[PvcVolume],
+    nfs_mounts: &[NfsMount],
+    reserved: &[(&str, &str)],
+) -> Result<(), String> {
+    // (mount_path, name, is_reserved) — is_reserved picks the error wording
+    // below, since a reserved name never appears in the user's own spec and
+    // "persistence entry" would send them looking for it there (#402).
+    let mut seen: std::collections::HashMap<String, (&str, bool)> =
+        std::collections::HashMap::new();
     let entries = volumes
         .iter()
-        .map(|v| (v.mount_path.as_str(), v.name.as_str()))
+        .map(|v| (v.mount_path.as_str(), v.name.as_str(), false))
         .chain(
             nfs_mounts
                 .iter()
-                .map(|m| (m.mount_path.as_str(), m.name.as_str())),
-        );
-    for (mount_path, name) in entries {
-        if let Some(prior) = seen.insert(mount_path, name) {
-            return Err(format!(
-                "persistence entries '{prior}' and '{name}' both mount at '{mount_path}'"
-            ));
+                .map(|m| (m.mount_path.as_str(), m.name.as_str(), false)),
+        )
+        .chain(reserved.iter().map(|(path, name)| (*path, *name, true)));
+    for (mount_path, name, is_reserved) in entries {
+        let normalized = normalize_mount_path(mount_path);
+        if let Some((prior, prior_reserved)) = seen.insert(normalized, (name, is_reserved)) {
+            return Err(if prior_reserved || is_reserved {
+                let user_entry = if prior_reserved { name } else { prior };
+                format!(
+                    "persistence entry '{user_entry}' mounts at '{mount_path}', which is reserved by the operator"
+                )
+            } else {
+                format!("persistence entries '{prior}' and '{name}' both mount at '{mount_path}'")
+            });
         }
     }
     Ok(())

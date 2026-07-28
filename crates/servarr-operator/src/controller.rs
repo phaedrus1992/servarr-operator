@@ -53,10 +53,12 @@ impl Error {
     /// in the namespace — typically broader than operator-admin access.
     /// This method strips internal details (file paths, error codes) that
     /// should only appear in operator structured logs. `AppDefaults` is
-    /// exempt: its message is built entirely from the user's own spec (e.g.
-    /// a mount-path collision naming their own volumes), so surfacing it
-    /// verbatim leaks nothing and is the only way the user can self-diagnose
-    /// the misconfiguration from `kubectl describe`.
+    /// exempt: its message is built entirely from the user's own spec and
+    /// static, non-sensitive operator identifiers — e.g. a mount-path
+    /// collision names either the user's own volumes, or (since #402) a
+    /// fixed operator-injected mount path/name such as `/watch` — so
+    /// surfacing it verbatim leaks nothing and is the only way the user can
+    /// self-diagnose the misconfiguration from `kubectl describe`.
     pub fn sanitized_message(&self) -> String {
         match self {
             Error::Kube(_) => "Kubernetes API error".to_string(),
@@ -960,7 +962,7 @@ pub(crate) async fn sync_admin_credentials(
                 condition_type: condition_types::ADMIN_CREDENTIALS_CONFIGURED.to_string(),
                 status: "Unknown".to_string(),
                 reason: "SecretReadError".to_string(),
-                message: e.to_string(),
+                message: e.log_summary(),
                 last_transition_time: now,
             });
         }
@@ -974,7 +976,7 @@ pub(crate) async fn sync_admin_credentials(
                 condition_type: condition_types::ADMIN_CREDENTIALS_CONFIGURED.to_string(),
                 status: "Unknown".to_string(),
                 reason: "SecretReadError".to_string(),
-                message: e.to_string(),
+                message: e.log_summary(),
                 last_transition_time: now,
             });
         }
@@ -1011,7 +1013,7 @@ pub(crate) async fn sync_admin_credentials(
                                 .to_string(),
                             status: "Unknown".to_string(),
                             reason: "ApiKeyReadError".to_string(),
-                            message: e.to_string(),
+                            message: e.log_summary(),
                             last_transition_time: now,
                         });
                     }
@@ -1029,8 +1031,8 @@ pub(crate) async fn sync_admin_credentials(
                 Ok(c) => c
                     .set_credentials(&username, &password)
                     .await
-                    .map_err(|e| e.to_string()),
-                Err(e) => Err(e.to_string()),
+                    .map_err(|e| e.log_summary()),
+                Err(e) => Err(e.log_summary()),
             }
         }
         AppType::Transmission => {
@@ -1056,31 +1058,31 @@ pub(crate) async fn sync_admin_credentials(
                                 .session_get()
                                 .await
                                 .map(|_| ())
-                                .map_err(|e| e.to_string()),
-                            Err(e) => Err(e.to_string()),
+                                .map_err(|e| e.log_summary()),
+                            Err(e) => Err(e.log_summary()),
                         }
                     }
                     Err(e) => {
                         warn!(app = %app.name_any(), error = %e, "admin-credentials: Transmission session-set failed");
-                        Err(e.to_string())
+                        Err(e.log_summary())
                     }
                 },
-                Err(e) => Err(e.to_string()),
+                Err(e) => Err(e.log_summary()),
             }
         }
         AppType::Jellyfin => match servarr_api::JellyfinClient::new(&base_url) {
             Ok(c) => c
                 .configure_admin(&username, &password)
                 .await
-                .map_err(|e| e.to_string()),
-            Err(e) => Err(e.to_string()),
+                .map_err(|e| e.log_summary()),
+            Err(e) => Err(e.log_summary()),
         },
         AppType::Tautulli => match servarr_api::TautulliClient::new(&base_url) {
             Ok(c) => c
                 .set_credentials(&username, &password)
                 .await
-                .map_err(|e| e.to_string()),
-            Err(e) => Err(e.to_string()),
+                .map_err(|e| e.log_summary()),
+            Err(e) => Err(e.log_summary()),
         },
         AppType::Overseerr => {
             let api_key = match app.spec.api_key_secret.as_deref() {
@@ -1092,7 +1094,7 @@ pub(crate) async fn sync_admin_credentials(
                                 .to_string(),
                             status: "Unknown".to_string(),
                             reason: "ApiKeyReadError".to_string(),
-                            message: e.to_string(),
+                            message: e.log_summary(),
                             last_transition_time: now,
                         });
                     }
@@ -1109,7 +1111,7 @@ pub(crate) async fn sync_admin_credentials(
             let c = servarr_api::OverseerrClient::new(&base_url, &api_key);
             c.setup_local_auth(&username, &password)
                 .await
-                .map_err(|e| e.to_string())
+                .map_err(|e| e.log_summary())
         }
         AppType::Sonarr | AppType::Radarr | AppType::Lidarr | AppType::Prowlarr => {
             let api_key = match app.spec.api_key_secret.as_deref() {
@@ -1121,7 +1123,7 @@ pub(crate) async fn sync_admin_credentials(
                                 .to_string(),
                             status: "Unknown".to_string(),
                             reason: "ApiKeyReadError".to_string(),
-                            message: e.to_string(),
+                            message: e.log_summary(),
                             last_transition_time: now,
                         });
                     }
@@ -1140,9 +1142,9 @@ pub(crate) async fn sync_admin_credentials(
                         warn!(app = %app.name_any(), "admin-credentials: configure_admin returned 401 — auth already active, no api key");
                         return None;
                     }
-                    Err(e) => Err(e.to_string()),
+                    Err(e) => Err(e.log_summary()),
                 },
-                Err(e) => Err(e.to_string()),
+                Err(e) => Err(e.log_summary()),
             }
         }
         AppType::Bazarr => {
@@ -1157,7 +1159,7 @@ pub(crate) async fn sync_admin_credentials(
                         condition_type: condition_types::ADMIN_CREDENTIALS_CONFIGURED.to_string(),
                         status: "Unknown".to_string(),
                         reason: "ApiKeyReadError".to_string(),
-                        message: e.to_string(),
+                        message: e.log_summary(),
                         last_transition_time: now,
                     });
                 }
@@ -1167,9 +1169,9 @@ pub(crate) async fn sync_admin_credentials(
                     let password_md5 = format!("{:x}", md5::compute(password.as_bytes()));
                     c.set_credentials(&username, &password_md5)
                         .await
-                        .map_err(|e| e.to_string())
+                        .map_err(|e| e.log_summary())
                 }
-                Err(e) => Err(e.to_string()),
+                Err(e) => Err(e.log_summary()),
             }
         }
         // Plex: uses plex.tv account auth, not configurable via operator
@@ -1257,19 +1259,31 @@ pub(crate) async fn check_api_health(
             };
             match servarr_api::ServarrClient::new(&base_url, &api_key, app_kind) {
                 Ok(c) => {
-                    let h = c.is_healthy().await.map_err(|e| e.to_string());
+                    let h = c.is_healthy().await.map_err(|e| {
+                        warn!(app = %app.name_any(), error = %e, "health check failed");
+                        e.log_summary()
+                    });
                     let uc = check_update_available(&c, &now).await;
                     (h, uc)
                 }
-                Err(e) => (Err(e.to_string()), None),
+                Err(e) => {
+                    warn!(app = %app.name_any(), error = %e, "failed to construct API client for health check");
+                    (Err(e.log_summary()), None)
+                }
             }
         }
         AppType::Sabnzbd => match servarr_api::SabnzbdClient::new(&base_url, &api_key) {
             Ok(c) => {
-                let h = c.is_healthy().await.map_err(|e| e.to_string());
+                let h = c.is_healthy().await.map_err(|e| {
+                    warn!(app = %app.name_any(), error = %e, "health check failed");
+                    e.log_summary()
+                });
                 (h, None)
             }
-            Err(e) => (Err(e.to_string()), None),
+            Err(e) => {
+                warn!(app = %app.name_any(), error = %e, "failed to construct API client for health check");
+                (Err(e.log_summary()), None)
+            }
         },
         AppType::Transmission => {
             // Pass credentials to the health check client when adminCredentials is set.
@@ -1306,25 +1320,43 @@ pub(crate) async fn check_api_health(
                 tx_pass.as_deref(),
             ) {
                 Ok(c) => {
-                    let h = c.is_healthy().await.map_err(|e| e.to_string());
+                    let h = c.is_healthy().await.map_err(|e| {
+                        warn!(app = %app.name_any(), error = %e, "health check failed");
+                        e.log_summary()
+                    });
                     (h, None)
                 }
-                Err(e) => (Err(e.to_string()), None),
+                Err(e) => {
+                    warn!(app = %app.name_any(), error = %e, "failed to construct API client for health check");
+                    (Err(e.log_summary()), None)
+                }
             }
         }
         AppType::Jellyfin => match servarr_api::JellyfinClient::new(&base_url) {
             Ok(c) => {
-                let h = c.is_healthy().await.map_err(|e| e.to_string());
+                let h = c.is_healthy().await.map_err(|e| {
+                    warn!(app = %app.name_any(), error = %e, "health check failed");
+                    e.log_summary()
+                });
                 (h, None)
             }
-            Err(e) => (Err(e.to_string()), None),
+            Err(e) => {
+                warn!(app = %app.name_any(), error = %e, "failed to construct API client for health check");
+                (Err(e.log_summary()), None)
+            }
         },
         AppType::Plex => match servarr_api::PlexClient::new(&base_url) {
             Ok(c) => {
-                let h = c.is_healthy().await.map_err(|e| e.to_string());
+                let h = c.is_healthy().await.map_err(|e| {
+                    warn!(app = %app.name_any(), error = %e, "health check failed");
+                    e.log_summary()
+                });
                 (h, None)
             }
-            Err(e) => (Err(e.to_string()), None),
+            Err(e) => {
+                warn!(app = %app.name_any(), error = %e, "failed to construct API client for health check");
+                (Err(e.log_summary()), None)
+            }
         },
         _ => return (None, None),
     };
@@ -1582,6 +1614,21 @@ pub(crate) async fn update_status(
     Ok(())
 }
 
+/// Publish `event` and warn (never panic or silently drop) if the publish
+/// itself fails — RBAC restriction, API server unavailable, namespace being
+/// torn down. The underlying reconcile/operation error is expected to
+/// already be logged by the caller; this only covers the Event mechanism
+/// itself going dark (#403).
+async fn publish_event(
+    recorder: &Recorder,
+    obj_ref: &k8s_openapi::api::core::v1::ObjectReference,
+    event: Event,
+) {
+    if let Err(e) = recorder.publish(&event, obj_ref).await {
+        warn!(error = %e, reason = %event.reason, "failed to publish event");
+    }
+}
+
 pub fn error_policy(app: Arc<ServarrApp>, error: &Error, ctx: Arc<Context>) -> Action {
     let app_type = app.spec.app.as_str();
     increment_reconcile_total(app_type, "error");
@@ -1591,18 +1638,18 @@ pub fn error_policy(app: Arc<ServarrApp>, error: &Error, ctx: Arc<Context>) -> A
     let obj_ref = app.object_ref(&());
     let error_msg = error.sanitized_message();
     tokio::spawn(async move {
-        let _ = recorder
-            .publish(
-                &Event {
-                    type_: EventType::Warning,
-                    reason: "ReconcileError".into(),
-                    note: Some(error_msg),
-                    action: "Reconcile".into(),
-                    secondary: None,
-                },
-                &obj_ref,
-            )
-            .await;
+        publish_event(
+            &recorder,
+            &obj_ref,
+            Event {
+                type_: EventType::Warning,
+                reason: "ReconcileError".into(),
+                note: Some(error_msg),
+                action: "Reconcile".into(),
+                secondary: None,
+            },
+        )
+        .await;
     });
 
     Action::requeue(Duration::from_secs(60))
@@ -1661,27 +1708,32 @@ pub(crate) async fn maybe_run_backup(
         Ok(s) => s,
         Err(e) => {
             warn!(error = %e, schedule = %backup_spec.schedule, "invalid cron schedule");
-            let schedule_display = backup_spec.schedule.trim();
-            if let Err(err) = recorder
-                .publish(
-                    &Event {
-                        type_: EventType::Warning,
-                        reason: "InvalidBackupSchedule".into(),
-                        note: Some(format!(
-                            "Invalid backup schedule '{}': {}",
-                            schedule_display, e
-                        )),
-                        action: "Backup".into(),
-                        secondary: None,
-                    },
-                    obj_ref,
-                )
-                .await
-            {
-                warn!(error = %err, "failed to publish InvalidBackupSchedule event");
-            }
+            // The cron crate's error text isn't something this codebase
+            // audits for safety to surface verbatim — the full detail stays
+            // in the structured warn! above; the user-facing Event/status
+            // only echoes their own schedule string back (#398). Truncated:
+            // the Events API rejects a note over 1024 chars, and an
+            // arbitrarily long spec.backup.schedule would otherwise inflate
+            // both the Event and the status patch on every reconcile.
+            let schedule_display: String = backup_spec.schedule.trim().chars().take(64).collect();
+            publish_event(
+                recorder,
+                obj_ref,
+                Event {
+                    type_: EventType::Warning,
+                    reason: "InvalidBackupSchedule".into(),
+                    note: Some(format!(
+                        "Invalid backup schedule '{schedule_display}': not a valid cron expression"
+                    )),
+                    action: "Backup".into(),
+                    secondary: None,
+                },
+            )
+            .await;
             return Some(servarr_crds::BackupStatus {
-                last_backup_result: Some(format!("invalid schedule: {e}")),
+                last_backup_result: Some(format!(
+                    "invalid schedule: '{schedule_display}' is not a valid cron expression"
+                )),
                 ..Default::default()
             });
         }
@@ -1743,9 +1795,11 @@ pub(crate) async fn maybe_run_backup(
 
     let app_type = app.spec.app.as_str();
 
-    if backup_time_corrupted && let Err(err) = recorder
-        .publish(
-            &Event {
+    if backup_time_corrupted {
+        publish_event(
+            recorder,
+            obj_ref,
+            Event {
                 type_: EventType::Warning,
                 reason: "CorruptedBackupTime".into(),
                 note: Some(
@@ -1754,43 +1808,40 @@ pub(crate) async fn maybe_run_backup(
                 action: "Backup".into(),
                 secondary: None,
             },
-            obj_ref,
-        )
-        .await
-    {
-        warn!(error = %err, "failed to publish CorruptedBackupTime event");
-    }
-
-    let _ = recorder
-        .publish(
-            &Event {
-                type_: EventType::Normal,
-                reason: "BackupStarted".into(),
-                note: Some("Scheduled backup started".into()),
-                action: "Backup".into(),
-                secondary: None,
-            },
-            obj_ref,
         )
         .await;
+    }
+
+    publish_event(
+        recorder,
+        obj_ref,
+        Event {
+            type_: EventType::Normal,
+            reason: "BackupStarted".into(),
+            note: Some("Scheduled backup started".into()),
+            action: "Backup".into(),
+            secondary: None,
+        },
+    )
+    .await;
 
     info!(app = %app_name, "creating backup");
     match api_client.create_backup().await {
         Ok(backup) => {
             info!(app = %app_name, backup_id = backup.id, "backup created");
             increment_backup_operations(app_type, "backup", "success");
-            let _ = recorder
-                .publish(
-                    &Event {
-                        type_: EventType::Normal,
-                        reason: "BackupCompleted".into(),
-                        note: Some(format!("Backup {} created successfully", backup.id)),
-                        action: "Backup".into(),
-                        secondary: None,
-                    },
-                    obj_ref,
-                )
-                .await;
+            publish_event(
+                recorder,
+                obj_ref,
+                Event {
+                    type_: EventType::Normal,
+                    reason: "BackupCompleted".into(),
+                    note: Some(format!("Backup {} created successfully", backup.id)),
+                    action: "Backup".into(),
+                    secondary: None,
+                },
+            )
+            .await;
 
             // Prune old backups if over retention count
             let retention = backup_spec.retention_count;
@@ -1822,21 +1873,22 @@ pub(crate) async fn maybe_run_backup(
         Err(e) => {
             warn!(app = %app_name, error = %e, "backup failed");
             increment_backup_operations(app_type, "backup", "error");
-            let _ = recorder
-                .publish(
-                    &Event {
-                        type_: EventType::Warning,
-                        reason: "BackupFailed".into(),
-                        note: Some(format!("Backup failed: {e}")),
-                        action: "Backup".into(),
-                        secondary: None,
-                    },
-                    obj_ref,
-                )
-                .await;
+            let error_summary = e.log_summary();
+            publish_event(
+                recorder,
+                obj_ref,
+                Event {
+                    type_: EventType::Warning,
+                    reason: "BackupFailed".into(),
+                    note: Some(format!("Backup failed: {error_summary}")),
+                    action: "Backup".into(),
+                    secondary: None,
+                },
+            )
+            .await;
             Some(servarr_crds::BackupStatus {
                 last_backup_time: last_backup.map(|_| chrono_now()),
-                last_backup_result: Some(format!("error: {e}")),
+                last_backup_result: Some(format!("error: {error_summary}")),
                 backup_count: 0,
             })
         }
@@ -1885,18 +1937,18 @@ pub(crate) async fn maybe_restore_backup(
     let deploy_api = Api::<Deployment>::namespaced(client.clone(), ns);
 
     // Step 1: Scale deployment to 0
-    let _ = recorder
-        .publish(
-            &Event {
-                type_: EventType::Normal,
-                reason: "RestoreStarted".into(),
-                note: Some(format!("Scaling down for restore from backup {backup_id}")),
-                action: "Restore".into(),
-                secondary: None,
-            },
-            obj_ref,
-        )
-        .await;
+    publish_event(
+        recorder,
+        obj_ref,
+        Event {
+            type_: EventType::Normal,
+            reason: "RestoreStarted".into(),
+            note: Some(format!("Scaling down for restore from backup {backup_id}")),
+            action: "Restore".into(),
+            secondary: None,
+        },
+    )
+    .await;
 
     // Step 1: Scale deployment to 0 and wait for pods to terminate.
     // Captured as a Result so scale-up (Step 3) always runs even if this fails.
@@ -2024,36 +2076,39 @@ pub(crate) async fn try_restore(
         Ok(()) => {
             info!(%name, backup_id, "restore completed successfully");
             increment_backup_operations(app.spec.app.as_str(), "restore", "success");
-            let _ = recorder
-                .publish(
-                    &Event {
-                        type_: EventType::Normal,
-                        reason: "RestoreComplete".into(),
-                        note: Some(format!("Successfully restored from backup {backup_id}")),
-                        action: "Restore".into(),
-                        secondary: None,
-                    },
-                    obj_ref,
-                )
-                .await;
+            publish_event(
+                recorder,
+                obj_ref,
+                Event {
+                    type_: EventType::Normal,
+                    reason: "RestoreComplete".into(),
+                    note: Some(format!("Successfully restored from backup {backup_id}")),
+                    action: "Restore".into(),
+                    secondary: None,
+                },
+            )
+            .await;
             Ok(())
         }
         Err(e) => {
             warn!(%name, backup_id, error = %e, "restore API call failed");
             increment_backup_operations(app.spec.app.as_str(), "restore", "error");
-            let _ = recorder
-                .publish(
-                    &Event {
-                        type_: EventType::Warning,
-                        reason: "RestoreFailed".into(),
-                        note: Some(format!("Failed to restore from backup {backup_id}: {e}")),
-                        action: "Restore".into(),
-                        secondary: None,
-                    },
-                    obj_ref,
-                )
-                .await;
-            Err(anyhow::anyhow!("restore API call failed: {e}"))
+            let error_summary = e.log_summary();
+            publish_event(
+                recorder,
+                obj_ref,
+                Event {
+                    type_: EventType::Warning,
+                    reason: "RestoreFailed".into(),
+                    note: Some(format!(
+                        "Failed to restore from backup {backup_id}: {error_summary}"
+                    )),
+                    action: "Restore".into(),
+                    secondary: None,
+                },
+            )
+            .await;
+            Err(anyhow::anyhow!("restore API call failed: {error_summary}"))
         }
     }
 }
@@ -2279,18 +2334,18 @@ pub(crate) async fn sync_prowlarr_apps(
         }
     }
 
-    let _ = recorder
-        .publish(
-            &Event {
-                type_: EventType::Normal,
-                reason: "ProwlarrSyncComplete".into(),
-                note: Some(format!("Synced {} apps to Prowlarr", discovered.len())),
-                action: "ProwlarrSync".into(),
-                secondary: None,
-            },
-            obj_ref,
-        )
-        .await;
+    publish_event(
+        recorder,
+        obj_ref,
+        Event {
+            type_: EventType::Normal,
+            reason: "ProwlarrSyncComplete".into(),
+            note: Some(format!("Synced {} apps to Prowlarr", discovered.len())),
+            action: "ProwlarrSync".into(),
+            secondary: None,
+        },
+    )
+    .await;
 
     Ok(())
 }
@@ -2378,18 +2433,18 @@ pub(crate) async fn cleanup_prowlarr_registration(
         );
         prowlarr_client.delete_application(registered.id).await?;
 
-        let _ = recorder
-            .publish(
-                &Event {
-                    type_: EventType::Normal,
-                    reason: "ProwlarrCleanup".into(),
-                    note: Some(format!("Removed {} from Prowlarr", app.name_any())),
-                    action: "Finalize".into(),
-                    secondary: None,
-                },
-                obj_ref,
-            )
-            .await;
+        publish_event(
+            recorder,
+            obj_ref,
+            Event {
+                type_: EventType::Normal,
+                reason: "ProwlarrCleanup".into(),
+                note: Some(format!("Removed {} from Prowlarr", app.name_any())),
+                action: "Finalize".into(),
+                secondary: None,
+            },
+        )
+        .await;
     }
 
     Ok(())
@@ -2616,20 +2671,20 @@ pub(crate) async fn sync_overseerr_servers(
         .iter()
         .filter(|a| a.app_type == AppType::Radarr)
         .count();
-    let _ = recorder
-        .publish(
-            &Event {
-                type_: EventType::Normal,
-                reason: "OverseerrSyncComplete".into(),
-                note: Some(format!(
-                    "Synced {sonarr_count} Sonarr + {radarr_count} Radarr servers to Overseerr"
-                )),
-                action: "OverseerrSync".into(),
-                secondary: None,
-            },
-            obj_ref,
-        )
-        .await;
+    publish_event(
+        recorder,
+        obj_ref,
+        Event {
+            type_: EventType::Normal,
+            reason: "OverseerrSyncComplete".into(),
+            note: Some(format!(
+                "Synced {sonarr_count} Sonarr + {radarr_count} Radarr servers to Overseerr"
+            )),
+            action: "OverseerrSync".into(),
+            secondary: None,
+        },
+    )
+    .await;
 
     Ok(())
 }
@@ -2687,7 +2742,11 @@ pub(crate) async fn sync_bazarr_apps(
                     warn!(bazarr = %bazarr_name, sonarr = %app.name, error = %e,
                         "failed to configure Sonarr in Bazarr");
                     first_error.get_or_insert_with(|| {
-                        anyhow::anyhow!("configure_sonarr({}) failed: {e}", app.name)
+                        anyhow::anyhow!(
+                            "configure_sonarr({}) failed: {}",
+                            app.name,
+                            e.log_summary()
+                        )
                     });
                 }
             }
@@ -2700,7 +2759,11 @@ pub(crate) async fn sync_bazarr_apps(
                     warn!(bazarr = %bazarr_name, radarr = %app.name, error = %e,
                         "failed to configure Radarr in Bazarr");
                     first_error.get_or_insert_with(|| {
-                        anyhow::anyhow!("configure_radarr({}) failed: {e}", app.name)
+                        anyhow::anyhow!(
+                            "configure_radarr({}) failed: {}",
+                            app.name,
+                            e.log_summary()
+                        )
                     });
                 }
             }
@@ -2711,11 +2774,15 @@ pub(crate) async fn sync_bazarr_apps(
     if auto_remove {
         if !has_sonarr && let Err(e) = bazarr_client.disable_sonarr().await {
             warn!(bazarr = %bazarr_name, error = %e, "failed to disable Sonarr in Bazarr");
-            first_error.get_or_insert_with(|| anyhow::anyhow!("disable_sonarr failed: {e}"));
+            first_error.get_or_insert_with(|| {
+                anyhow::anyhow!("disable_sonarr failed: {}", e.log_summary())
+            });
         }
         if !has_radarr && let Err(e) = bazarr_client.disable_radarr().await {
             warn!(bazarr = %bazarr_name, error = %e, "failed to disable Radarr in Bazarr");
-            first_error.get_or_insert_with(|| anyhow::anyhow!("disable_radarr failed: {e}"));
+            first_error.get_or_insert_with(|| {
+                anyhow::anyhow!("disable_radarr failed: {}", e.log_summary())
+            });
         }
     }
 
@@ -2861,7 +2928,7 @@ pub(crate) async fn sync_maintainerr_servers(
         .map_err(|e| {
             error!(maintainerr = %maintainerr_name, error = %e,
                 "failed to list existing Sonarr servers from Maintainerr; aborting sync to prevent duplicates");
-            anyhow::anyhow!("list_sonarr failed: {e}")
+            anyhow::anyhow!("list_sonarr failed: {}", e.log_summary())
         })?
         .into_iter()
         .map(|s| s.name)
@@ -2872,7 +2939,7 @@ pub(crate) async fn sync_maintainerr_servers(
         .map_err(|e| {
             error!(maintainerr = %maintainerr_name, error = %e,
                 "failed to list existing Radarr servers from Maintainerr; aborting sync to prevent duplicates");
-            anyhow::anyhow!("list_radarr failed: {e}")
+            anyhow::anyhow!("list_radarr failed: {}", e.log_summary())
         })?
         .into_iter()
         .map(|s| s.name)
@@ -3208,18 +3275,18 @@ pub(crate) async fn cleanup_overseerr_registration(
                 );
                 overseerr_client.delete_sonarr(id).await?;
 
-                let _ = recorder
-                    .publish(
-                        &Event {
-                            type_: EventType::Normal,
-                            reason: "OverseerrCleanup".into(),
-                            note: Some(format!("Removed {} from Overseerr", app.name_any())),
-                            action: "Finalize".into(),
-                            secondary: None,
-                        },
-                        obj_ref,
-                    )
-                    .await;
+                publish_event(
+                    recorder,
+                    obj_ref,
+                    Event {
+                        type_: EventType::Normal,
+                        reason: "OverseerrCleanup".into(),
+                        note: Some(format!("Removed {} from Overseerr", app.name_any())),
+                        action: "Finalize".into(),
+                        secondary: None,
+                    },
+                )
+                .await;
             }
         }
         AppType::Radarr => {
@@ -3236,18 +3303,18 @@ pub(crate) async fn cleanup_overseerr_registration(
                 );
                 overseerr_client.delete_radarr(id).await?;
 
-                let _ = recorder
-                    .publish(
-                        &Event {
-                            type_: EventType::Normal,
-                            reason: "OverseerrCleanup".into(),
-                            note: Some(format!("Removed {} from Overseerr", app.name_any())),
-                            action: "Finalize".into(),
-                            secondary: None,
-                        },
-                        obj_ref,
-                    )
-                    .await;
+                publish_event(
+                    recorder,
+                    obj_ref,
+                    Event {
+                        type_: EventType::Normal,
+                        reason: "OverseerrCleanup".into(),
+                        note: Some(format!("Removed {} from Overseerr", app.name_any())),
+                        action: "Finalize".into(),
+                        secondary: None,
+                    },
+                )
+                .await;
             }
         }
         _ => {}
@@ -4241,6 +4308,62 @@ mod tests {
         assert_eq!(u.reason, "UpToDate");
     }
 
+    #[tokio::test]
+    async fn check_api_health_sanitizes_response_body() {
+        use servarr_crds::ApiHealthCheckSpec;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock_server = MockServer::start().await;
+        let client = build_mock_client(&mock_server.uri()).await;
+
+        let mut app = make_test_app("my-sonarr", "test", AppType::Sonarr);
+        app.spec.api_health_check = Some(ApiHealthCheckSpec {
+            enabled: true,
+            interval_seconds: None,
+        });
+        app.spec.api_key_secret = Some("sonarr-apikey".to_string());
+
+        Mock::given(method("GET"))
+            .and(path("/api/v1/namespaces/test/secrets/sonarr-apikey"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "apiVersion": "v1",
+                "kind": "Secret",
+                "metadata": { "name": "sonarr-apikey", "namespace": "test" },
+                "data": { "api-key": "c29uYXJyLWtleQ==" }
+            })))
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/v3/system/status"))
+            .respond_with(
+                ResponseTemplate::new(500).set_body_string("stack trace: /etc/sonarr/secrets.db"),
+            )
+            .mount(&mock_server)
+            .await;
+
+        let mock_uri = mock_server.uri();
+        let (h, _u) = check_api_health(&client, &app, Some(&mock_uri)).await;
+
+        let h = h.expect("health condition must be set");
+        assert_eq!(h.reason, "ApiError");
+        assert!(
+            !h.message.contains("/etc/sonarr/secrets.db"),
+            "raw response body must not leak into the condition message, got: {}",
+            h.message
+        );
+        // Sonarr's is_healthy() goes through the generated SDK client, whose
+        // errors map_sdk_err flattens to status 0 (#398 follow-up: the SDK
+        // path can't report the real HTTP status the way HttpClient::post
+        // can) — log_summary() still correctly omits the body either way.
+        assert!(
+            h.message.contains("HTTP API error (status: 0)"),
+            "expected log_summary()'s sanitized form in: {}",
+            h.message
+        );
+    }
+
     // ---- sync_admin_credentials tests ----
 
     #[tokio::test]
@@ -4417,6 +4540,31 @@ mod tests {
                 instance: None,
             },
         )
+    }
+
+    #[tokio::test]
+    async fn publish_event_does_not_panic_when_publish_fails() {
+        // No Mock mounted for the events endpoint, so the publish call fails
+        // (wiremock returns 404 for any unmatched request) — publish_event
+        // must warn and return, never panic (#403).
+        let mock_server = wiremock::MockServer::start().await;
+        let client = build_mock_client(&mock_server.uri()).await;
+        let recorder = make_recorder(&client);
+        let app = make_test_app("my-app", "test", AppType::Sonarr);
+        let obj_ref = app.object_ref(&());
+
+        publish_event(
+            &recorder,
+            &obj_ref,
+            Event {
+                type_: EventType::Warning,
+                reason: "Test".into(),
+                note: Some("test note".into()),
+                action: "Test".into(),
+                secondary: None,
+            },
+        )
+        .await;
     }
 
     #[tokio::test]
@@ -4759,6 +4907,83 @@ mod tests {
         assert!(result.is_ok());
     }
 
+    #[tokio::test]
+    async fn sync_bazarr_apps_sanitizes_configure_sonarr_response_body() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock_server = MockServer::start().await;
+        let client = build_mock_client(&mock_server.uri()).await;
+
+        let bazarr = make_test_app("my-bazarr", "test", AppType::Bazarr);
+
+        Mock::given(method("GET"))
+            .and(path("/api/v1/namespaces/test/secrets/my-bazarr-api-key"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "apiVersion": "v1", "kind": "Secret",
+                "metadata": { "name": "my-bazarr-api-key", "namespace": "test" },
+                "data": { "api-key": "c29uYXJyLWtleQ==" }
+            })))
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path(
+                "/apis/servarr.dev/v1alpha1/namespaces/test/servarrapps",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "apiVersion": "servarr.dev/v1alpha1",
+                "kind": "ServarrAppList",
+                "metadata": { "resourceVersion": "1" },
+                "items": [{
+                    "apiVersion": "servarr.dev/v1alpha1",
+                    "kind": "ServarrApp",
+                    "metadata": {
+                        "name": "my-sonarr", "namespace": "test",
+                        "uid": "sonarr-uid", "resourceVersion": "1"
+                    },
+                    "spec": { "app": "Sonarr", "apiKeySecret": "sonarr-key" }
+                }]
+            })))
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/v1/namespaces/test/secrets/sonarr-key"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "apiVersion": "v1", "kind": "Secret",
+                "metadata": { "name": "sonarr-key", "namespace": "test" },
+                "data": { "api-key": "c29uYXJyLWtleQ==" }
+            })))
+            .mount(&mock_server)
+            .await;
+
+        // Discovered Sonarr's API key is submitted in this request body — an
+        // error response echoing it back must not reach the Bazarr sync
+        // error (#398 follow-up: cross-object secret disclosure).
+        Mock::given(method("POST"))
+            .and(path("/api/system/settings"))
+            .respond_with(
+                ResponseTemplate::new(500).set_body_string("rejected: c29uYXJyLWtleQ== invalid"),
+            )
+            .mount(&mock_server)
+            .await;
+
+        let mock_uri = mock_server.uri();
+        let err = sync_bazarr_apps(&client, &bazarr, "test", Some(&mock_uri))
+            .await
+            .expect_err("configure_sonarr failure must propagate as an error");
+        let msg = err.to_string();
+        assert!(
+            !msg.contains("c29uYXJyLWtleQ=="),
+            "the discovered app's API key must not leak into the sync error, got: {msg}"
+        );
+        assert!(
+            msg.contains("HTTP API error (status: 500)"),
+            "expected log_summary()'s sanitized form in: {msg}"
+        );
+    }
+
     // ---- sync_maintainerr_servers tests ----
 
     #[tokio::test]
@@ -4812,6 +5037,64 @@ mod tests {
         let mock_uri = mock_server.uri();
         let result = sync_maintainerr_servers(&client, &maintainerr, "test", Some(&mock_uri)).await;
         assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn sync_maintainerr_servers_sanitizes_list_sonarr_response_body() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock_server = MockServer::start().await;
+        let client = build_mock_client(&mock_server.uri()).await;
+
+        let maintainerr = make_test_app("my-maintainerr", "test", AppType::Maintainerr);
+
+        Mock::given(method("GET"))
+            .and(path(
+                "/api/v1/namespaces/test/secrets/my-maintainerr-api-key",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "apiVersion": "v1", "kind": "Secret",
+                "metadata": { "name": "my-maintainerr-api-key", "namespace": "test" },
+                "data": { "api-key": "c29uYXJyLWtleQ==" }
+            })))
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path(
+                "/apis/servarr.dev/v1alpha1/namespaces/test/servarrapps",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "apiVersion": "servarr.dev/v1alpha1",
+                "kind": "ServarrAppList",
+                "metadata": { "resourceVersion": "1" },
+                "items": []
+            })))
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/settings/sonarr"))
+            .respond_with(
+                ResponseTemplate::new(500).set_body_string("stack trace: /etc/maintainerr/db"),
+            )
+            .mount(&mock_server)
+            .await;
+
+        let mock_uri = mock_server.uri();
+        let err = sync_maintainerr_servers(&client, &maintainerr, "test", Some(&mock_uri))
+            .await
+            .expect_err("list_sonarr failure must abort the sync");
+        let msg = err.to_string();
+        assert!(
+            !msg.contains("/etc/maintainerr/db"),
+            "raw response body must not leak into the sync error, got: {msg}"
+        );
+        assert!(
+            msg.contains("HTTP API error (status: 500)"),
+            "expected log_summary()'s sanitized form in: {msg}"
+        );
     }
 
     // ---- sync_maintainerr_servers Plex-wiring tests (#151, #251) ----
@@ -5966,6 +6249,62 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn maybe_run_backup_create_fails_sanitizes_response_body() {
+        use servarr_crds::BackupSpec;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock_server = MockServer::start().await;
+        let client = build_mock_client(&mock_server.uri()).await;
+        let mut app = make_test_app("my-sonarr", "test", AppType::Sonarr);
+        app.spec.backup = Some(BackupSpec {
+            enabled: true,
+            schedule: "0 3 * * *".into(),
+            retention_count: 5,
+        });
+        app.spec.api_key_secret = Some("sonarr-key".into());
+
+        Mock::given(method("GET"))
+            .and(path("/api/v1/namespaces/test/secrets/sonarr-key"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "apiVersion": "v1", "kind": "Secret",
+                "metadata": { "name": "sonarr-key", "namespace": "test" },
+                "data": { "api-key": "c29uYXJyLWtleQ==" }
+            })))
+            .mount(&mock_server)
+            .await;
+
+        // Response body simulates upstream leaking internal detail that must
+        // never reach a tenant-visible Event or status field (#398).
+        Mock::given(method("POST"))
+            .and(path("/api/v3/system/backup"))
+            .respond_with(
+                ResponseTemplate::new(500)
+                    .set_body_string("stack trace: /etc/sonarr/secrets.db line 42"),
+            )
+            .mount(&mock_server)
+            .await;
+
+        let recorder = make_recorder(&client);
+        let obj_ref = app.object_ref(&());
+        let mock_uri = mock_server.uri();
+
+        let result = maybe_run_backup(&client, &app, &recorder, &obj_ref, Some(&mock_uri)).await;
+        let status = result.expect("should return Some(BackupStatus) on failure");
+        let msg = status
+            .last_backup_result
+            .expect("should have error message");
+        assert!(
+            !msg.contains("/etc/sonarr/secrets.db"),
+            "raw response body must not leak into status, got: {msg}"
+        );
+        assert!(
+            msg.contains("HTTP API error (status: 500)"),
+            "expected log_summary()'s sanitized form in: {msg}"
+        );
+    }
+
     // ---- overseerr_sync_exists ----
 
     #[tokio::test]
@@ -6458,6 +6797,56 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn try_restore_sanitizes_response_body() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock_server = MockServer::start().await;
+        let client = build_mock_client(&mock_server.uri()).await;
+        let mut app = make_test_app("my-sonarr", "test", AppType::Sonarr);
+        app.spec.api_key_secret = Some("sonarr-key".into());
+
+        Mock::given(method("GET"))
+            .and(path("/api/v1/namespaces/test/secrets/sonarr-key"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "apiVersion": "v1", "kind": "Secret",
+                "metadata": { "name": "sonarr-key", "namespace": "test" },
+                "data": { "api-key": "c29uYXJyLWtleQ==" }
+            })))
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/v3/system/backup/restore/42"))
+            .respond_with(
+                ResponseTemplate::new(500).set_body_string("stack trace: /etc/sonarr/secrets.db"),
+            )
+            .mount(&mock_server)
+            .await;
+
+        let recorder = make_recorder(&client);
+        let obj_ref = app.object_ref(&());
+        let mock_uri = mock_server.uri();
+
+        let result = try_restore(&client, &app, 42, &recorder, &obj_ref, Some(&mock_uri)).await;
+
+        assert!(result.is_err(), "expected Err when restore API call fails");
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            !err_msg.contains("/etc/sonarr/secrets.db"),
+            "raw response body must not leak into the returned error, got: {err_msg}"
+        );
+        // restore_backup() goes through the generated SDK client, whose
+        // errors map_sdk_err flattens to status 0 (see the matching comment
+        // on check_api_health_sanitizes_response_body) — log_summary() still
+        // correctly omits the body either way.
+        assert!(
+            err_msg.contains("HTTP API error (status: 0)"),
+            "expected log_summary()'s sanitized form in: {err_msg}"
+        );
+    }
+
+    #[tokio::test]
     async fn sync_admin_credentials_transmission_success() {
         use wiremock::matchers::{method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -6662,6 +7051,64 @@ mod tests {
         assert!(
             result.is_none(),
             "expected None when configure_admin returns 401"
+        );
+    }
+
+    #[tokio::test]
+    async fn sync_admin_credentials_sanitizes_response_body() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock_server = MockServer::start().await;
+        let client = build_mock_client(&mock_server.uri()).await;
+        let mut app = make_test_app("my-sonarr", "test", AppType::Sonarr);
+        app.spec.admin_credentials = Some(servarr_crds::AdminCredentialsSpec {
+            secret_name: "admin-creds".into(),
+        });
+
+        Mock::given(method("GET"))
+            .and(path("/api/v1/namespaces/test/secrets/admin-creds"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "apiVersion": "v1", "kind": "Secret",
+                "metadata": { "name": "admin-creds", "namespace": "test" },
+                "data": { "username": "dXNlcg==", "password": "cGFzcw==" }
+            })))
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/v3/config/host"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": 1, "authenticationMethod": "none", "username": "", "password": ""
+            })))
+            .mount(&mock_server)
+            .await;
+
+        // Simulates an upstream app echoing the submitted credential back in
+        // a rejected-request body — exactly what log_summary() exists to
+        // keep out of tenant-visible Conditions (#398 follow-up).
+        Mock::given(method("PUT"))
+            .and(path("/api/v3/config/host/1"))
+            .respond_with(
+                ResponseTemplate::new(400).set_body_string("rejected: password=pass leaked"),
+            )
+            .mount(&mock_server)
+            .await;
+
+        let mock_uri = mock_server.uri();
+        let result = sync_admin_credentials(&client, &app, Some(&mock_uri)).await;
+
+        let cond = result.expect("expected Some(Condition)");
+        assert_eq!(cond.status, "False");
+        assert!(
+            !cond.message.contains("password=pass"),
+            "raw response body must not leak into the condition message, got: {}",
+            cond.message
+        );
+        assert!(
+            cond.message.contains("HTTP API error (status: 400)"),
+            "expected log_summary()'s sanitized form in: {}",
+            cond.message
         );
     }
 }

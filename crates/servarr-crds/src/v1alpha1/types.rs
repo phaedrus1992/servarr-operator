@@ -127,9 +127,16 @@ impl PersistenceSpec {
 
         // A tombstone is a removal policy, not an overridable value — union
         // rather than replace, so a stack-level tombstone survives a member
-        // app that also sets its own persistence override (#386).
-        let mut removed_default_volumes = base.removed_default_volumes.clone();
-        for name in &self.removed_default_volumes {
+        // app that also sets its own persistence override (#386). Dedupe
+        // against both layers, not just the incoming one — either layer's own
+        // list may already repeat a name (e.g. a CR spec listing the same
+        // volume twice), and a "union" must still be a set (#401).
+        let mut removed_default_volumes: Vec<String> = Vec::new();
+        for name in base
+            .removed_default_volumes
+            .iter()
+            .chain(self.removed_default_volumes.iter())
+        {
             if !removed_default_volumes.contains(name) {
                 removed_default_volumes.push(name.clone());
             }

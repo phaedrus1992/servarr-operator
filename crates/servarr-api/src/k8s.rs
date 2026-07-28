@@ -14,6 +14,23 @@ pub enum SecretError {
     InvalidUtf8 { name: String, key: String },
 }
 
+impl SecretError {
+    /// Returns a log-safe summary that excludes internal Kubernetes API
+    /// detail. `NoData`/`KeyNotFound`/`InvalidUtf8` are exempt: they name
+    /// only the secret/key name the caller's own spec already specified
+    /// (`apiKeySecret`, `adminCredentials.secretName`), so surfacing them
+    /// verbatim leaks nothing. `Kube` is not — `kube::Error`'s `Display` can
+    /// carry arbitrary API server response detail.
+    pub fn log_summary(&self) -> String {
+        match self {
+            Self::Kube(_) => "Kubernetes API error".to_string(),
+            Self::NoData { .. } | Self::KeyNotFound { .. } | Self::InvalidUtf8 { .. } => {
+                self.to_string()
+            }
+        }
+    }
+}
+
 /// Read a single key from a Kubernetes Secret.
 ///
 /// The value is returned as a decoded UTF-8 string (Kubernetes stores
@@ -41,4 +58,19 @@ pub async fn read_secret_key(
         name: secret_name.to_string(),
         key: key.to_string(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn log_summary_key_not_found_matches_display() {
+        let err = SecretError::KeyNotFound {
+            name: "my-secret".into(),
+            key: "api-key".into(),
+        };
+        assert_eq!(err.log_summary(), err.to_string());
+        assert!(err.log_summary().contains("my-secret"));
+    }
 }

@@ -26,6 +26,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   collision above) now include the actual cause instead of a generic "Application
   configuration error" — the cause is always derived from your own spec, so nothing internal
   leaks (#386).
+- The mount-path collision check above now also catches a persistence override colliding with
+  a mount the operator injects itself (Transmission's `/watch` dir and admin-credentials
+  script, Prowlarr's custom-indexer-definitions dir, SSH bastion's `authorized-keys` mount),
+  not just other persistence entries, and normalizes trailing/doubled slashes so
+  `/downloads//` is caught the same as `/downloads/` (#402).
+
+### Security
+
+- Fix several Kubernetes Events and status conditions (`AdminCredentialsConfigured`,
+  `AppHealthy`, backup/restore results, `BazarrSyncReady`, `MaintainerrSyncReady`) including
+  raw upstream API error text, including the response body, instead of a sanitized summary.
+  For admin-credential sync in particular, an upstream app that echoed a rejected request body
+  back could have put the plaintext admin password into `.status.conditions[].message`,
+  readable by anyone with `get servarrapps` in the namespace (#398).
 
 ### Fixed
 
@@ -40,6 +54,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Fix the Deployment, Service, NetworkPolicy, PVC, HTTPRoute, and TCPRoute builders silently
   applying an empty or invalid resource — or, for HTTPRoute/TCPRoute, panicking — instead of
   failing the reconcile loudly when an app's compiled defaults fail to load (#368).
+- Fix a Kubernetes Event publish failure (RBAC restriction, API server unavailable, namespace
+  being torn down) being silently discarded instead of logged, across every Event the operator
+  publishes (#403).
+- Fix `persistence.removedDefaultVolumes` not deduplicating a name listed twice within a
+  single layer when merging a MediaStack's stack-wide persistence with a member app's own
+  override (#401).
 
 ## [1.2.3] - 2026-07-07
 
