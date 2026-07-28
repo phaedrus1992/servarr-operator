@@ -2742,7 +2742,11 @@ pub(crate) async fn sync_bazarr_apps(
                     warn!(bazarr = %bazarr_name, sonarr = %app.name, error = %e,
                         "failed to configure Sonarr in Bazarr");
                     first_error.get_or_insert_with(|| {
-                        anyhow::anyhow!("configure_sonarr({}) failed: {e}", app.name)
+                        anyhow::anyhow!(
+                            "configure_sonarr({}) failed: {}",
+                            app.name,
+                            e.log_summary()
+                        )
                     });
                 }
             }
@@ -2755,7 +2759,11 @@ pub(crate) async fn sync_bazarr_apps(
                     warn!(bazarr = %bazarr_name, radarr = %app.name, error = %e,
                         "failed to configure Radarr in Bazarr");
                     first_error.get_or_insert_with(|| {
-                        anyhow::anyhow!("configure_radarr({}) failed: {e}", app.name)
+                        anyhow::anyhow!(
+                            "configure_radarr({}) failed: {}",
+                            app.name,
+                            e.log_summary()
+                        )
                     });
                 }
             }
@@ -2766,11 +2774,15 @@ pub(crate) async fn sync_bazarr_apps(
     if auto_remove {
         if !has_sonarr && let Err(e) = bazarr_client.disable_sonarr().await {
             warn!(bazarr = %bazarr_name, error = %e, "failed to disable Sonarr in Bazarr");
-            first_error.get_or_insert_with(|| anyhow::anyhow!("disable_sonarr failed: {e}"));
+            first_error.get_or_insert_with(|| {
+                anyhow::anyhow!("disable_sonarr failed: {}", e.log_summary())
+            });
         }
         if !has_radarr && let Err(e) = bazarr_client.disable_radarr().await {
             warn!(bazarr = %bazarr_name, error = %e, "failed to disable Radarr in Bazarr");
-            first_error.get_or_insert_with(|| anyhow::anyhow!("disable_radarr failed: {e}"));
+            first_error.get_or_insert_with(|| {
+                anyhow::anyhow!("disable_radarr failed: {}", e.log_summary())
+            });
         }
     }
 
@@ -2916,7 +2928,7 @@ pub(crate) async fn sync_maintainerr_servers(
         .map_err(|e| {
             error!(maintainerr = %maintainerr_name, error = %e,
                 "failed to list existing Sonarr servers from Maintainerr; aborting sync to prevent duplicates");
-            anyhow::anyhow!("list_sonarr failed: {e}")
+            anyhow::anyhow!("list_sonarr failed: {}", e.log_summary())
         })?
         .into_iter()
         .map(|s| s.name)
@@ -2927,7 +2939,7 @@ pub(crate) async fn sync_maintainerr_servers(
         .map_err(|e| {
             error!(maintainerr = %maintainerr_name, error = %e,
                 "failed to list existing Radarr servers from Maintainerr; aborting sync to prevent duplicates");
-            anyhow::anyhow!("list_radarr failed: {e}")
+            anyhow::anyhow!("list_radarr failed: {}", e.log_summary())
         })?
         .into_iter()
         .map(|s| s.name)
@@ -4895,6 +4907,83 @@ mod tests {
         assert!(result.is_ok());
     }
 
+    #[tokio::test]
+    async fn sync_bazarr_apps_sanitizes_configure_sonarr_response_body() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock_server = MockServer::start().await;
+        let client = build_mock_client(&mock_server.uri()).await;
+
+        let bazarr = make_test_app("my-bazarr", "test", AppType::Bazarr);
+
+        Mock::given(method("GET"))
+            .and(path("/api/v1/namespaces/test/secrets/my-bazarr-api-key"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "apiVersion": "v1", "kind": "Secret",
+                "metadata": { "name": "my-bazarr-api-key", "namespace": "test" },
+                "data": { "api-key": "c29uYXJyLWtleQ==" }
+            })))
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path(
+                "/apis/servarr.dev/v1alpha1/namespaces/test/servarrapps",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "apiVersion": "servarr.dev/v1alpha1",
+                "kind": "ServarrAppList",
+                "metadata": { "resourceVersion": "1" },
+                "items": [{
+                    "apiVersion": "servarr.dev/v1alpha1",
+                    "kind": "ServarrApp",
+                    "metadata": {
+                        "name": "my-sonarr", "namespace": "test",
+                        "uid": "sonarr-uid", "resourceVersion": "1"
+                    },
+                    "spec": { "app": "Sonarr", "apiKeySecret": "sonarr-key" }
+                }]
+            })))
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/v1/namespaces/test/secrets/sonarr-key"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "apiVersion": "v1", "kind": "Secret",
+                "metadata": { "name": "sonarr-key", "namespace": "test" },
+                "data": { "api-key": "c29uYXJyLWtleQ==" }
+            })))
+            .mount(&mock_server)
+            .await;
+
+        // Discovered Sonarr's API key is submitted in this request body — an
+        // error response echoing it back must not reach the Bazarr sync
+        // error (#398 follow-up: cross-object secret disclosure).
+        Mock::given(method("POST"))
+            .and(path("/api/system/settings"))
+            .respond_with(
+                ResponseTemplate::new(500).set_body_string("rejected: c29uYXJyLWtleQ== invalid"),
+            )
+            .mount(&mock_server)
+            .await;
+
+        let mock_uri = mock_server.uri();
+        let err = sync_bazarr_apps(&client, &bazarr, "test", Some(&mock_uri))
+            .await
+            .expect_err("configure_sonarr failure must propagate as an error");
+        let msg = err.to_string();
+        assert!(
+            !msg.contains("c29uYXJyLWtleQ=="),
+            "the discovered app's API key must not leak into the sync error, got: {msg}"
+        );
+        assert!(
+            msg.contains("HTTP API error (status: 500)"),
+            "expected log_summary()'s sanitized form in: {msg}"
+        );
+    }
+
     // ---- sync_maintainerr_servers tests ----
 
     #[tokio::test]
@@ -4948,6 +5037,64 @@ mod tests {
         let mock_uri = mock_server.uri();
         let result = sync_maintainerr_servers(&client, &maintainerr, "test", Some(&mock_uri)).await;
         assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn sync_maintainerr_servers_sanitizes_list_sonarr_response_body() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock_server = MockServer::start().await;
+        let client = build_mock_client(&mock_server.uri()).await;
+
+        let maintainerr = make_test_app("my-maintainerr", "test", AppType::Maintainerr);
+
+        Mock::given(method("GET"))
+            .and(path(
+                "/api/v1/namespaces/test/secrets/my-maintainerr-api-key",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "apiVersion": "v1", "kind": "Secret",
+                "metadata": { "name": "my-maintainerr-api-key", "namespace": "test" },
+                "data": { "api-key": "c29uYXJyLWtleQ==" }
+            })))
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path(
+                "/apis/servarr.dev/v1alpha1/namespaces/test/servarrapps",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "apiVersion": "servarr.dev/v1alpha1",
+                "kind": "ServarrAppList",
+                "metadata": { "resourceVersion": "1" },
+                "items": []
+            })))
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/settings/sonarr"))
+            .respond_with(
+                ResponseTemplate::new(500).set_body_string("stack trace: /etc/maintainerr/db"),
+            )
+            .mount(&mock_server)
+            .await;
+
+        let mock_uri = mock_server.uri();
+        let err = sync_maintainerr_servers(&client, &maintainerr, "test", Some(&mock_uri))
+            .await
+            .expect_err("list_sonarr failure must abort the sync");
+        let msg = err.to_string();
+        assert!(
+            !msg.contains("/etc/maintainerr/db"),
+            "raw response body must not leak into the sync error, got: {msg}"
+        );
+        assert!(
+            msg.contains("HTTP API error (status: 500)"),
+            "expected log_summary()'s sanitized form in: {msg}"
+        );
     }
 
     // ---- sync_maintainerr_servers Plex-wiring tests (#151, #251) ----
