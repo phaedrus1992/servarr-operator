@@ -91,7 +91,7 @@ fn test_deployment_builder_maintainerr_nonroot() {
     let container = &pod_spec.containers[0];
 
     let maintainerr_defaults =
-        AppDefaults::for_app(&AppType::Maintainerr).expect("maintainerr defaults");
+        AppDefaults::try_for_app(&AppType::Maintainerr).expect("maintainerr defaults");
     let expected_maintainerr_image = format!(
         "{}:{}",
         maintainerr_defaults.image.repository, maintainerr_defaults.image.tag
