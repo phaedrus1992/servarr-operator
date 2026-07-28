@@ -1259,19 +1259,31 @@ pub(crate) async fn check_api_health(
             };
             match servarr_api::ServarrClient::new(&base_url, &api_key, app_kind) {
                 Ok(c) => {
-                    let h = c.is_healthy().await.map_err(|e| e.log_summary());
+                    let h = c.is_healthy().await.map_err(|e| {
+                        warn!(app = %app.name_any(), error = %e, "health check failed");
+                        e.log_summary()
+                    });
                     let uc = check_update_available(&c, &now).await;
                     (h, uc)
                 }
-                Err(e) => (Err(e.log_summary()), None),
+                Err(e) => {
+                    warn!(app = %app.name_any(), error = %e, "failed to construct API client for health check");
+                    (Err(e.log_summary()), None)
+                }
             }
         }
         AppType::Sabnzbd => match servarr_api::SabnzbdClient::new(&base_url, &api_key) {
             Ok(c) => {
-                let h = c.is_healthy().await.map_err(|e| e.log_summary());
+                let h = c.is_healthy().await.map_err(|e| {
+                    warn!(app = %app.name_any(), error = %e, "health check failed");
+                    e.log_summary()
+                });
                 (h, None)
             }
-            Err(e) => (Err(e.log_summary()), None),
+            Err(e) => {
+                warn!(app = %app.name_any(), error = %e, "failed to construct API client for health check");
+                (Err(e.log_summary()), None)
+            }
         },
         AppType::Transmission => {
             // Pass credentials to the health check client when adminCredentials is set.
@@ -1308,25 +1320,43 @@ pub(crate) async fn check_api_health(
                 tx_pass.as_deref(),
             ) {
                 Ok(c) => {
-                    let h = c.is_healthy().await.map_err(|e| e.log_summary());
+                    let h = c.is_healthy().await.map_err(|e| {
+                        warn!(app = %app.name_any(), error = %e, "health check failed");
+                        e.log_summary()
+                    });
                     (h, None)
                 }
-                Err(e) => (Err(e.log_summary()), None),
+                Err(e) => {
+                    warn!(app = %app.name_any(), error = %e, "failed to construct API client for health check");
+                    (Err(e.log_summary()), None)
+                }
             }
         }
         AppType::Jellyfin => match servarr_api::JellyfinClient::new(&base_url) {
             Ok(c) => {
-                let h = c.is_healthy().await.map_err(|e| e.log_summary());
+                let h = c.is_healthy().await.map_err(|e| {
+                    warn!(app = %app.name_any(), error = %e, "health check failed");
+                    e.log_summary()
+                });
                 (h, None)
             }
-            Err(e) => (Err(e.log_summary()), None),
+            Err(e) => {
+                warn!(app = %app.name_any(), error = %e, "failed to construct API client for health check");
+                (Err(e.log_summary()), None)
+            }
         },
         AppType::Plex => match servarr_api::PlexClient::new(&base_url) {
             Ok(c) => {
-                let h = c.is_healthy().await.map_err(|e| e.log_summary());
+                let h = c.is_healthy().await.map_err(|e| {
+                    warn!(app = %app.name_any(), error = %e, "health check failed");
+                    e.log_summary()
+                });
                 (h, None)
             }
-            Err(e) => (Err(e.log_summary()), None),
+            Err(e) => {
+                warn!(app = %app.name_any(), error = %e, "failed to construct API client for health check");
+                (Err(e.log_summary()), None)
+            }
         },
         _ => return (None, None),
     };
