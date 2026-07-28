@@ -53,10 +53,12 @@ impl Error {
     /// in the namespace — typically broader than operator-admin access.
     /// This method strips internal details (file paths, error codes) that
     /// should only appear in operator structured logs. `AppDefaults` is
-    /// exempt: its message is built entirely from the user's own spec (e.g.
-    /// a mount-path collision naming their own volumes), so surfacing it
-    /// verbatim leaks nothing and is the only way the user can self-diagnose
-    /// the misconfiguration from `kubectl describe`.
+    /// exempt: its message is built entirely from the user's own spec and
+    /// static, non-sensitive operator identifiers — e.g. a mount-path
+    /// collision names either the user's own volumes, or (since #402) a
+    /// fixed operator-injected mount path/name such as `/watch` — so
+    /// surfacing it verbatim leaks nothing and is the only way the user can
+    /// self-diagnose the misconfiguration from `kubectl describe`.
     pub fn sanitized_message(&self) -> String {
         match self {
             Error::Kube(_) => "Kubernetes API error".to_string(),

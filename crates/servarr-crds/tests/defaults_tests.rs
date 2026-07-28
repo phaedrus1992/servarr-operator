@@ -846,3 +846,159 @@ fn resolve_persistence_no_admin_credentials_mount_reserved_without_spec() {
         "without adminCredentials configured, /run/secrets/admin is never mounted by the operator",
     );
 }
+
+/// Same operator-injected-mount coverage as /watch and /run/secrets/admin,
+/// for the remaining fixed mounts build_volume_mounts injects: Transmission's
+/// auth script, Prowlarr's custom-definitions dir, and SSH bastion's
+/// authorized-keys staging/target paths (#402 follow-up).
+#[test]
+fn resolve_persistence_detects_collision_with_transmission_auth_script_mount() {
+    let defaults = AppDefaults::try_for_app(&AppType::Transmission).unwrap();
+    let mut app = make_app(AppType::Transmission);
+    app.spec.admin_credentials = Some(AdminCredentialsSpec {
+        secret_name: "transmission-admin".into(),
+    });
+    app.spec.persistence = Some(PersistenceSpec {
+        volumes: vec![],
+        nfs_mounts: vec![NfsMount {
+            name: "scripts-nfs".into(),
+            server: "nas.local".into(),
+            path: "/export/scripts".into(),
+            mount_path: "/custom-cont-init.d/99-transmission-auth.sh".into(),
+            read_only: false,
+        }],
+        removed_default_volumes: vec![],
+    });
+
+    let err = defaults
+        .resolve_persistence(&app)
+        .expect_err("must not collide with Transmission's operator-injected auth-script mount");
+    assert!(
+        err.contains("/custom-cont-init.d/99-transmission-auth.sh"),
+        "error should name the colliding mount_path, got: {err}"
+    );
+}
+
+#[test]
+fn resolve_persistence_detects_collision_with_prowlarr_definitions_mount() {
+    let defaults = AppDefaults::try_for_app(&AppType::Prowlarr).unwrap();
+    let mut app = make_app(AppType::Prowlarr);
+    app.spec.app_config = Some(AppConfig::Prowlarr(ProwlarrConfig {
+        custom_definitions: vec![IndexerDefinition {
+            name: "my-tracker".into(),
+            content: "---".into(),
+        }],
+    }));
+    app.spec.persistence = Some(PersistenceSpec {
+        volumes: vec![],
+        nfs_mounts: vec![NfsMount {
+            name: "definitions-nfs".into(),
+            server: "nas.local".into(),
+            path: "/export/definitions".into(),
+            mount_path: "/config/Definitions/Custom".into(),
+            read_only: false,
+        }],
+        removed_default_volumes: vec![],
+    });
+
+    let err = defaults
+        .resolve_persistence(&app)
+        .expect_err("must not collide with Prowlarr's operator-injected custom-definitions mount");
+    assert!(
+        err.contains("/config/Definitions/Custom"),
+        "error should name the colliding mount_path, got: {err}"
+    );
+}
+
+#[test]
+fn resolve_persistence_detects_collision_with_authorized_keys_mount() {
+    let defaults = AppDefaults::try_for_app(&AppType::SshBastion).unwrap();
+    let mut app = make_app(AppType::SshBastion);
+    app.spec.app_config = Some(AppConfig::SshBastion(SshBastionConfig {
+        users: vec![SshUser {
+            name: "alice".into(),
+            uid: 1000,
+            gid: 1000,
+            public_keys: "ssh-ed25519 AAAA...".into(),
+            ..Default::default()
+        }],
+        ..Default::default()
+    }));
+    app.spec.persistence = Some(PersistenceSpec {
+        volumes: vec![],
+        nfs_mounts: vec![NfsMount {
+            name: "keys-nfs".into(),
+            server: "nas.local".into(),
+            path: "/export/keys".into(),
+            mount_path: "/etc/authorized_keys".into(),
+            read_only: false,
+        }],
+        removed_default_volumes: vec![],
+    });
+
+    let err = defaults
+        .resolve_persistence(&app)
+        .expect_err("must not collide with SSH bastion's operator-injected authorized_keys mount");
+    assert!(
+        err.contains("/etc/authorized_keys"),
+        "error should name the colliding mount_path, got: {err}"
+    );
+}
+
+/// Kubernetes treats a trailing slash *or* a doubled slash as the same
+/// path — a single `strip_suffix('/')` catches `/downloads/` but not
+/// `/downloads//` (#402 follow-up).
+#[test]
+fn resolve_persistence_detects_collision_with_doubled_trailing_slash() {
+    let defaults = AppDefaults::try_for_app(&AppType::Sonarr).unwrap();
+    let mut app = make_app(AppType::Sonarr);
+    app.spec.persistence = Some(PersistenceSpec {
+        volumes: vec![],
+        nfs_mounts: vec![NfsMount {
+            name: "downloads-nfs".into(),
+            server: "nas.local".into(),
+            path: "/export/downloads".into(),
+            mount_path: "/downloads//".into(),
+            read_only: false,
+        }],
+        removed_default_volumes: vec![],
+    });
+
+    let err = defaults.resolve_persistence(&app).expect_err(
+        "a doubled trailing slash must not hide a collision with the 'downloads' default PVC",
+    );
+    assert!(
+        err.contains("/downloads"),
+        "error should name the colliding mount_path, got: {err}"
+    );
+}
+
+/// The reserved-mount collision message must name the operator's mount, not
+/// misdirect the user to look for a "persistence entry" that isn't in their
+/// spec (#402 follow-up).
+#[test]
+fn resolve_persistence_collision_message_names_operator_reserved_mount() {
+    let defaults = AppDefaults::try_for_app(&AppType::Transmission).unwrap();
+    let mut app = make_app(AppType::Transmission);
+    app.spec.persistence = Some(PersistenceSpec {
+        volumes: vec![],
+        nfs_mounts: vec![NfsMount {
+            name: "watch-nfs".into(),
+            server: "nas.local".into(),
+            path: "/export/watch".into(),
+            mount_path: "/watch".into(),
+            read_only: false,
+        }],
+        removed_default_volumes: vec![],
+    });
+
+    let err = defaults.resolve_persistence(&app).unwrap_err();
+    assert!(
+        err.contains("reserved by the operator"),
+        "error should say the mount is operator-reserved, not imply another persistence entry, got: {err}"
+    );
+    assert!(
+        err.contains("watch-nfs"),
+        "error should name the user's own entry, got: {err}"
+    );
+}

@@ -43,6 +43,7 @@ fn arb_mount_path() -> impl Strategy<Value = String> {
     prop_oneof![
         Just("/a".to_string()),
         Just("/a/".to_string()),
+        Just("/a//".to_string()),
         Just("/b".to_string()),
         Just("/b/".to_string()),
         Just("/c".to_string()),
@@ -91,15 +92,24 @@ fn arb_entries() -> impl Strategy<Value = (Vec<PvcVolume>, Vec<NfsMount>)> {
     })
 }
 
+/// Mirrors defaults.rs's normalize_mount_path: same component-based
+/// normalization, kept as an independent expression of the same intent
+/// rather than importing the private helper.
+fn normalize(path: &str) -> String {
+    let mut normalized = path
+        .split('/')
+        .filter(|segment| !segment.is_empty() && *segment != ".")
+        .collect::<Vec<_>>()
+        .join("/");
+    normalized.insert(0, '/');
+    normalized
+}
+
 fn normalized_paths(volumes: &[PvcVolume], nfs_mounts: &[NfsMount]) -> Vec<String> {
     volumes
         .iter()
-        .map(|v| v.mount_path.trim_end_matches('/').to_string())
-        .chain(
-            nfs_mounts
-                .iter()
-                .map(|m| m.mount_path.trim_end_matches('/').to_string()),
-        )
+        .map(|v| normalize(&v.mount_path))
+        .chain(nfs_mounts.iter().map(|m| normalize(&m.mount_path)))
         .collect()
 }
 
