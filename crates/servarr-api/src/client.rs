@@ -28,10 +28,18 @@ impl ApiError {
     /// Use for credential-bearing API calls where the response body from the
     /// downstream API may echo back the submitted credential (API keys, tokens,
     /// passwords) in a validation error message.
+    ///
+    /// Deliberately an exhaustive match with no wildcard arm: a future
+    /// variant that carries response-body content must add its own case
+    /// here rather than silently falling through to `Display` (which is
+    /// unsanitized by default) — see the `OperationFailed` case, added
+    /// after `message` was found leaking the Maintainerr `{status:"NOK",
+    /// message}` envelope body verbatim through the wildcard this replaced.
     pub fn log_summary(&self) -> String {
         match self {
             Self::ApiResponse { status, .. } => format!("HTTP API error (status: {status})"),
-            other => other.to_string(),
+            Self::OperationFailed { .. } => "operation rejected by API".to_string(),
+            Self::Request(_) | Self::InvalidUrl(_) | Self::InvalidApiKey => self.to_string(),
         }
     }
 }
@@ -139,5 +147,38 @@ impl std::fmt::Debug for HttpClient {
         f.debug_struct("HttpClient")
             .field("base_url", &self.base_url.as_str())
             .finish()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn log_summary_excludes_api_response_body() {
+        let err = ApiError::ApiResponse {
+            status: 500,
+            body: "leaked internal stack trace /etc/secrets".into(),
+        };
+        let summary = err.log_summary();
+        assert!(!summary.contains("leaked internal stack trace"));
+        assert!(summary.contains("500"));
+    }
+
+    #[test]
+    fn log_summary_excludes_operation_failed_message() {
+        // The Maintainerr {status:"NOK", message} envelope lifts `message`
+        // verbatim from the upstream response body (#398 follow-up).
+        let err = ApiError::OperationFailed {
+            message: "leaked internal detail from upstream envelope".into(),
+        };
+        let summary = err.log_summary();
+        assert!(!summary.contains("leaked internal detail"));
+    }
+
+    #[test]
+    fn log_summary_invalid_api_key_matches_display() {
+        let err = ApiError::InvalidApiKey;
+        assert_eq!(err.log_summary(), err.to_string());
     }
 }
