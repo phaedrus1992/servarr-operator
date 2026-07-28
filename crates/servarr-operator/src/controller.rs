@@ -962,7 +962,7 @@ pub(crate) async fn sync_admin_credentials(
                 condition_type: condition_types::ADMIN_CREDENTIALS_CONFIGURED.to_string(),
                 status: "Unknown".to_string(),
                 reason: "SecretReadError".to_string(),
-                message: e.to_string(),
+                message: e.log_summary(),
                 last_transition_time: now,
             });
         }
@@ -976,7 +976,7 @@ pub(crate) async fn sync_admin_credentials(
                 condition_type: condition_types::ADMIN_CREDENTIALS_CONFIGURED.to_string(),
                 status: "Unknown".to_string(),
                 reason: "SecretReadError".to_string(),
-                message: e.to_string(),
+                message: e.log_summary(),
                 last_transition_time: now,
             });
         }
@@ -1013,7 +1013,7 @@ pub(crate) async fn sync_admin_credentials(
                                 .to_string(),
                             status: "Unknown".to_string(),
                             reason: "ApiKeyReadError".to_string(),
-                            message: e.to_string(),
+                            message: e.log_summary(),
                             last_transition_time: now,
                         });
                     }
@@ -1031,8 +1031,8 @@ pub(crate) async fn sync_admin_credentials(
                 Ok(c) => c
                     .set_credentials(&username, &password)
                     .await
-                    .map_err(|e| e.to_string()),
-                Err(e) => Err(e.to_string()),
+                    .map_err(|e| e.log_summary()),
+                Err(e) => Err(e.log_summary()),
             }
         }
         AppType::Transmission => {
@@ -1058,31 +1058,31 @@ pub(crate) async fn sync_admin_credentials(
                                 .session_get()
                                 .await
                                 .map(|_| ())
-                                .map_err(|e| e.to_string()),
-                            Err(e) => Err(e.to_string()),
+                                .map_err(|e| e.log_summary()),
+                            Err(e) => Err(e.log_summary()),
                         }
                     }
                     Err(e) => {
                         warn!(app = %app.name_any(), error = %e, "admin-credentials: Transmission session-set failed");
-                        Err(e.to_string())
+                        Err(e.log_summary())
                     }
                 },
-                Err(e) => Err(e.to_string()),
+                Err(e) => Err(e.log_summary()),
             }
         }
         AppType::Jellyfin => match servarr_api::JellyfinClient::new(&base_url) {
             Ok(c) => c
                 .configure_admin(&username, &password)
                 .await
-                .map_err(|e| e.to_string()),
-            Err(e) => Err(e.to_string()),
+                .map_err(|e| e.log_summary()),
+            Err(e) => Err(e.log_summary()),
         },
         AppType::Tautulli => match servarr_api::TautulliClient::new(&base_url) {
             Ok(c) => c
                 .set_credentials(&username, &password)
                 .await
-                .map_err(|e| e.to_string()),
-            Err(e) => Err(e.to_string()),
+                .map_err(|e| e.log_summary()),
+            Err(e) => Err(e.log_summary()),
         },
         AppType::Overseerr => {
             let api_key = match app.spec.api_key_secret.as_deref() {
@@ -1094,7 +1094,7 @@ pub(crate) async fn sync_admin_credentials(
                                 .to_string(),
                             status: "Unknown".to_string(),
                             reason: "ApiKeyReadError".to_string(),
-                            message: e.to_string(),
+                            message: e.log_summary(),
                             last_transition_time: now,
                         });
                     }
@@ -1111,7 +1111,7 @@ pub(crate) async fn sync_admin_credentials(
             let c = servarr_api::OverseerrClient::new(&base_url, &api_key);
             c.setup_local_auth(&username, &password)
                 .await
-                .map_err(|e| e.to_string())
+                .map_err(|e| e.log_summary())
         }
         AppType::Sonarr | AppType::Radarr | AppType::Lidarr | AppType::Prowlarr => {
             let api_key = match app.spec.api_key_secret.as_deref() {
@@ -1123,7 +1123,7 @@ pub(crate) async fn sync_admin_credentials(
                                 .to_string(),
                             status: "Unknown".to_string(),
                             reason: "ApiKeyReadError".to_string(),
-                            message: e.to_string(),
+                            message: e.log_summary(),
                             last_transition_time: now,
                         });
                     }
@@ -1142,9 +1142,9 @@ pub(crate) async fn sync_admin_credentials(
                         warn!(app = %app.name_any(), "admin-credentials: configure_admin returned 401 — auth already active, no api key");
                         return None;
                     }
-                    Err(e) => Err(e.to_string()),
+                    Err(e) => Err(e.log_summary()),
                 },
-                Err(e) => Err(e.to_string()),
+                Err(e) => Err(e.log_summary()),
             }
         }
         AppType::Bazarr => {
@@ -1159,7 +1159,7 @@ pub(crate) async fn sync_admin_credentials(
                         condition_type: condition_types::ADMIN_CREDENTIALS_CONFIGURED.to_string(),
                         status: "Unknown".to_string(),
                         reason: "ApiKeyReadError".to_string(),
-                        message: e.to_string(),
+                        message: e.log_summary(),
                         last_transition_time: now,
                     });
                 }
@@ -1169,9 +1169,9 @@ pub(crate) async fn sync_admin_credentials(
                     let password_md5 = format!("{:x}", md5::compute(password.as_bytes()));
                     c.set_credentials(&username, &password_md5)
                         .await
-                        .map_err(|e| e.to_string())
+                        .map_err(|e| e.log_summary())
                 }
-                Err(e) => Err(e.to_string()),
+                Err(e) => Err(e.log_summary()),
             }
         }
         // Plex: uses plex.tv account auth, not configurable via operator
@@ -6904,6 +6904,64 @@ mod tests {
         assert!(
             result.is_none(),
             "expected None when configure_admin returns 401"
+        );
+    }
+
+    #[tokio::test]
+    async fn sync_admin_credentials_sanitizes_response_body() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock_server = MockServer::start().await;
+        let client = build_mock_client(&mock_server.uri()).await;
+        let mut app = make_test_app("my-sonarr", "test", AppType::Sonarr);
+        app.spec.admin_credentials = Some(servarr_crds::AdminCredentialsSpec {
+            secret_name: "admin-creds".into(),
+        });
+
+        Mock::given(method("GET"))
+            .and(path("/api/v1/namespaces/test/secrets/admin-creds"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "apiVersion": "v1", "kind": "Secret",
+                "metadata": { "name": "admin-creds", "namespace": "test" },
+                "data": { "username": "dXNlcg==", "password": "cGFzcw==" }
+            })))
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/v3/config/host"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": 1, "authenticationMethod": "none", "username": "", "password": ""
+            })))
+            .mount(&mock_server)
+            .await;
+
+        // Simulates an upstream app echoing the submitted credential back in
+        // a rejected-request body — exactly what log_summary() exists to
+        // keep out of tenant-visible Conditions (#398 follow-up).
+        Mock::given(method("PUT"))
+            .and(path("/api/v3/config/host/1"))
+            .respond_with(
+                ResponseTemplate::new(400).set_body_string("rejected: password=pass leaked"),
+            )
+            .mount(&mock_server)
+            .await;
+
+        let mock_uri = mock_server.uri();
+        let result = sync_admin_credentials(&client, &app, Some(&mock_uri)).await;
+
+        let cond = result.expect("expected Some(Condition)");
+        assert_eq!(cond.status, "False");
+        assert!(
+            !cond.message.contains("password=pass"),
+            "raw response body must not leak into the condition message, got: {}",
+            cond.message
+        );
+        assert!(
+            cond.message.contains("HTTP API error (status: 400)"),
+            "expected log_summary()'s sanitized form in: {}",
+            cond.message
         );
     }
 }
