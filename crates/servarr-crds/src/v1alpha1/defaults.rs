@@ -166,7 +166,11 @@ impl AppDefaults {
         }
         persistence.volumes.retain(|v| !is_removed(&v.name));
 
-        find_mount_path_collision(&persistence.volumes, &persistence.nfs_mounts)?;
+        find_mount_path_collision(
+            &persistence.volumes,
+            &persistence.nfs_mounts,
+            &operator_reserved_mounts(app),
+        )?;
 
         Ok(persistence)
     }
@@ -264,11 +268,42 @@ impl AppDefaults {
     }
 }
 
+/// Mount paths the operator injects outside `PersistenceSpec` for certain app
+/// types — see `servarr_resources::deployment::build_volume_mounts`, the
+/// single source of truth for what actually gets mounted. A user's
+/// persistence override must not collide with these either, even though
+/// they never appear in `PersistenceSpec` (#402). Scoped to the small set of
+/// fixed, non-per-user directory mounts a real override could plausibly
+/// name; per-user paths (SSH bastion's `/home/<user>/.ssh`, restricted-rsync
+/// scripts) are parameterized by user name and not sensible collision targets
+/// for a persistence override.
+fn operator_reserved_mounts(app: &super::ServarrApp) -> Vec<(&'static str, &'static str)> {
+    let mut reserved = Vec::new();
+    if matches!(app.spec.app, super::AppType::Transmission) {
+        reserved.push(("/watch", "watch"));
+        if app.spec.admin_credentials.is_some() {
+            reserved.push(("/run/secrets/admin", "admin-credentials"));
+        }
+    }
+    reserved
+}
+
+/// Kubernetes treats a trailing slash as the same mount point (`/downloads`
+/// and `/downloads/` are one path), so paths are normalized before compare.
+fn normalize_mount_path(path: &str) -> &str {
+    path.strip_suffix('/').unwrap_or(path)
+}
+
 /// Kubernetes rejects a pod spec with two `volumeMounts` at the same path —
-/// this catches that at resolve time (across both PVC volumes and NFS
-/// mounts) so the reconcile fails loudly with a clear cause instead of
-/// producing an invalid pod spec the API server silently rejects (#376).
-fn find_mount_path_collision(volumes: &[PvcVolume], nfs_mounts: &[NfsMount]) -> Result<(), String> {
+/// this catches that at resolve time (across PVC volumes, NFS mounts, and
+/// operator-injected mounts) so the reconcile fails loudly with a clear cause
+/// instead of producing an invalid pod spec the API server silently rejects
+/// (#376, #402).
+fn find_mount_path_collision(
+    volumes: &[PvcVolume],
+    nfs_mounts: &[NfsMount],
+    reserved: &[(&str, &str)],
+) -> Result<(), String> {
     let mut seen: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
     let entries = volumes
         .iter()
@@ -277,9 +312,11 @@ fn find_mount_path_collision(volumes: &[PvcVolume], nfs_mounts: &[NfsMount]) -> 
             nfs_mounts
                 .iter()
                 .map(|m| (m.mount_path.as_str(), m.name.as_str())),
-        );
+        )
+        .chain(reserved.iter().copied());
     for (mount_path, name) in entries {
-        if let Some(prior) = seen.insert(mount_path, name) {
+        let normalized = normalize_mount_path(mount_path);
+        if let Some(prior) = seen.insert(normalized, name) {
             return Err(format!(
                 "persistence entries '{prior}' and '{name}' both mount at '{mount_path}'"
             ));

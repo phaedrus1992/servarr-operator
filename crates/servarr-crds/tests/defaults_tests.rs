@@ -803,3 +803,115 @@ fn resolve_persistence_removed_default_volume_allows_nfs_mount_at_same_path() {
         "other default volumes must still be restored"
     );
 }
+
+/// Kubernetes treats `/downloads` and `/downloads/` as the same mount point,
+/// but the collision check compared mount paths as exact strings — a trailing
+/// slash let two entries silently mount at the same real path (#402).
+#[test]
+fn resolve_persistence_detects_collision_with_trailing_slash() {
+    let defaults = AppDefaults::try_for_app(&AppType::Sonarr).unwrap();
+    let mut app = make_app(AppType::Sonarr);
+    app.spec.persistence = Some(PersistenceSpec {
+        volumes: vec![],
+        nfs_mounts: vec![NfsMount {
+            name: "downloads-nfs".into(),
+            server: "nas.local".into(),
+            path: "/export/downloads".into(),
+            mount_path: "/downloads/".into(),
+            read_only: false,
+        }],
+        removed_default_volumes: vec![],
+    });
+
+    let err = defaults
+        .resolve_persistence(&app)
+        .expect_err("a trailing slash must not hide a collision with the 'downloads' default PVC");
+
+    assert!(
+        err.contains("/downloads"),
+        "error should name the colliding mount_path, got: {err}"
+    );
+}
+
+/// The collision check only scanned `PersistenceSpec` volumes/NFS mounts, so
+/// a user override could still collide with a mount the operator injects
+/// outside persistence — e.g. Transmission's fixed `/watch` dir (#402).
+#[test]
+fn resolve_persistence_detects_collision_with_operator_injected_watch_mount() {
+    let defaults = AppDefaults::try_for_app(&AppType::Transmission).unwrap();
+    let mut app = make_app(AppType::Transmission);
+    app.spec.persistence = Some(PersistenceSpec {
+        volumes: vec![],
+        nfs_mounts: vec![NfsMount {
+            name: "watch-nfs".into(),
+            server: "nas.local".into(),
+            path: "/export/watch".into(),
+            mount_path: "/watch".into(),
+            read_only: false,
+        }],
+        removed_default_volumes: vec![],
+    });
+
+    let err = defaults
+        .resolve_persistence(&app)
+        .expect_err("must not collide with Transmission's operator-injected /watch mount");
+
+    assert!(
+        err.contains("/watch"),
+        "error should name the colliding mount_path, got: {err}"
+    );
+}
+
+/// Same as above, for the admin-credentials mount Transmission gets only
+/// when `spec.adminCredentials` is set (#402).
+#[test]
+fn resolve_persistence_detects_collision_with_admin_credentials_mount() {
+    let defaults = AppDefaults::try_for_app(&AppType::Transmission).unwrap();
+    let mut app = make_app(AppType::Transmission);
+    app.spec.admin_credentials = Some(AdminCredentialsSpec {
+        secret_name: "transmission-admin".into(),
+    });
+    app.spec.persistence = Some(PersistenceSpec {
+        volumes: vec![],
+        nfs_mounts: vec![NfsMount {
+            name: "admin-nfs".into(),
+            server: "nas.local".into(),
+            path: "/export/admin".into(),
+            mount_path: "/run/secrets/admin".into(),
+            read_only: false,
+        }],
+        removed_default_volumes: vec![],
+    });
+
+    let err = defaults.resolve_persistence(&app).expect_err(
+        "must not collide with Transmission's operator-injected /run/secrets/admin mount",
+    );
+
+    assert!(
+        err.contains("/run/secrets/admin"),
+        "error should name the colliding mount_path, got: {err}"
+    );
+}
+
+/// Without `adminCredentials` set, `/run/secrets/admin` is never mounted, so
+/// it must not be treated as reserved (#402).
+#[test]
+fn resolve_persistence_no_admin_credentials_mount_reserved_without_spec() {
+    let defaults = AppDefaults::try_for_app(&AppType::Transmission).unwrap();
+    let mut app = make_app(AppType::Transmission);
+    app.spec.persistence = Some(PersistenceSpec {
+        volumes: vec![],
+        nfs_mounts: vec![NfsMount {
+            name: "admin-nfs".into(),
+            server: "nas.local".into(),
+            path: "/export/admin".into(),
+            mount_path: "/run/secrets/admin".into(),
+            read_only: false,
+        }],
+        removed_default_volumes: vec![],
+    });
+
+    defaults.resolve_persistence(&app).expect(
+        "without adminCredentials configured, /run/secrets/admin is never mounted by the operator",
+    );
+}
