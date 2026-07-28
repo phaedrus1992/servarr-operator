@@ -106,41 +106,6 @@ fn resolve_persistence_keeps_host_keys_with_no_override() {
     assert_eq!(persistence.volumes[0].mount_path, "/etc/ssh/keys");
 }
 
-/// A MediaStack-injected (or hand-written) persistence override that names
-/// unrelated volumes must not silently drop `host-keys` — that's the exact
-/// "REMOTE HOST IDENTIFICATION HAS CHANGED" regression from #305.
-#[test]
-fn resolve_persistence_restores_host_keys_dropped_by_override() {
-    let defaults = AppDefaults::try_for_app(&AppType::SshBastion).unwrap();
-    let mut app = make_app(AppType::SshBastion);
-    app.spec.persistence = Some(PersistenceSpec {
-        volumes: vec![PvcVolume {
-            name: "config".into(),
-            mount_path: "/config".into(),
-            access_mode: "ReadWriteOnce".into(),
-            size: "1Gi".into(),
-            storage_class: "fast-ssd".into(),
-            existing_claim_name: None,
-        }],
-        nfs_mounts: vec![],
-        ..Default::default()
-    });
-
-    let persistence = defaults.resolve_persistence(&app).unwrap();
-
-    assert!(
-        persistence.volumes.iter().any(|v| v.name == "config"),
-        "user-specified volume must survive"
-    );
-    let host_keys = persistence
-        .volumes
-        .iter()
-        .find(|v| v.name == "host-keys")
-        .expect("host-keys volume must not be dropped by an unrelated persistence override");
-    assert_eq!(host_keys.mount_path, "/etc/ssh/keys");
-    assert_eq!(host_keys.size, "10Mi");
-}
-
 /// An override that explicitly names `host-keys` (e.g. to change its
 /// storage class or size) must win over the compiled default.
 #[test]
@@ -167,99 +132,65 @@ fn resolve_persistence_respects_explicit_host_keys_override() {
     assert_eq!(persistence.volumes[0].storage_class, "custom-class");
 }
 
-/// Volume restoration generalizes beyond SshBastion (#367): Sonarr's compiled
-/// `config` and `downloads` volumes are just as load-bearing as SshBastion's
-/// `host-keys` — an unrelated override must not silently drop them.
-#[test]
-fn resolve_persistence_restores_dropped_default_volumes_for_any_app_type() {
-    let defaults = AppDefaults::try_for_app(&AppType::Sonarr).unwrap();
-    let mut app = make_app(AppType::Sonarr);
-    app.spec.persistence = Some(PersistenceSpec {
-        volumes: vec![PvcVolume {
-            name: "data".into(),
-            mount_path: "/data".into(),
-            access_mode: "ReadWriteOnce".into(),
-            size: "10Gi".into(),
-            storage_class: String::new(),
-            existing_claim_name: None,
-        }],
-        nfs_mounts: vec![],
-        ..Default::default()
-    });
-
-    let persistence = defaults.resolve_persistence(&app).unwrap();
-
-    assert!(
-        persistence.volumes.iter().any(|v| v.name == "data"),
-        "user-specified volume must survive"
-    );
-    assert!(
-        persistence.volumes.iter().any(|v| v.name == "config"),
-        "Sonarr's default config volume must not be silently dropped"
-    );
-    assert!(
-        persistence.volumes.iter().any(|v| v.name == "downloads"),
-        "Sonarr's default downloads volume must not be silently dropped"
-    );
-    assert!(!persistence.volumes.iter().any(|v| v.name == "host-keys"));
+/// Minimal `PvcVolume` for override volumes in tests where only the name and
+/// mount_path matter.
+fn vol(name: &str, mount_path: &str) -> PvcVolume {
+    PvcVolume {
+        name: name.into(),
+        mount_path: mount_path.into(),
+        access_mode: "ReadWriteOnce".into(),
+        size: "1Gi".into(),
+        storage_class: String::new(),
+        existing_claim_name: None,
+    }
 }
 
-/// Subgen's `models` volume (added conditionally in `try_for_app`, not one of
-/// the base security-profile volumes) must also survive a dropped override.
+/// Volume restoration (#305, generalized beyond SshBastion by #367) applies
+/// to every app type's compiled default volumes: an unrelated persistence
+/// override must not silently drop them.
 #[test]
-fn resolve_persistence_restores_subgen_models_volume() {
-    let defaults = AppDefaults::try_for_app(&AppType::Subgen).unwrap();
-    let mut app = make_app(AppType::Subgen);
-    app.spec.persistence = Some(PersistenceSpec {
-        volumes: vec![PvcVolume {
-            name: "unrelated".into(),
-            mount_path: "/unrelated".into(),
-            access_mode: "ReadWriteOnce".into(),
-            size: "1Gi".into(),
-            storage_class: String::new(),
-            existing_claim_name: None,
-        }],
-        nfs_mounts: vec![],
-        ..Default::default()
-    });
+fn resolve_persistence_restores_dropped_default_volume() {
+    let cases: &[(AppType, &str, &str)] = &[
+        (AppType::SshBastion, "host-keys", "/etc/ssh/keys"),
+        (AppType::Sonarr, "config", "/config"),
+        (AppType::Sonarr, "downloads", "/downloads"),
+        (AppType::Subgen, "models", "/subgen/models"),
+        // Maintainerr's config volume is relocated to /opt/data (#131); the
+        // restored volume must carry that relocation, not the generic /config.
+        (AppType::Maintainerr, "config", "/opt/data"),
+    ];
 
-    let persistence = defaults.resolve_persistence(&app).unwrap();
+    for (app_type, expected_name, expected_mount_path) in cases.iter().cloned() {
+        let defaults = AppDefaults::try_for_app(&app_type).unwrap();
+        let mut app = make_app(app_type.clone());
+        app.spec.persistence = Some(PersistenceSpec {
+            volumes: vec![vol("unrelated", "/unrelated")],
+            nfs_mounts: vec![],
+            ..Default::default()
+        });
 
-    let models = persistence
-        .volumes
-        .iter()
-        .find(|v| v.name == "models")
-        .expect("Subgen's models volume must not be dropped by an unrelated override");
-    assert_eq!(models.mount_path, "/subgen/models");
-}
+        let persistence = defaults
+            .resolve_persistence(&app)
+            .unwrap_or_else(|e| panic!("resolve_persistence failed for {app_type:?}: {e}"));
 
-/// Maintainerr's `config` volume is relocated to `/opt/data` (#131); the
-/// restored volume must carry that relocation, not the generic `/config`.
-#[test]
-fn resolve_persistence_restores_maintainerr_config_with_relocated_mount() {
-    let defaults = AppDefaults::try_for_app(&AppType::Maintainerr).unwrap();
-    let mut app = make_app(AppType::Maintainerr);
-    app.spec.persistence = Some(PersistenceSpec {
-        volumes: vec![PvcVolume {
-            name: "unrelated".into(),
-            mount_path: "/unrelated".into(),
-            access_mode: "ReadWriteOnce".into(),
-            size: "1Gi".into(),
-            storage_class: String::new(),
-            existing_claim_name: None,
-        }],
-        nfs_mounts: vec![],
-        ..Default::default()
-    });
-
-    let persistence = defaults.resolve_persistence(&app).unwrap();
-
-    let config = persistence
-        .volumes
-        .iter()
-        .find(|v| v.name == "config")
-        .expect("Maintainerr's config volume must not be dropped by an unrelated override");
-    assert_eq!(config.mount_path, "/opt/data");
+        assert!(
+            persistence.volumes.iter().any(|v| v.name == "unrelated"),
+            "user-specified volume must survive for {app_type:?}"
+        );
+        let restored = persistence
+            .volumes
+            .iter()
+            .find(|v| v.name == expected_name)
+            .unwrap_or_else(|| {
+                panic!(
+                    "{expected_name} must not be dropped by an unrelated override for {app_type:?}"
+                )
+            });
+        assert_eq!(
+            restored.mount_path, expected_mount_path,
+            "wrong mount_path for {expected_name} on {app_type:?}"
+        );
+    }
 }
 
 /// `PersistenceSpec::merge_with` carries the override's own tombstones

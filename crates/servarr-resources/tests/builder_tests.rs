@@ -1,3 +1,4 @@
+use k8s_openapi::api::apps::v1::Deployment;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 use servarr_crds::*;
 
@@ -17,11 +18,15 @@ fn make_app(app_type: AppType) -> ServarrApp {
     }
 }
 
+/// Build with no image overrides — the common case across most tests here.
+fn build_deployment(app: &ServarrApp) -> Deployment {
+    servarr_resources::deployment::build(app, &std::collections::HashMap::new()).unwrap()
+}
+
 #[test]
 fn test_deployment_builder_sonarr() {
     let app = make_app(AppType::Sonarr);
-    let deploy =
-        servarr_resources::deployment::build(&app, &std::collections::HashMap::new()).unwrap();
+    let deploy = build_deployment(&app);
 
     assert_eq!(deploy.metadata.name.as_deref(), Some("test-app"));
     assert_eq!(deploy.metadata.namespace.as_deref(), Some("media"));
@@ -84,8 +89,7 @@ fn test_deployment_builder_sonarr() {
 #[test]
 fn test_deployment_builder_maintainerr_nonroot() {
     let app = make_app(AppType::Maintainerr);
-    let deploy =
-        servarr_resources::deployment::build(&app, &std::collections::HashMap::new()).unwrap();
+    let deploy = build_deployment(&app);
 
     let pod_spec = deploy.spec.unwrap().template.spec.unwrap();
     let container = &pod_spec.containers[0];
@@ -141,8 +145,7 @@ fn test_deployment_builder_maintainerr_data_dir_follows_mount() {
         },
         status: None,
     };
-    let deploy =
-        servarr_resources::deployment::build(&app, &std::collections::HashMap::new()).unwrap();
+    let deploy = build_deployment(&app);
     let container = &deploy.spec.unwrap().template.spec.unwrap().containers[0];
     let env = container.env.as_ref().unwrap();
     let data_dir = env.iter().find(|e| e.name == "DATA_DIR").unwrap();
@@ -176,8 +179,7 @@ fn test_deployment_builder_transmission() {
         status: None,
     };
 
-    let deploy =
-        servarr_resources::deployment::build(&app, &std::collections::HashMap::new()).unwrap();
+    let deploy = build_deployment(&app);
     let pod_spec = deploy.spec.unwrap().template.spec.unwrap();
     let container = &pod_spec.containers[0];
 
@@ -332,8 +334,7 @@ fn test_pvc_ssh_bastion_host_keys_survives_persistence_override() {
         .as_str();
     assert_eq!(storage, "10Mi");
 
-    let deploy =
-        servarr_resources::deployment::build(&app, &std::collections::HashMap::new()).unwrap();
+    let deploy = build_deployment(&app);
     let pod_spec = deploy.spec.unwrap().template.spec.unwrap();
     assert!(
         pod_spec
@@ -496,8 +497,7 @@ fn test_deployment_ssh_bastion_shell_mode_home_mounts() {
         status: None,
     };
 
-    let deploy =
-        servarr_resources::deployment::build(&app, &std::collections::HashMap::new()).unwrap();
+    let deploy = build_deployment(&app);
     let pod_spec = deploy.spec.unwrap().template.spec.unwrap();
     let container = &pod_spec.containers[0];
     let mounts = container.volume_mounts.as_ref().unwrap();
@@ -646,8 +646,7 @@ fn test_custom_env_override() {
         status: None,
     };
 
-    let deploy =
-        servarr_resources::deployment::build(&app, &std::collections::HashMap::new()).unwrap();
+    let deploy = build_deployment(&app);
     let container = &deploy.spec.unwrap().template.spec.unwrap().containers[0];
     let env = container.env.as_ref().unwrap();
 
@@ -685,8 +684,7 @@ fn test_custom_image_override() {
         status: None,
     };
 
-    let deploy =
-        servarr_resources::deployment::build(&app, &std::collections::HashMap::new()).unwrap();
+    let deploy = build_deployment(&app);
     let container = &deploy.spec.unwrap().template.spec.unwrap().containers[0];
     assert_eq!(
         container.image.as_deref(),
@@ -717,8 +715,7 @@ fn test_image_tag_only_inherits_default_repository() {
         status: None,
     };
 
-    let deploy =
-        servarr_resources::deployment::build(&app, &std::collections::HashMap::new()).unwrap();
+    let deploy = build_deployment(&app);
     let container = &deploy.spec.unwrap().template.spec.unwrap().containers[0];
     assert_eq!(
         container.image.as_deref(),
@@ -747,8 +744,7 @@ fn test_image_repository_only_inherits_default_tag() {
         status: None,
     };
 
-    let deploy =
-        servarr_resources::deployment::build(&app, &std::collections::HashMap::new()).unwrap();
+    let deploy = build_deployment(&app);
     let container = &deploy.spec.unwrap().template.spec.unwrap().containers[0];
     let sonarr_tag = AppDefaults::try_for_app(&AppType::Sonarr)
         .expect("sonarr defaults")
@@ -782,8 +778,7 @@ fn test_image_digest_override() {
         status: None,
     };
 
-    let deploy =
-        servarr_resources::deployment::build(&app, &std::collections::HashMap::new()).unwrap();
+    let deploy = build_deployment(&app);
     let container = &deploy.spec.unwrap().template.spec.unwrap().containers[0];
     assert_eq!(
         container.image.as_deref(),
@@ -825,8 +820,7 @@ fn test_nfs_mounts() {
         status: None,
     };
 
-    let deploy =
-        servarr_resources::deployment::build(&app, &std::collections::HashMap::new()).unwrap();
+    let deploy = build_deployment(&app);
     let pod_spec = deploy.spec.unwrap().template.spec.unwrap();
     let container = &pod_spec.containers[0];
 
@@ -868,8 +862,7 @@ fn test_image_override_from_env() {
 #[test]
 fn test_deployment_builder_plex() {
     let app = make_app(AppType::Plex);
-    let deploy =
-        servarr_resources::deployment::build(&app, &std::collections::HashMap::new()).unwrap();
+    let deploy = build_deployment(&app);
 
     let spec = deploy.spec.unwrap();
     let pod_spec = spec.template.spec.unwrap();
@@ -917,8 +910,7 @@ fn test_deployment_builder_plex() {
 #[test]
 fn test_deployment_builder_jellyfin() {
     let app = make_app(AppType::Jellyfin);
-    let deploy =
-        servarr_resources::deployment::build(&app, &std::collections::HashMap::new()).unwrap();
+    let deploy = build_deployment(&app);
 
     let spec = deploy.spec.unwrap();
     let pod_spec = spec.template.spec.unwrap();
@@ -1885,8 +1877,7 @@ fn test_deployment_ssh_bastion_init_containers() {
         status: None,
     };
 
-    let deploy =
-        servarr_resources::deployment::build(&app, &std::collections::HashMap::new()).unwrap();
+    let deploy = build_deployment(&app);
     let pod_spec = deploy.spec.unwrap().template.spec.unwrap();
 
     // Should have init containers: generate-host-keys, copy-authorized-keys, and patch-entry.
@@ -2021,8 +2012,7 @@ fn test_deployment_ssh_bastion_rsync_mode_uses_restricted_rsync() {
         status: None,
     };
 
-    let deploy =
-        servarr_resources::deployment::build(&app, &std::collections::HashMap::new()).unwrap();
+    let deploy = build_deployment(&app);
     let pod_spec = deploy.spec.unwrap().template.spec.unwrap();
     let container = &pod_spec.containers[0];
     let mounts = container.volume_mounts.as_ref().unwrap();
@@ -2080,8 +2070,7 @@ fn test_deployment_ssh_bastion_shell_package_installed() {
         status: None,
     };
 
-    let deploy =
-        servarr_resources::deployment::build(&app, &std::collections::HashMap::new()).unwrap();
+    let deploy = build_deployment(&app);
     let pod_spec = deploy.spec.unwrap().template.spec.unwrap();
     let init = pod_spec.init_containers.as_ref().unwrap();
     let patch = init.iter().find(|c| c.name == "patch-entry").unwrap();
@@ -2125,8 +2114,7 @@ fn test_deployment_ssh_bastion_default_shell_no_install() {
         status: None,
     };
 
-    let deploy =
-        servarr_resources::deployment::build(&app, &std::collections::HashMap::new()).unwrap();
+    let deploy = build_deployment(&app);
     let pod_spec = deploy.spec.unwrap().template.spec.unwrap();
     let init = pod_spec.init_containers.as_ref().unwrap();
     let patch = init.iter().find(|c| c.name == "patch-entry").unwrap();
@@ -2159,8 +2147,7 @@ fn test_deployment_sabnzbd_host_whitelist_init_container() {
         status: None,
     };
 
-    let deploy =
-        servarr_resources::deployment::build(&app, &std::collections::HashMap::new()).unwrap();
+    let deploy = build_deployment(&app);
     let pod_spec = deploy.spec.unwrap().template.spec.unwrap();
 
     let init = pod_spec.init_containers.as_ref().unwrap();
@@ -2198,8 +2185,7 @@ fn test_deployment_sabnzbd_tar_unpack_init_containers() {
         status: None,
     };
 
-    let deploy =
-        servarr_resources::deployment::build(&app, &std::collections::HashMap::new()).unwrap();
+    let deploy = build_deployment(&app);
     let pod_spec = deploy.spec.unwrap().template.spec.unwrap();
 
     let init = pod_spec.init_containers.as_ref().unwrap();
@@ -2238,8 +2224,7 @@ fn test_deployment_prowlarr_definitions_volume() {
         status: None,
     };
 
-    let deploy =
-        servarr_resources::deployment::build(&app, &std::collections::HashMap::new()).unwrap();
+    let deploy = build_deployment(&app);
     let pod_spec = deploy.spec.unwrap().template.spec.unwrap();
     let container = &pod_spec.containers[0];
 
@@ -2286,8 +2271,7 @@ fn test_deployment_custom_resources() {
         status: None,
     };
 
-    let deploy =
-        servarr_resources::deployment::build(&app, &std::collections::HashMap::new()).unwrap();
+    let deploy = build_deployment(&app);
     let container = &deploy.spec.unwrap().template.spec.unwrap().containers[0];
     let resources = container.resources.as_ref().unwrap();
 
@@ -2334,8 +2318,7 @@ fn test_deployment_custom_probes() {
         status: None,
     };
 
-    let deploy =
-        servarr_resources::deployment::build(&app, &std::collections::HashMap::new()).unwrap();
+    let deploy = build_deployment(&app);
     let container = &deploy.spec.unwrap().template.spec.unwrap().containers[0];
 
     let liveness = container.liveness_probe.as_ref().unwrap();
@@ -2375,8 +2358,7 @@ fn test_deployment_gpu_resources() {
         status: None,
     };
 
-    let deploy =
-        servarr_resources::deployment::build(&app, &std::collections::HashMap::new()).unwrap();
+    let deploy = build_deployment(&app);
     let container = &deploy.spec.unwrap().template.spec.unwrap().containers[0];
     let resources = container.resources.as_ref().unwrap();
 
@@ -3129,8 +3111,7 @@ fn test_deployment_ssh_bastion_advanced_env_vars() {
         status: None,
     };
 
-    let deploy =
-        servarr_resources::deployment::build(&app, &std::collections::HashMap::new()).unwrap();
+    let deploy = build_deployment(&app);
     let pod_spec = deploy.spec.unwrap().template.spec.unwrap();
     let container = &pod_spec.containers[0];
     let env = container.env.as_ref().unwrap();
@@ -3186,8 +3167,7 @@ fn test_deployment_ssh_bastion_managed_env_ignored() {
         status: None,
     };
 
-    let deploy =
-        servarr_resources::deployment::build(&app, &std::collections::HashMap::new()).unwrap();
+    let deploy = build_deployment(&app);
     let pod_spec = deploy.spec.unwrap().template.spec.unwrap();
     let container = &pod_spec.containers[0];
     let env = container.env.as_ref().unwrap();
@@ -3261,8 +3241,7 @@ fn test_deployment_ssh_bastion_host_keys_preserved_with_nfs_mounts() {
         status: None,
     };
 
-    let deploy =
-        servarr_resources::deployment::build(&app, &std::collections::HashMap::new()).unwrap();
+    let deploy = build_deployment(&app);
     let pod_spec = deploy.spec.unwrap().template.spec.unwrap();
 
     let volumes = pod_spec.volumes.as_ref().expect("pod should have volumes");
@@ -3468,8 +3447,7 @@ fn test_nfs_server_service_selector_labels() {
 #[test]
 fn test_deployment_no_gpu_no_node_selector() {
     let app = make_app(AppType::Sonarr);
-    let deploy =
-        servarr_resources::deployment::build(&app, &std::collections::HashMap::new()).unwrap();
+    let deploy = build_deployment(&app);
     let pod_spec = deploy.spec.unwrap().template.spec.unwrap();
     assert!(
         pod_spec.node_selector.is_none(),
@@ -3484,8 +3462,7 @@ fn test_deployment_intel_gpu_adds_nfd_node_selector() {
         intel: Some(1),
         ..Default::default()
     });
-    let deploy =
-        servarr_resources::deployment::build(&app, &std::collections::HashMap::new()).unwrap();
+    let deploy = build_deployment(&app);
     let pod_spec = deploy.spec.unwrap().template.spec.unwrap();
     let sel = pod_spec
         .node_selector
@@ -3505,8 +3482,7 @@ fn test_deployment_nvidia_gpu_adds_nfd_node_selector() {
         nvidia: Some(1),
         ..Default::default()
     });
-    let deploy =
-        servarr_resources::deployment::build(&app, &std::collections::HashMap::new()).unwrap();
+    let deploy = build_deployment(&app);
     let pod_spec = deploy.spec.unwrap().template.spec.unwrap();
     let sel = pod_spec
         .node_selector
@@ -3526,8 +3502,7 @@ fn test_deployment_amd_gpu_adds_nfd_node_selector() {
         amd: Some(1),
         ..Default::default()
     });
-    let deploy =
-        servarr_resources::deployment::build(&app, &std::collections::HashMap::new()).unwrap();
+    let deploy = build_deployment(&app);
     let pod_spec = deploy.spec.unwrap().template.spec.unwrap();
     let sel = pod_spec
         .node_selector
@@ -3554,8 +3529,7 @@ fn test_deployment_user_node_selector_preserved_with_gpu() {
         )]),
         ..Default::default()
     });
-    let deploy =
-        servarr_resources::deployment::build(&app, &std::collections::HashMap::new()).unwrap();
+    let deploy = build_deployment(&app);
     let pod_spec = deploy.spec.unwrap().template.spec.unwrap();
     let sel = pod_spec.node_selector.expect("nodeSelector must be set");
     assert_eq!(
@@ -3705,8 +3679,7 @@ fn test_admin_credentials_transmission_mounts_secret_volume() {
     app.spec.admin_credentials = Some(AdminCredentialsSpec {
         secret_name: "creds".into(),
     });
-    let deploy =
-        servarr_resources::deployment::build(&app, &std::collections::HashMap::new()).unwrap();
+    let deploy = build_deployment(&app);
     let pod_spec = deploy.spec.unwrap().template.spec.unwrap();
 
     // Volume must exist
@@ -3740,8 +3713,7 @@ fn test_admin_credentials_transmission_mounts_auth_script_to_custom_cont_init() 
     app.spec.admin_credentials = Some(AdminCredentialsSpec {
         secret_name: "creds".into(),
     });
-    let deploy =
-        servarr_resources::deployment::build(&app, &std::collections::HashMap::new()).unwrap();
+    let deploy = build_deployment(&app);
     let pod_spec = deploy.spec.unwrap().template.spec.unwrap();
 
     // The custom-cont-init.d script must be mounted in the main container via subPath.
@@ -3789,8 +3761,7 @@ fn test_admin_credentials_transmission_uses_exec_probe() {
     app.spec.admin_credentials = Some(AdminCredentialsSpec {
         secret_name: "creds".into(),
     });
-    let deploy =
-        servarr_resources::deployment::build(&app, &std::collections::HashMap::new()).unwrap();
+    let deploy = build_deployment(&app);
     let container = &deploy.spec.unwrap().template.spec.unwrap().containers[0];
 
     let liveness = container
@@ -4170,8 +4141,7 @@ fn test_deployment_builder_lidarr_youtube_downloader() {
         status: None,
     };
 
-    let deploy =
-        servarr_resources::deployment::build(&app, &std::collections::HashMap::new()).unwrap();
+    let deploy = build_deployment(&app);
     let spec = deploy.spec.unwrap();
     let pod_spec = spec.template.spec.unwrap();
 
