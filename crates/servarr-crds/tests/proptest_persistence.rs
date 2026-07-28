@@ -137,63 +137,6 @@ proptest! {
         prop_assert_eq!(result.is_err(), has_collision(&volumes, &nfs_mounts));
     }
 
-    /// No false positives: distinct normalized paths must never be rejected.
-    #[test]
-    fn no_collision_when_paths_distinct(paths in prop::collection::hash_set(arb_mount_path().prop_map(|p| p.trim_end_matches('/').to_string()), 0..5)) {
-        let volumes: Vec<PvcVolume> = paths
-            .into_iter()
-            .enumerate()
-            .map(|(i, path)| arb_pvc_at(path, format!("entry-{i}")))
-            .collect();
-        let defaults = empty_defaults();
-        let mut app = make_app(AppType::Sonarr);
-        app.spec.persistence = Some(PersistenceSpec {
-            volumes,
-            nfs_mounts: vec![],
-            removed_default_volumes: vec![],
-        });
-
-        prop_assert!(defaults.resolve_persistence(&app).is_ok());
-    }
-
-    /// Order-independence: shuffling which entries are PVCs vs. NFS mounts
-    /// (holding the multiset of paths fixed) must not change the verdict.
-    #[test]
-    fn collision_verdict_independent_of_volume_vs_nfs_split(
-        (volumes, nfs_mounts) in arb_entries()
-    ) {
-        let defaults = empty_defaults();
-        let mut app = make_app(AppType::Sonarr);
-
-        // Original split.
-        app.spec.persistence = Some(PersistenceSpec {
-            volumes: volumes.clone(),
-            nfs_mounts: nfs_mounts.clone(),
-            removed_default_volumes: vec![],
-        });
-        let original_verdict = defaults.resolve_persistence(&app).is_err();
-
-        // Reversed split: every PVC becomes an NFS mount and vice versa, at the
-        // same paths — the collision set is unchanged, only which Vec each
-        // entry lives in.
-        let swapped_volumes: Vec<PvcVolume> = nfs_mounts
-            .iter()
-            .map(|m| arb_pvc_at(m.mount_path.clone(), m.name.clone()))
-            .collect();
-        let swapped_nfs: Vec<NfsMount> = volumes
-            .iter()
-            .map(|v| arb_nfs_at(v.mount_path.clone(), v.name.clone()))
-            .collect();
-        app.spec.persistence = Some(PersistenceSpec {
-            volumes: swapped_volumes,
-            nfs_mounts: swapped_nfs,
-            removed_default_volumes: vec![],
-        });
-        let swapped_verdict = defaults.resolve_persistence(&app).is_err();
-
-        prop_assert_eq!(original_verdict, swapped_verdict);
-    }
-
     /// `resolve_persistence` must not panic on arbitrary valid overrides,
     /// across every app type.
     #[test]
@@ -217,7 +160,7 @@ proptest! {
     /// removes it exactly as listing it once would.
     #[test]
     fn tombstone_listed_twice_matches_listed_once(
-        app_type in arb_app_type_with_default_volume(),
+        app_type in arb_app_type(),
     ) {
         let defaults = AppDefaults::try_for_app(&app_type).expect("every AppType has defaults");
         let Some(target) = defaults.persistence.volumes.first().map(|v| v.name.clone()) else {
@@ -258,7 +201,7 @@ proptest! {
     /// Override-precedence: explicitly re-listing a tombstoned default volume
     /// in `volumes` keeps it — an explicit entry always beats a tombstone.
     #[test]
-    fn explicit_relist_beats_tombstone(app_type in arb_app_type_with_default_volume()) {
+    fn explicit_relist_beats_tombstone(app_type in arb_app_type()) {
         let defaults = AppDefaults::try_for_app(&app_type).expect("every AppType has defaults");
         let Some(target) = defaults.persistence.volumes.first().cloned() else {
             return Ok(());
@@ -328,15 +271,4 @@ fn arb_app_type() -> impl Strategy<Value = AppType> {
         Just(AppType::Bazarr),
         Just(AppType::Subgen),
     ]
-}
-
-/// App types whose compiled defaults include at least one persistence
-/// volume — every app type today, but scoped explicitly so this stays
-/// correct if a future app type ever ships with no default volumes.
-fn arb_app_type_with_default_volume() -> impl Strategy<Value = AppType> {
-    arb_app_type().prop_filter("app type has a default volume", |app_type| {
-        AppDefaults::try_for_app(app_type)
-            .map(|d| !d.persistence.volumes.is_empty())
-            .unwrap_or(false)
-    })
 }

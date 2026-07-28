@@ -735,242 +735,135 @@ fn resolve_persistence_removed_default_volume_allows_nfs_mount_at_same_path() {
     );
 }
 
-/// Kubernetes treats `/downloads` and `/downloads/` as the same mount point,
-/// but the collision check compared mount paths as exact strings — a trailing
-/// slash let two entries silently mount at the same real path (#402).
+/// Every override-mount collision case #402 (and its follow-up) covers:
+/// trailing/doubled-slash normalization against a compiled default, and
+/// each fixed operator-injected mount `build_volume_mounts` adds outside
+/// `PersistenceSpec` (present only under the app type + config listed).
+/// One negative case confirms `/run/secrets/admin` is reserved only when
+/// `adminCredentials` is actually set.
 #[test]
-fn resolve_persistence_detects_collision_with_trailing_slash() {
-    let defaults = AppDefaults::try_for_app(&AppType::Sonarr).unwrap();
-    let mut app = make_app(AppType::Sonarr);
-    app.spec.persistence = Some(PersistenceSpec {
-        volumes: vec![],
-        nfs_mounts: vec![NfsMount {
-            name: "downloads-nfs".into(),
-            server: "nas.local".into(),
-            path: "/export/downloads".into(),
-            mount_path: "/downloads/".into(),
-            read_only: false,
-        }],
-        removed_default_volumes: vec![],
-    });
-
-    let err = defaults
-        .resolve_persistence(&app)
-        .expect_err("a trailing slash must not hide a collision with the 'downloads' default PVC");
-
-    assert!(
-        err.contains("/downloads"),
-        "error should name the colliding mount_path, got: {err}"
-    );
-}
-
-/// The collision check only scanned `PersistenceSpec` volumes/NFS mounts, so
-/// a user override could still collide with a mount the operator injects
-/// outside persistence — e.g. Transmission's fixed `/watch` dir (#402).
-#[test]
-fn resolve_persistence_detects_collision_with_operator_injected_watch_mount() {
-    let defaults = AppDefaults::try_for_app(&AppType::Transmission).unwrap();
-    let mut app = make_app(AppType::Transmission);
-    app.spec.persistence = Some(PersistenceSpec {
-        volumes: vec![],
-        nfs_mounts: vec![NfsMount {
-            name: "watch-nfs".into(),
-            server: "nas.local".into(),
-            path: "/export/watch".into(),
-            mount_path: "/watch".into(),
-            read_only: false,
-        }],
-        removed_default_volumes: vec![],
-    });
-
-    let err = defaults
-        .resolve_persistence(&app)
-        .expect_err("must not collide with Transmission's operator-injected /watch mount");
-
-    assert!(
-        err.contains("/watch"),
-        "error should name the colliding mount_path, got: {err}"
-    );
-}
-
-/// Same as above, for the admin-credentials mount Transmission gets only
-/// when `spec.adminCredentials` is set (#402).
-#[test]
-fn resolve_persistence_detects_collision_with_admin_credentials_mount() {
-    let defaults = AppDefaults::try_for_app(&AppType::Transmission).unwrap();
-    let mut app = make_app(AppType::Transmission);
-    app.spec.admin_credentials = Some(AdminCredentialsSpec {
-        secret_name: "transmission-admin".into(),
-    });
-    app.spec.persistence = Some(PersistenceSpec {
-        volumes: vec![],
-        nfs_mounts: vec![NfsMount {
-            name: "admin-nfs".into(),
-            server: "nas.local".into(),
-            path: "/export/admin".into(),
-            mount_path: "/run/secrets/admin".into(),
-            read_only: false,
-        }],
-        removed_default_volumes: vec![],
-    });
-
-    let err = defaults.resolve_persistence(&app).expect_err(
-        "must not collide with Transmission's operator-injected /run/secrets/admin mount",
-    );
-
-    assert!(
-        err.contains("/run/secrets/admin"),
-        "error should name the colliding mount_path, got: {err}"
-    );
-}
-
-/// Without `adminCredentials` set, `/run/secrets/admin` is never mounted, so
-/// it must not be treated as reserved (#402).
-#[test]
-fn resolve_persistence_no_admin_credentials_mount_reserved_without_spec() {
-    let defaults = AppDefaults::try_for_app(&AppType::Transmission).unwrap();
-    let mut app = make_app(AppType::Transmission);
-    app.spec.persistence = Some(PersistenceSpec {
-        volumes: vec![],
-        nfs_mounts: vec![NfsMount {
-            name: "admin-nfs".into(),
-            server: "nas.local".into(),
-            path: "/export/admin".into(),
-            mount_path: "/run/secrets/admin".into(),
-            read_only: false,
-        }],
-        removed_default_volumes: vec![],
-    });
-
-    defaults.resolve_persistence(&app).expect(
-        "without adminCredentials configured, /run/secrets/admin is never mounted by the operator",
-    );
-}
-
-/// Same operator-injected-mount coverage as /watch and /run/secrets/admin,
-/// for the remaining fixed mounts build_volume_mounts injects: Transmission's
-/// auth script, Prowlarr's custom-definitions dir, and SSH bastion's
-/// authorized-keys staging/target paths (#402 follow-up).
-#[test]
-fn resolve_persistence_detects_collision_with_transmission_auth_script_mount() {
-    let defaults = AppDefaults::try_for_app(&AppType::Transmission).unwrap();
-    let mut app = make_app(AppType::Transmission);
-    app.spec.admin_credentials = Some(AdminCredentialsSpec {
-        secret_name: "transmission-admin".into(),
-    });
-    app.spec.persistence = Some(PersistenceSpec {
-        volumes: vec![],
-        nfs_mounts: vec![NfsMount {
-            name: "scripts-nfs".into(),
-            server: "nas.local".into(),
-            path: "/export/scripts".into(),
-            mount_path: "/custom-cont-init.d/99-transmission-auth.sh".into(),
-            read_only: false,
-        }],
-        removed_default_volumes: vec![],
-    });
-
-    let err = defaults
-        .resolve_persistence(&app)
-        .expect_err("must not collide with Transmission's operator-injected auth-script mount");
-    assert!(
-        err.contains("/custom-cont-init.d/99-transmission-auth.sh"),
-        "error should name the colliding mount_path, got: {err}"
-    );
-}
-
-#[test]
-fn resolve_persistence_detects_collision_with_prowlarr_definitions_mount() {
-    let defaults = AppDefaults::try_for_app(&AppType::Prowlarr).unwrap();
-    let mut app = make_app(AppType::Prowlarr);
-    app.spec.app_config = Some(AppConfig::Prowlarr(ProwlarrConfig {
-        custom_definitions: vec![IndexerDefinition {
-            name: "my-tracker".into(),
-            content: "---".into(),
-        }],
-    }));
-    app.spec.persistence = Some(PersistenceSpec {
-        volumes: vec![],
-        nfs_mounts: vec![NfsMount {
-            name: "definitions-nfs".into(),
-            server: "nas.local".into(),
-            path: "/export/definitions".into(),
-            mount_path: "/config/Definitions/Custom".into(),
-            read_only: false,
-        }],
-        removed_default_volumes: vec![],
-    });
-
-    let err = defaults
-        .resolve_persistence(&app)
-        .expect_err("must not collide with Prowlarr's operator-injected custom-definitions mount");
-    assert!(
-        err.contains("/config/Definitions/Custom"),
-        "error should name the colliding mount_path, got: {err}"
-    );
-}
-
-#[test]
-fn resolve_persistence_detects_collision_with_authorized_keys_mount() {
-    let defaults = AppDefaults::try_for_app(&AppType::SshBastion).unwrap();
-    let mut app = make_app(AppType::SshBastion);
-    app.spec.app_config = Some(AppConfig::SshBastion(SshBastionConfig {
-        users: vec![SshUser {
-            name: "alice".into(),
-            uid: 1000,
-            gid: 1000,
-            public_keys: "ssh-ed25519 AAAA...".into(),
+fn resolve_persistence_mount_path_collisions() {
+    struct Case {
+        app_type: AppType,
+        setup: fn(&mut ServarrApp),
+        mount_path: &'static str,
+        expect_collision: bool,
+    }
+    fn no_setup(_app: &mut ServarrApp) {}
+    fn with_admin_credentials(app: &mut ServarrApp) {
+        app.spec.admin_credentials = Some(AdminCredentialsSpec {
+            secret_name: "transmission-admin".into(),
+        });
+    }
+    fn with_prowlarr_custom_definitions(app: &mut ServarrApp) {
+        app.spec.app_config = Some(AppConfig::Prowlarr(ProwlarrConfig {
+            custom_definitions: vec![IndexerDefinition {
+                name: "my-tracker".into(),
+                content: "---".into(),
+            }],
+        }));
+    }
+    fn with_ssh_bastion_authorized_key(app: &mut ServarrApp) {
+        app.spec.app_config = Some(AppConfig::SshBastion(SshBastionConfig {
+            users: vec![SshUser {
+                name: "alice".into(),
+                uid: 1000,
+                gid: 1000,
+                public_keys: "ssh-ed25519 AAAA...".into(),
+                ..Default::default()
+            }],
             ..Default::default()
-        }],
-        ..Default::default()
-    }));
-    app.spec.persistence = Some(PersistenceSpec {
-        volumes: vec![],
-        nfs_mounts: vec![NfsMount {
-            name: "keys-nfs".into(),
-            server: "nas.local".into(),
-            path: "/export/keys".into(),
-            mount_path: "/etc/authorized_keys".into(),
-            read_only: false,
-        }],
-        removed_default_volumes: vec![],
-    });
+        }));
+    }
 
-    let err = defaults
-        .resolve_persistence(&app)
-        .expect_err("must not collide with SSH bastion's operator-injected authorized_keys mount");
-    assert!(
-        err.contains("/etc/authorized_keys"),
-        "error should name the colliding mount_path, got: {err}"
-    );
-}
+    let cases = [
+        Case {
+            app_type: AppType::Sonarr,
+            setup: no_setup,
+            mount_path: "/downloads/",
+            expect_collision: true,
+        },
+        Case {
+            app_type: AppType::Sonarr,
+            setup: no_setup,
+            mount_path: "/downloads//",
+            expect_collision: true,
+        },
+        Case {
+            app_type: AppType::Transmission,
+            setup: no_setup,
+            mount_path: "/watch",
+            expect_collision: true,
+        },
+        Case {
+            app_type: AppType::Transmission,
+            setup: with_admin_credentials,
+            mount_path: "/run/secrets/admin",
+            expect_collision: true,
+        },
+        Case {
+            app_type: AppType::Transmission,
+            setup: no_setup,
+            mount_path: "/run/secrets/admin",
+            expect_collision: false,
+        },
+        Case {
+            app_type: AppType::Transmission,
+            setup: with_admin_credentials,
+            mount_path: "/custom-cont-init.d/99-transmission-auth.sh",
+            expect_collision: true,
+        },
+        Case {
+            app_type: AppType::Prowlarr,
+            setup: with_prowlarr_custom_definitions,
+            mount_path: "/config/Definitions/Custom",
+            expect_collision: true,
+        },
+        Case {
+            app_type: AppType::SshBastion,
+            setup: with_ssh_bastion_authorized_key,
+            mount_path: "/etc/authorized_keys",
+            expect_collision: true,
+        },
+    ];
 
-/// Kubernetes treats a trailing slash *or* a doubled slash as the same
-/// path — a single `strip_suffix('/')` catches `/downloads/` but not
-/// `/downloads//` (#402 follow-up).
-#[test]
-fn resolve_persistence_detects_collision_with_doubled_trailing_slash() {
-    let defaults = AppDefaults::try_for_app(&AppType::Sonarr).unwrap();
-    let mut app = make_app(AppType::Sonarr);
-    app.spec.persistence = Some(PersistenceSpec {
-        volumes: vec![],
-        nfs_mounts: vec![NfsMount {
-            name: "downloads-nfs".into(),
-            server: "nas.local".into(),
-            path: "/export/downloads".into(),
-            mount_path: "/downloads//".into(),
-            read_only: false,
-        }],
-        removed_default_volumes: vec![],
-    });
+    for case in cases {
+        let defaults = AppDefaults::try_for_app(&case.app_type).unwrap();
+        let mut app = make_app(case.app_type.clone());
+        (case.setup)(&mut app);
+        app.spec.persistence = Some(PersistenceSpec {
+            volumes: vec![],
+            nfs_mounts: vec![NfsMount {
+                name: "override-nfs".into(),
+                server: "nas.local".into(),
+                path: "/export".into(),
+                mount_path: case.mount_path.into(),
+                read_only: false,
+            }],
+            removed_default_volumes: vec![],
+        });
 
-    let err = defaults.resolve_persistence(&app).expect_err(
-        "a doubled trailing slash must not hide a collision with the 'downloads' default PVC",
-    );
-    assert!(
-        err.contains("/downloads"),
-        "error should name the colliding mount_path, got: {err}"
-    );
+        let result = defaults.resolve_persistence(&app);
+        if case.expect_collision {
+            let err = match result {
+                Err(e) => e,
+                Ok(_) => panic!(
+                    "expected a collision for {:?} at '{}'",
+                    case.app_type, case.mount_path
+                ),
+            };
+            assert!(
+                err.contains(case.mount_path.trim_end_matches('/')),
+                "error should name the colliding mount_path '{}', got: {err}",
+                case.mount_path
+            );
+        } else if let Err(e) = result {
+            panic!(
+                "expected no collision for {:?} at '{}', got: {e}",
+                case.app_type, case.mount_path
+            );
+        }
+    }
 }
 
 /// The reserved-mount collision message must name the operator's mount, not
