@@ -1584,6 +1584,21 @@ pub(crate) async fn update_status(
     Ok(())
 }
 
+/// Publish `event` and warn (never panic or silently drop) if the publish
+/// itself fails — RBAC restriction, API server unavailable, namespace being
+/// torn down. The underlying reconcile/operation error is expected to
+/// already be logged by the caller; this only covers the Event mechanism
+/// itself going dark (#403).
+async fn publish_event(
+    recorder: &Recorder,
+    obj_ref: &k8s_openapi::api::core::v1::ObjectReference,
+    event: Event,
+) {
+    if let Err(e) = recorder.publish(&event, obj_ref).await {
+        warn!(error = %e, reason = %event.reason, "failed to publish event");
+    }
+}
+
 pub fn error_policy(app: Arc<ServarrApp>, error: &Error, ctx: Arc<Context>) -> Action {
     let app_type = app.spec.app.as_str();
     increment_reconcile_total(app_type, "error");
@@ -1593,21 +1608,18 @@ pub fn error_policy(app: Arc<ServarrApp>, error: &Error, ctx: Arc<Context>) -> A
     let obj_ref = app.object_ref(&());
     let error_msg = error.sanitized_message();
     tokio::spawn(async move {
-        if let Err(e) = recorder
-            .publish(
-                &Event {
-                    type_: EventType::Warning,
-                    reason: "ReconcileError".into(),
-                    note: Some(error_msg),
-                    action: "Reconcile".into(),
-                    secondary: None,
-                },
-                &obj_ref,
-            )
-            .await
-        {
-            warn!(error = %e, "failed to publish ReconcileError event");
-        }
+        publish_event(
+            &recorder,
+            &obj_ref,
+            Event {
+                type_: EventType::Warning,
+                reason: "ReconcileError".into(),
+                note: Some(error_msg),
+                action: "Reconcile".into(),
+                secondary: None,
+            },
+        )
+        .await;
     });
 
     Action::requeue(Duration::from_secs(60))
@@ -1666,28 +1678,28 @@ pub(crate) async fn maybe_run_backup(
         Ok(s) => s,
         Err(e) => {
             warn!(error = %e, schedule = %backup_spec.schedule, "invalid cron schedule");
-            let schedule_display = backup_spec.schedule.trim();
             // The cron crate's error text isn't something this codebase
             // audits for safety to surface verbatim — the full detail stays
             // in the structured warn! above; the user-facing Event/status
-            // only echoes their own schedule string back (#398).
-            if let Err(err) = recorder
-                .publish(
-                    &Event {
-                        type_: EventType::Warning,
-                        reason: "InvalidBackupSchedule".into(),
-                        note: Some(format!(
-                            "Invalid backup schedule '{schedule_display}': not a valid cron expression"
-                        )),
-                        action: "Backup".into(),
-                        secondary: None,
-                    },
-                    obj_ref,
-                )
-                .await
-            {
-                warn!(error = %err, "failed to publish InvalidBackupSchedule event");
-            }
+            // only echoes their own schedule string back (#398). Truncated:
+            // the Events API rejects a note over 1024 chars, and an
+            // arbitrarily long spec.backup.schedule would otherwise inflate
+            // both the Event and the status patch on every reconcile.
+            let schedule_display: String = backup_spec.schedule.trim().chars().take(64).collect();
+            publish_event(
+                recorder,
+                obj_ref,
+                Event {
+                    type_: EventType::Warning,
+                    reason: "InvalidBackupSchedule".into(),
+                    note: Some(format!(
+                        "Invalid backup schedule '{schedule_display}': not a valid cron expression"
+                    )),
+                    action: "Backup".into(),
+                    secondary: None,
+                },
+            )
+            .await;
             return Some(servarr_crds::BackupStatus {
                 last_backup_result: Some(format!(
                     "invalid schedule: '{schedule_display}' is not a valid cron expression"
@@ -1753,9 +1765,11 @@ pub(crate) async fn maybe_run_backup(
 
     let app_type = app.spec.app.as_str();
 
-    if backup_time_corrupted && let Err(err) = recorder
-        .publish(
-            &Event {
+    if backup_time_corrupted {
+        publish_event(
+            recorder,
+            obj_ref,
+            Event {
                 type_: EventType::Warning,
                 reason: "CorruptedBackupTime".into(),
                 note: Some(
@@ -1764,43 +1778,40 @@ pub(crate) async fn maybe_run_backup(
                 action: "Backup".into(),
                 secondary: None,
             },
-            obj_ref,
-        )
-        .await
-    {
-        warn!(error = %err, "failed to publish CorruptedBackupTime event");
-    }
-
-    let _ = recorder
-        .publish(
-            &Event {
-                type_: EventType::Normal,
-                reason: "BackupStarted".into(),
-                note: Some("Scheduled backup started".into()),
-                action: "Backup".into(),
-                secondary: None,
-            },
-            obj_ref,
         )
         .await;
+    }
+
+    publish_event(
+        recorder,
+        obj_ref,
+        Event {
+            type_: EventType::Normal,
+            reason: "BackupStarted".into(),
+            note: Some("Scheduled backup started".into()),
+            action: "Backup".into(),
+            secondary: None,
+        },
+    )
+    .await;
 
     info!(app = %app_name, "creating backup");
     match api_client.create_backup().await {
         Ok(backup) => {
             info!(app = %app_name, backup_id = backup.id, "backup created");
             increment_backup_operations(app_type, "backup", "success");
-            let _ = recorder
-                .publish(
-                    &Event {
-                        type_: EventType::Normal,
-                        reason: "BackupCompleted".into(),
-                        note: Some(format!("Backup {} created successfully", backup.id)),
-                        action: "Backup".into(),
-                        secondary: None,
-                    },
-                    obj_ref,
-                )
-                .await;
+            publish_event(
+                recorder,
+                obj_ref,
+                Event {
+                    type_: EventType::Normal,
+                    reason: "BackupCompleted".into(),
+                    note: Some(format!("Backup {} created successfully", backup.id)),
+                    action: "Backup".into(),
+                    secondary: None,
+                },
+            )
+            .await;
 
             // Prune old backups if over retention count
             let retention = backup_spec.retention_count;
@@ -1833,18 +1844,18 @@ pub(crate) async fn maybe_run_backup(
             warn!(app = %app_name, error = %e, "backup failed");
             increment_backup_operations(app_type, "backup", "error");
             let error_summary = e.log_summary();
-            let _ = recorder
-                .publish(
-                    &Event {
-                        type_: EventType::Warning,
-                        reason: "BackupFailed".into(),
-                        note: Some(format!("Backup failed: {error_summary}")),
-                        action: "Backup".into(),
-                        secondary: None,
-                    },
-                    obj_ref,
-                )
-                .await;
+            publish_event(
+                recorder,
+                obj_ref,
+                Event {
+                    type_: EventType::Warning,
+                    reason: "BackupFailed".into(),
+                    note: Some(format!("Backup failed: {error_summary}")),
+                    action: "Backup".into(),
+                    secondary: None,
+                },
+            )
+            .await;
             Some(servarr_crds::BackupStatus {
                 last_backup_time: last_backup.map(|_| chrono_now()),
                 last_backup_result: Some(format!("error: {error_summary}")),
@@ -1896,18 +1907,18 @@ pub(crate) async fn maybe_restore_backup(
     let deploy_api = Api::<Deployment>::namespaced(client.clone(), ns);
 
     // Step 1: Scale deployment to 0
-    let _ = recorder
-        .publish(
-            &Event {
-                type_: EventType::Normal,
-                reason: "RestoreStarted".into(),
-                note: Some(format!("Scaling down for restore from backup {backup_id}")),
-                action: "Restore".into(),
-                secondary: None,
-            },
-            obj_ref,
-        )
-        .await;
+    publish_event(
+        recorder,
+        obj_ref,
+        Event {
+            type_: EventType::Normal,
+            reason: "RestoreStarted".into(),
+            note: Some(format!("Scaling down for restore from backup {backup_id}")),
+            action: "Restore".into(),
+            secondary: None,
+        },
+    )
+    .await;
 
     // Step 1: Scale deployment to 0 and wait for pods to terminate.
     // Captured as a Result so scale-up (Step 3) always runs even if this fails.
@@ -2035,38 +2046,38 @@ pub(crate) async fn try_restore(
         Ok(()) => {
             info!(%name, backup_id, "restore completed successfully");
             increment_backup_operations(app.spec.app.as_str(), "restore", "success");
-            let _ = recorder
-                .publish(
-                    &Event {
-                        type_: EventType::Normal,
-                        reason: "RestoreComplete".into(),
-                        note: Some(format!("Successfully restored from backup {backup_id}")),
-                        action: "Restore".into(),
-                        secondary: None,
-                    },
-                    obj_ref,
-                )
-                .await;
+            publish_event(
+                recorder,
+                obj_ref,
+                Event {
+                    type_: EventType::Normal,
+                    reason: "RestoreComplete".into(),
+                    note: Some(format!("Successfully restored from backup {backup_id}")),
+                    action: "Restore".into(),
+                    secondary: None,
+                },
+            )
+            .await;
             Ok(())
         }
         Err(e) => {
             warn!(%name, backup_id, error = %e, "restore API call failed");
             increment_backup_operations(app.spec.app.as_str(), "restore", "error");
             let error_summary = e.log_summary();
-            let _ = recorder
-                .publish(
-                    &Event {
-                        type_: EventType::Warning,
-                        reason: "RestoreFailed".into(),
-                        note: Some(format!(
-                            "Failed to restore from backup {backup_id}: {error_summary}"
-                        )),
-                        action: "Restore".into(),
-                        secondary: None,
-                    },
-                    obj_ref,
-                )
-                .await;
+            publish_event(
+                recorder,
+                obj_ref,
+                Event {
+                    type_: EventType::Warning,
+                    reason: "RestoreFailed".into(),
+                    note: Some(format!(
+                        "Failed to restore from backup {backup_id}: {error_summary}"
+                    )),
+                    action: "Restore".into(),
+                    secondary: None,
+                },
+            )
+            .await;
             Err(anyhow::anyhow!("restore API call failed: {error_summary}"))
         }
     }
@@ -2293,18 +2304,18 @@ pub(crate) async fn sync_prowlarr_apps(
         }
     }
 
-    let _ = recorder
-        .publish(
-            &Event {
-                type_: EventType::Normal,
-                reason: "ProwlarrSyncComplete".into(),
-                note: Some(format!("Synced {} apps to Prowlarr", discovered.len())),
-                action: "ProwlarrSync".into(),
-                secondary: None,
-            },
-            obj_ref,
-        )
-        .await;
+    publish_event(
+        recorder,
+        obj_ref,
+        Event {
+            type_: EventType::Normal,
+            reason: "ProwlarrSyncComplete".into(),
+            note: Some(format!("Synced {} apps to Prowlarr", discovered.len())),
+            action: "ProwlarrSync".into(),
+            secondary: None,
+        },
+    )
+    .await;
 
     Ok(())
 }
@@ -2392,18 +2403,18 @@ pub(crate) async fn cleanup_prowlarr_registration(
         );
         prowlarr_client.delete_application(registered.id).await?;
 
-        let _ = recorder
-            .publish(
-                &Event {
-                    type_: EventType::Normal,
-                    reason: "ProwlarrCleanup".into(),
-                    note: Some(format!("Removed {} from Prowlarr", app.name_any())),
-                    action: "Finalize".into(),
-                    secondary: None,
-                },
-                obj_ref,
-            )
-            .await;
+        publish_event(
+            recorder,
+            obj_ref,
+            Event {
+                type_: EventType::Normal,
+                reason: "ProwlarrCleanup".into(),
+                note: Some(format!("Removed {} from Prowlarr", app.name_any())),
+                action: "Finalize".into(),
+                secondary: None,
+            },
+        )
+        .await;
     }
 
     Ok(())
@@ -2630,20 +2641,20 @@ pub(crate) async fn sync_overseerr_servers(
         .iter()
         .filter(|a| a.app_type == AppType::Radarr)
         .count();
-    let _ = recorder
-        .publish(
-            &Event {
-                type_: EventType::Normal,
-                reason: "OverseerrSyncComplete".into(),
-                note: Some(format!(
-                    "Synced {sonarr_count} Sonarr + {radarr_count} Radarr servers to Overseerr"
-                )),
-                action: "OverseerrSync".into(),
-                secondary: None,
-            },
-            obj_ref,
-        )
-        .await;
+    publish_event(
+        recorder,
+        obj_ref,
+        Event {
+            type_: EventType::Normal,
+            reason: "OverseerrSyncComplete".into(),
+            note: Some(format!(
+                "Synced {sonarr_count} Sonarr + {radarr_count} Radarr servers to Overseerr"
+            )),
+            action: "OverseerrSync".into(),
+            secondary: None,
+        },
+    )
+    .await;
 
     Ok(())
 }
@@ -3222,18 +3233,18 @@ pub(crate) async fn cleanup_overseerr_registration(
                 );
                 overseerr_client.delete_sonarr(id).await?;
 
-                let _ = recorder
-                    .publish(
-                        &Event {
-                            type_: EventType::Normal,
-                            reason: "OverseerrCleanup".into(),
-                            note: Some(format!("Removed {} from Overseerr", app.name_any())),
-                            action: "Finalize".into(),
-                            secondary: None,
-                        },
-                        obj_ref,
-                    )
-                    .await;
+                publish_event(
+                    recorder,
+                    obj_ref,
+                    Event {
+                        type_: EventType::Normal,
+                        reason: "OverseerrCleanup".into(),
+                        note: Some(format!("Removed {} from Overseerr", app.name_any())),
+                        action: "Finalize".into(),
+                        secondary: None,
+                    },
+                )
+                .await;
             }
         }
         AppType::Radarr => {
@@ -3250,18 +3261,18 @@ pub(crate) async fn cleanup_overseerr_registration(
                 );
                 overseerr_client.delete_radarr(id).await?;
 
-                let _ = recorder
-                    .publish(
-                        &Event {
-                            type_: EventType::Normal,
-                            reason: "OverseerrCleanup".into(),
-                            note: Some(format!("Removed {} from Overseerr", app.name_any())),
-                            action: "Finalize".into(),
-                            secondary: None,
-                        },
-                        obj_ref,
-                    )
-                    .await;
+                publish_event(
+                    recorder,
+                    obj_ref,
+                    Event {
+                        type_: EventType::Normal,
+                        reason: "OverseerrCleanup".into(),
+                        note: Some(format!("Removed {} from Overseerr", app.name_any())),
+                        action: "Finalize".into(),
+                        secondary: None,
+                    },
+                )
+                .await;
             }
         }
         _ => {}
@@ -4487,6 +4498,31 @@ mod tests {
                 instance: None,
             },
         )
+    }
+
+    #[tokio::test]
+    async fn publish_event_does_not_panic_when_publish_fails() {
+        // No Mock mounted for the events endpoint, so the publish call fails
+        // (wiremock returns 404 for any unmatched request) — publish_event
+        // must warn and return, never panic (#403).
+        let mock_server = wiremock::MockServer::start().await;
+        let client = build_mock_client(&mock_server.uri()).await;
+        let recorder = make_recorder(&client);
+        let app = make_test_app("my-app", "test", AppType::Sonarr);
+        let obj_ref = app.object_ref(&());
+
+        publish_event(
+            &recorder,
+            &obj_ref,
+            Event {
+                type_: EventType::Warning,
+                reason: "Test".into(),
+                note: Some("test note".into()),
+                action: "Test".into(),
+                secondary: None,
+            },
+        )
+        .await;
     }
 
     #[tokio::test]
