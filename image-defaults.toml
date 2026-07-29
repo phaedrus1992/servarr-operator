@@ -35,7 +35,7 @@ downloads = true
 
 [prowlarr]
 repository = "linuxserver/prowlarr"
-tag = "2.4.0"
+tag = "2.5.2"
 port = 9696
 security = "linuxserver"
 downloads = false
@@ -78,7 +78,7 @@ downloads = false
 
 [jackett]
 repository = "linuxserver/jackett"
-tag = "0.24.2251"
+tag = "0.24.2254"
 port = 9117
 security = "linuxserver"
 downloads = false
@@ -94,7 +94,7 @@ probe_path = "/api/system/ping"
 
 [subgen]
 repository = "mccloud/subgen"
-tag = "2026.06.6"
+tag = "2026.07.1"
 port = 9000
 security = "nonroot"
 downloads = false

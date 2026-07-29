@@ -82,7 +82,7 @@ defaultImages:
     tag: "3.1.0"
   prowlarr:
     repository: linuxserver/prowlarr
-    tag: "2.4.0"
+    tag: "2.5.2"
   sabnzbd:
     repository: linuxserver/sabnzbd
     tag: "5.0.4"
@@ -100,13 +100,13 @@ defaultImages:
     tag: "3.15.2"
   jackett:
     repository: linuxserver/jackett
-    tag: "0.24.2251"
+    tag: "0.24.2254"
   bazarr:
     repository: linuxserver/bazarr
     tag: "1.6.0"
   subgen:
     repository: mccloud/subgen
-    tag: "2026.06.6"
+    tag: "2026.07.1"
   jellyfin:
     repository: linuxserver/jellyfin
     tag: "10.11.10"
