@@ -82,7 +82,7 @@ defaultImages:
     tag: "3.1.0"
   prowlarr:
     repository: linuxserver/prowlarr
-    tag: "2.4.0"
+    tag: "2.5.2"
   sabnzbd:
     repository: linuxserver/sabnzbd
     tag: "4.5.5"
@@ -100,7 +100,7 @@ defaultImages:
     tag: "3.15.2"
   jackett:
     repository: linuxserver/jackett
-    tag: "0.24.2251"
+    tag: "0.24.2254"
   bazarr:
     repository: linuxserver/bazarr
     tag: "1.6.0"
