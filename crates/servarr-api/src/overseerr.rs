@@ -1,6 +1,7 @@
 use serde::Serialize;
 
 use crate::client::ApiError;
+use crate::servarr_v3::SdkResponseStatus;
 
 /// Client for the Overseerr settings API.
 ///
@@ -18,8 +19,9 @@ struct LocalAuthRequest<'a> {
 }
 
 fn map_err<E: std::fmt::Debug>(e: overseerr::apis::Error<E>) -> ApiError {
+    let status = e.response_status().unwrap_or(0);
     ApiError::ApiResponse {
-        status: 0,
+        status,
         body: format!("{e:?}"),
     }
 }
@@ -125,6 +127,9 @@ impl OverseerrClient {
             .send()
             .await
             .map_err(|e| ApiError::ApiResponse {
+                // reqwest::Error here means the request itself failed to complete (DNS,
+                // connect, timeout) — there is no HTTP response to read a status from.
+                // 0 is accurate, not a bug.
                 status: 0,
                 body: e.to_string(),
             })?;
@@ -186,6 +191,24 @@ mod tests {
         match err {
             ApiError::ApiResponse { status, .. } => assert_eq!(status, 401),
             other => panic!("unexpected: {other}"),
+        }
+    }
+
+    #[test]
+    fn map_err_preserves_response_status() {
+        let response_err =
+            overseerr::apis::Error::ResponseError(overseerr::apis::ResponseContent {
+                status: reqwest::StatusCode::UNAUTHORIZED,
+                content: "invalid api key".to_string(),
+                entity: None::<()>,
+            });
+        let err = map_err(response_err);
+        match err {
+            ApiError::ApiResponse { status, body } => {
+                assert_eq!(status, 401);
+                assert!(body.contains("invalid api key"));
+            }
+            other => panic!("expected ApiResponse, got {other:?}"),
         }
     }
 

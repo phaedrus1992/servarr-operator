@@ -1,10 +1,12 @@
 use serde::{Deserialize, Serialize};
 
 use crate::client::ApiError;
+use crate::servarr_v3::SdkResponseStatus;
 
-fn map_sdk_err<E: std::fmt::Debug>(e: E) -> ApiError {
+fn map_sdk_err<T: std::fmt::Debug>(e: prowlarr::apis::Error<T>) -> ApiError {
+    let status = e.response_status().unwrap_or(0);
     ApiError::ApiResponse {
-        status: 0,
+        status,
         body: format!("{e:?}"),
     }
 }
@@ -326,6 +328,34 @@ mod tests {
             resource.sync_level,
             Some(prowlarr::models::ApplicationSyncLevel::Disabled)
         );
+    }
+
+    #[test]
+    fn map_sdk_err_preserves_response_status() {
+        let response_err = prowlarr::apis::Error::ResponseError(prowlarr::apis::ResponseContent {
+            status: reqwest::StatusCode::UNAUTHORIZED,
+            content: "invalid api key".to_string(),
+            entity: None::<()>,
+        });
+        let err = map_sdk_err(response_err);
+        match err {
+            ApiError::ApiResponse { status, body } => {
+                assert_eq!(status, 401);
+                assert!(body.contains("invalid api key"));
+            }
+            other => panic!("expected ApiResponse, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn map_sdk_err_falls_back_to_zero_for_non_response_errors() {
+        let serde_err: prowlarr::apis::Error<()> =
+            prowlarr::apis::Error::Serde(serde_json::from_str::<()>("not json").unwrap_err());
+        let err = map_sdk_err(serde_err);
+        match err {
+            ApiError::ApiResponse { status, .. } => assert_eq!(status, 0),
+            other => panic!("expected ApiResponse, got {other:?}"),
+        }
     }
 
     #[test]

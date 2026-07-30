@@ -70,5 +70,7 @@ pub fn build(app: &ServarrApp) -> Result<Option<DynamicObject>, String> {
         },
     });
 
-    Ok(serde_json::from_value(route).ok())
+    Ok(Some(
+        serde_json::from_value(route).map_err(|e| format!("failed to build TCPRoute: {e}"))?,
+    ))
 }
