@@ -48,7 +48,7 @@ axum = "0.8.9"
 axum-server = { version = "0.8.0", features = ["tls-rustls"] }
 clap = { version = "=4.6.4", features = ["derive"] }
 flate2 = "=1.1.9"
-base64 = "=0.22.1"
+base64 = "=0.23.0"
 servarr-api = { path = "../servarr-api" }
 overseerr = "0.1"
 chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
