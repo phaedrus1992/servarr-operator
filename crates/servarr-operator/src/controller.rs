@@ -3765,46 +3765,7 @@ mod tests {
         );
     }
 
-    // ---- Helper: build kube::Client from mock server ----
-
-    async fn build_mock_client(server_uri: &str) -> Client {
-        use kube::config::{
-            AuthInfo, Cluster, Context as KubeContext, KubeConfigOptions, Kubeconfig,
-            NamedAuthInfo, NamedCluster, NamedContext,
-        };
-
-        let kubeconfig = Kubeconfig {
-            clusters: vec![NamedCluster {
-                name: "test".into(),
-                cluster: Some(Cluster {
-                    server: Some(server_uri.to_string()),
-                    insecure_skip_tls_verify: Some(true),
-                    ..Default::default()
-                }),
-            }],
-            contexts: vec![NamedContext {
-                name: "test".into(),
-                context: Some(KubeContext {
-                    cluster: "test".into(),
-                    user: Some("test".into()),
-                    namespace: Some("test".into()),
-                    ..Default::default()
-                }),
-            }],
-            auth_infos: vec![NamedAuthInfo {
-                name: "test".into(),
-                auth_info: Some(AuthInfo::default()),
-            }],
-            current_context: Some("test".into()),
-            ..Default::default()
-        };
-
-        let config =
-            kube::Config::from_custom_kubeconfig(kubeconfig, &KubeConfigOptions::default())
-                .await
-                .unwrap();
-        Client::try_from(config).unwrap()
-    }
+    use crate::testutils::build_mock_client;
 
     async fn mount_secret_mock(
         mock_server: &MockServer,

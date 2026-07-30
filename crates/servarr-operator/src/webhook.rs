@@ -467,14 +467,9 @@ async fn validate_no_duplicate_instance(
     let existing = match api.list(&ListParams::default()).await {
         Ok(list) => list,
         Err(e) => {
-            warn!(
-                error = %kube_err_summary(&e),
-                "failed to list ServarrApps for duplicate check"
-            );
-            errors.push(format!(
-                "failed to check for duplicate instances: {}",
-                kube_err_summary(&e)
-            ));
+            let reason = kube_err_summary(&e);
+            warn!(error = %reason, "failed to list ServarrApps for duplicate check");
+            errors.push(format!("failed to check for duplicate instances: {reason}"));
             return;
         }
     };
@@ -712,7 +707,12 @@ fn parse_memory(s: &str) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
     use servarr_crds::*;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    use crate::testutils::build_mock_client;
 
     // ── Helper to build a minimal ServarrAppSpec ──
 
@@ -1903,49 +1903,6 @@ mod tests {
 
     // ── validate_no_duplicate_instance (admission-rejection message sanitization) ──
 
-    use serde_json::json;
-    use wiremock::matchers::{method, path};
-    use wiremock::{Mock, MockServer, ResponseTemplate};
-
-    async fn build_mock_client(server_uri: &str) -> Client {
-        use kube::config::{
-            AuthInfo, Cluster, Context as KubeContext, KubeConfigOptions, Kubeconfig,
-            NamedAuthInfo, NamedCluster, NamedContext,
-        };
-
-        let kubeconfig = Kubeconfig {
-            clusters: vec![NamedCluster {
-                name: "test".into(),
-                cluster: Some(Cluster {
-                    server: Some(server_uri.to_string()),
-                    insecure_skip_tls_verify: Some(true),
-                    ..Default::default()
-                }),
-            }],
-            contexts: vec![NamedContext {
-                name: "test".into(),
-                context: Some(KubeContext {
-                    cluster: "test".into(),
-                    user: Some("test".into()),
-                    namespace: Some("test".into()),
-                    ..Default::default()
-                }),
-            }],
-            auth_infos: vec![NamedAuthInfo {
-                name: "test".into(),
-                auth_info: Some(AuthInfo::default()),
-            }],
-            current_context: Some("test".into()),
-            ..Default::default()
-        };
-
-        let config =
-            kube::Config::from_custom_kubeconfig(kubeconfig, &KubeConfigOptions::default())
-                .await
-                .unwrap();
-        Client::try_from(config).unwrap()
-    }
-
     #[tokio::test]
     async fn validate_spec_duplicate_check_error_sanitizes_message() {
         let mock_server = MockServer::start().await;
@@ -1960,7 +1917,7 @@ mod tests {
                 "kind": "Status",
                 "metadata": {},
                 "status": "Failure",
-                "message": "servarrapps.servarr.dev is forbidden: User \"system:serviceaccount:test:leaked-sa\" cannot list resource",
+                "message": "forbidden: User \"system:serviceaccount:test:leaked-sa\" cannot list",
                 "reason": "Forbidden",
                 "code": 403
             })))
