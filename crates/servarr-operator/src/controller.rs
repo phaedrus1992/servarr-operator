@@ -2101,7 +2101,9 @@ async fn sync_prowlarr_apps(
         .api_key_secret
         .as_deref()
         .ok_or_else(|| anyhow::anyhow!("Prowlarr sync requires api_key_secret"))?;
-    let prowlarr_key = servarr_api::read_secret_key(client, &ns, secret_name, "api-key").await?;
+    let prowlarr_key = servarr_api::read_secret_key(client, &ns, secret_name, "api-key")
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to read Prowlarr API key: {}", e.log_summary()))?;
 
     let prowlarr_app_name = servarr_resources::common::service_name(prowlarr);
     let defaults = servarr_crds::AppDefaults::for_app(&prowlarr.spec.app)
@@ -2116,7 +2118,9 @@ async fn sync_prowlarr_apps(
     let discovered = discover_namespace_apps(client, target_ns).await?;
 
     // Get current Prowlarr applications
-    let existing = prowlarr_client.list_applications().await?;
+    let existing = prowlarr_client.list_applications().await.map_err(|e| {
+        anyhow::anyhow!("failed to list Prowlarr applications: {}", e.log_summary())
+    })?;
 
     // Build a map of existing apps by base URL for diffing
     let existing_by_url: std::collections::HashMap<String, &servarr_api::prowlarr::ProwlarrApp> =
@@ -2346,7 +2350,9 @@ async fn sync_overseerr_servers(
         .api_key_secret
         .as_deref()
         .ok_or_else(|| anyhow::anyhow!("Overseerr sync requires api_key_secret"))?;
-    let overseerr_key = servarr_api::read_secret_key(client, &ns, secret_name, "api-key").await?;
+    let overseerr_key = servarr_api::read_secret_key(client, &ns, secret_name, "api-key")
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to read Overseerr API key: {}", e.log_summary()))?;
 
     let overseerr_app_name = servarr_resources::common::service_name(overseerr);
     let defaults = servarr_crds::AppDefaults::for_app(&overseerr.spec.app)
@@ -2361,8 +2367,18 @@ async fn sync_overseerr_servers(
     let discovered = discover_namespace_apps(client, target_ns).await?;
 
     // Get existing server registrations
-    let existing_sonarr = overseerr_client.list_sonarr().await?;
-    let existing_radarr = overseerr_client.list_radarr().await?;
+    let existing_sonarr = overseerr_client.list_sonarr().await.map_err(|e| {
+        anyhow::anyhow!(
+            "failed to list Overseerr Sonarr servers: {}",
+            e.log_summary()
+        )
+    })?;
+    let existing_radarr = overseerr_client.list_radarr().await.map_err(|e| {
+        anyhow::anyhow!(
+            "failed to list Overseerr Radarr servers: {}",
+            e.log_summary()
+        )
+    })?;
 
     // Get Overseerr config for default profile/directory settings
     let overseerr_config = match &overseerr.spec.app_config {
@@ -2578,7 +2594,9 @@ async fn sync_bazarr_apps(
 
     // Read Bazarr's operator-managed API key
     let api_key_secret = servarr_resources::common::child_name(bazarr, "api-key");
-    let bazarr_key = servarr_api::read_secret_key(client, &ns, &api_key_secret, "api-key").await?;
+    let bazarr_key = servarr_api::read_secret_key(client, &ns, &api_key_secret, "api-key")
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to read Bazarr API key: {}", e.log_summary()))?;
 
     let bazarr_app_name = servarr_resources::common::service_name(bazarr);
     let defaults = servarr_crds::AppDefaults::for_app(&bazarr.spec.app)
@@ -2686,8 +2704,9 @@ async fn sync_maintainerr_servers(
 
     // Read Maintainerr's operator-managed API key
     let api_key_secret = servarr_resources::common::child_name(maintainerr, "api-key");
-    let maintainerr_key =
-        servarr_api::read_secret_key(client, &ns, &api_key_secret, "api-key").await?;
+    let maintainerr_key = servarr_api::read_secret_key(client, &ns, &api_key_secret, "api-key")
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to read Maintainerr API key: {}", e.log_summary()))?;
 
     let maintainerr_app_name = servarr_resources::common::service_name(maintainerr);
     let defaults = servarr_crds::AppDefaults::for_app(&maintainerr.spec.app)
