@@ -866,12 +866,16 @@ async fn sync_admin_credentials(client: &Client, app: &ServarrApp) -> Option<Con
     {
         Ok(v) => v,
         Err(e) => {
-            warn!(app = %app.name_any(), error = %e, "admin-credentials: failed to read username");
+            let summary = e.log_summary();
+            warn!(
+                app = %app.name_any(), error = %summary,
+                "admin-credentials: failed to read username"
+            );
             return Some(Condition {
                 condition_type: condition_types::ADMIN_CREDENTIALS_CONFIGURED.to_string(),
                 status: "Unknown".to_string(),
                 reason: "SecretReadError".to_string(),
-                message: e.to_string(),
+                message: summary,
                 last_transition_time: now,
             });
         }
@@ -880,12 +884,16 @@ async fn sync_admin_credentials(client: &Client, app: &ServarrApp) -> Option<Con
     {
         Ok(v) => v,
         Err(e) => {
-            warn!(app = %app.name_any(), error = %e, "admin-credentials: failed to read password");
+            let summary = e.log_summary();
+            warn!(
+                app = %app.name_any(), error = %summary,
+                "admin-credentials: failed to read password"
+            );
             return Some(Condition {
                 condition_type: condition_types::ADMIN_CREDENTIALS_CONFIGURED.to_string(),
                 status: "Unknown".to_string(),
                 reason: "SecretReadError".to_string(),
-                message: e.to_string(),
+                message: summary,
                 last_transition_time: now,
             });
         }
@@ -920,7 +928,7 @@ async fn sync_admin_credentials(client: &Client, app: &ServarrApp) -> Option<Con
                                 .to_string(),
                             status: "Unknown".to_string(),
                             reason: "ApiKeyReadError".to_string(),
-                            message: e.to_string(),
+                            message: e.log_summary(),
                             last_transition_time: now,
                         });
                     }
@@ -938,8 +946,8 @@ async fn sync_admin_credentials(client: &Client, app: &ServarrApp) -> Option<Con
                 Ok(c) => c
                     .set_credentials(&username, &password)
                     .await
-                    .map_err(|e| e.to_string()),
-                Err(e) => Err(e.to_string()),
+                    .map_err(|e| e.log_summary()),
+                Err(e) => Err(e.log_summary()),
             }
         }
         AppType::Transmission => {
@@ -965,31 +973,31 @@ async fn sync_admin_credentials(client: &Client, app: &ServarrApp) -> Option<Con
                                 .session_get()
                                 .await
                                 .map(|_| ())
-                                .map_err(|e| e.to_string()),
-                            Err(e) => Err(e.to_string()),
+                                .map_err(|e| e.log_summary()),
+                            Err(e) => Err(e.log_summary()),
                         }
                     }
                     Err(e) => {
                         warn!(app = %app.name_any(), error = %e, "admin-credentials: Transmission session-set failed");
-                        Err(e.to_string())
+                        Err(e.log_summary())
                     }
                 },
-                Err(e) => Err(e.to_string()),
+                Err(e) => Err(e.log_summary()),
             }
         }
         AppType::Jellyfin => match servarr_api::JellyfinClient::new(&base_url) {
             Ok(c) => c
                 .configure_admin(&username, &password)
                 .await
-                .map_err(|e| e.to_string()),
-            Err(e) => Err(e.to_string()),
+                .map_err(|e| e.log_summary()),
+            Err(e) => Err(e.log_summary()),
         },
         AppType::Tautulli => match servarr_api::TautulliClient::new(&base_url) {
             Ok(c) => c
                 .set_credentials(&username, &password)
                 .await
-                .map_err(|e| e.to_string()),
-            Err(e) => Err(e.to_string()),
+                .map_err(|e| e.log_summary()),
+            Err(e) => Err(e.log_summary()),
         },
         AppType::Overseerr => {
             let api_key = match app.spec.api_key_secret.as_deref() {
@@ -1001,7 +1009,7 @@ async fn sync_admin_credentials(client: &Client, app: &ServarrApp) -> Option<Con
                                 .to_string(),
                             status: "Unknown".to_string(),
                             reason: "ApiKeyReadError".to_string(),
-                            message: e.to_string(),
+                            message: e.log_summary(),
                             last_transition_time: now,
                         });
                     }
@@ -1018,7 +1026,7 @@ async fn sync_admin_credentials(client: &Client, app: &ServarrApp) -> Option<Con
             let c = servarr_api::OverseerrClient::new(&base_url, &api_key);
             c.setup_local_auth(&username, &password)
                 .await
-                .map_err(|e| e.to_string())
+                .map_err(|e| e.log_summary())
         }
         AppType::Sonarr | AppType::Radarr | AppType::Lidarr | AppType::Prowlarr => {
             let api_key = match app.spec.api_key_secret.as_deref() {
@@ -1030,7 +1038,7 @@ async fn sync_admin_credentials(client: &Client, app: &ServarrApp) -> Option<Con
                                 .to_string(),
                             status: "Unknown".to_string(),
                             reason: "ApiKeyReadError".to_string(),
-                            message: e.to_string(),
+                            message: e.log_summary(),
                             last_transition_time: now,
                         });
                     }
@@ -1049,9 +1057,9 @@ async fn sync_admin_credentials(client: &Client, app: &ServarrApp) -> Option<Con
                         warn!(app = %app.name_any(), "admin-credentials: configure_admin returned 401 — auth already active, no api key");
                         return None;
                     }
-                    Err(e) => Err(e.to_string()),
+                    Err(e) => Err(e.log_summary()),
                 },
-                Err(e) => Err(e.to_string()),
+                Err(e) => Err(e.log_summary()),
             }
         }
         AppType::Bazarr => {
@@ -1066,7 +1074,7 @@ async fn sync_admin_credentials(client: &Client, app: &ServarrApp) -> Option<Con
                         condition_type: condition_types::ADMIN_CREDENTIALS_CONFIGURED.to_string(),
                         status: "Unknown".to_string(),
                         reason: "ApiKeyReadError".to_string(),
-                        message: e.to_string(),
+                        message: e.log_summary(),
                         last_transition_time: now,
                     });
                 }
@@ -1076,9 +1084,9 @@ async fn sync_admin_credentials(client: &Client, app: &ServarrApp) -> Option<Con
                     let password_md5 = format!("{:x}", md5::compute(password.as_bytes()));
                     c.set_credentials(&username, &password_md5)
                         .await
-                        .map_err(|e| e.to_string())
+                        .map_err(|e| e.log_summary())
                 }
-                Err(e) => Err(e.to_string()),
+                Err(e) => Err(e.log_summary()),
             }
         }
         // Plex: uses plex.tv account auth, not configurable via operator
@@ -1124,12 +1132,13 @@ pub(crate) async fn check_api_health(
     let api_key = match servarr_api::read_secret_key(client, ns, secret_name, "api-key").await {
         Ok(k) => k,
         Err(e) => {
-            warn!(error = %e, "failed to read API key secret");
+            let summary = e.log_summary();
+            warn!(error = %summary, "failed to read API key secret");
             let cond = Condition {
                 condition_type: condition_types::APP_HEALTHY.to_string(),
                 status: "Unknown".to_string(),
                 reason: "SecretReadError".to_string(),
-                message: e.to_string(),
+                message: summary,
                 last_transition_time: now,
             };
             return (Some(cond), None);
@@ -1163,19 +1172,19 @@ pub(crate) async fn check_api_health(
             };
             match servarr_api::ServarrClient::new(&base_url, &api_key, app_kind) {
                 Ok(c) => {
-                    let h = c.is_healthy().await.map_err(|e| e.to_string());
+                    let h = c.is_healthy().await.map_err(|e| e.log_summary());
                     let uc = check_update_available(&c, &now).await;
                     (h, uc)
                 }
-                Err(e) => (Err(e.to_string()), None),
+                Err(e) => (Err(e.log_summary()), None),
             }
         }
         AppType::Sabnzbd => match servarr_api::SabnzbdClient::new(&base_url, &api_key) {
             Ok(c) => {
-                let h = c.is_healthy().await.map_err(|e| e.to_string());
+                let h = c.is_healthy().await.map_err(|e| e.log_summary());
                 (h, None)
             }
-            Err(e) => (Err(e.to_string()), None),
+            Err(e) => (Err(e.log_summary()), None),
         },
         AppType::Transmission => {
             // Pass credentials to the health check client when adminCredentials is set.
@@ -1212,25 +1221,25 @@ pub(crate) async fn check_api_health(
                 tx_pass.as_deref(),
             ) {
                 Ok(c) => {
-                    let h = c.is_healthy().await.map_err(|e| e.to_string());
+                    let h = c.is_healthy().await.map_err(|e| e.log_summary());
                     (h, None)
                 }
-                Err(e) => (Err(e.to_string()), None),
+                Err(e) => (Err(e.log_summary()), None),
             }
         }
         AppType::Jellyfin => match servarr_api::JellyfinClient::new(&base_url) {
             Ok(c) => {
-                let h = c.is_healthy().await.map_err(|e| e.to_string());
+                let h = c.is_healthy().await.map_err(|e| e.log_summary());
                 (h, None)
             }
-            Err(e) => (Err(e.to_string()), None),
+            Err(e) => (Err(e.log_summary()), None),
         },
         AppType::Plex => match servarr_api::PlexClient::new(&base_url) {
             Ok(c) => {
-                let h = c.is_healthy().await.map_err(|e| e.to_string());
+                let h = c.is_healthy().await.map_err(|e| e.log_summary());
                 (h, None)
             }
-            Err(e) => (Err(e.to_string()), None),
+            Err(e) => (Err(e.log_summary()), None),
         },
         _ => return (None, None),
     };

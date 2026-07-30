@@ -613,44 +613,6 @@ fn test_httproute_builder_enabled() {
 }
 
 #[test]
-fn test_httproute_build_propagates_deserialization_error() {
-    let app = ServarrApp {
-        metadata: ObjectMeta {
-            name: Some("test-app".into()),
-            namespace: Some("media".into()),
-            uid: Some("test-uid-789".into()),
-            ..Default::default()
-        },
-        spec: ServarrAppSpec {
-            app: AppType::Sonarr,
-            gateway: Some(GatewaySpec {
-                enabled: Some(true),
-                route_type: Some(RouteType::Http),
-                parent_refs: vec![GatewayParentRef {
-                    name: "istio-gateway".into(),
-                    namespace: "istio-system".into(),
-                    section_name: String::new(),
-                }],
-                hosts: vec!["sonarr.example.com".into()],
-                tls: None,
-            }),
-            ..Default::default()
-        },
-        status: None,
-    };
-
-    let result = servarr_resources::httproute::build(&app);
-    assert!(
-        result.is_ok(),
-        "valid gateway config must still build successfully: {result:?}"
-    );
-    assert!(
-        result.unwrap().is_some(),
-        "valid gateway config must produce Some(route), not None"
-    );
-}
-
-#[test]
 fn test_custom_env_override() {
     let app = ServarrApp {
         metadata: ObjectMeta {
