@@ -10,6 +10,7 @@ use kube::api::{Api, DeleteParams, ListParams, Patch, PatchParams};
 use kube::runtime::controller::{Action, Controller};
 use kube::runtime::watcher;
 use kube::{Client, CustomResourceExt, Resource, ResourceExt};
+use servarr_api::k8s::kube_err_summary;
 use servarr_crds::{
     AppType, Condition, MediaStack, MediaStackStatus, ServarrApp, ServarrAppSpec, StackAppStatus,
     StackPhase,
@@ -327,7 +328,12 @@ pub async fn reconcile(stack: Arc<MediaStack>, ctx: Arc<Context>) -> Result<Acti
         if !desired_children.contains(&child_name) {
             info!(%name, child = %child_name, "deleting orphaned child ServarrApp");
             if let Err(e) = sa_api.delete(&child_name, &Default::default()).await {
-                warn!(%name, child = %child_name, error = %e, "failed to delete orphaned child");
+                warn!(
+                    %name,
+                    child = %child_name,
+                    error = %kube_err_summary(&e),
+                    "failed to delete orphaned child"
+                );
             }
         }
     }
@@ -541,11 +547,10 @@ async fn reconcile_nfs_server(
             .await
             .map(|_| ()),
     ] {
-        match result {
-            Err(e) if !is_not_found(&e) => {
-                warn!(%name, error = %e, "failed to delete NFS server resource");
-            }
-            _ => {}
+        if let Err(e) = result
+            && !is_not_found(&e)
+        {
+            warn!(%name, error = %kube_err_summary(&e), "failed to delete NFS server resource");
         }
     }
 
