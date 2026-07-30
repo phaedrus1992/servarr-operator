@@ -1562,9 +1562,10 @@ async fn maybe_run_backup(
     let api_key = match servarr_api::read_secret_key(client, ns, secret_name, "api-key").await {
         Ok(k) => k,
         Err(e) => {
-            warn!(error = %e, "backup: failed to read API key");
+            let summary = e.log_summary();
+            warn!(error = %summary, "backup: failed to read API key");
             return Some(servarr_crds::BackupStatus {
-                last_backup_result: Some(format!("secret read error: {e}")),
+                last_backup_result: Some(format!("secret read error: {summary}")),
                 ..Default::default()
             });
         }
@@ -1741,14 +1742,15 @@ async fn maybe_run_backup(
             })
         }
         Err(e) => {
-            warn!(app = %app_name, error = %e, "backup failed");
+            let summary = e.log_summary();
+            warn!(app = %app_name, error = %summary, "backup failed");
             increment_backup_operations(app_type, "backup", "error");
             let _ = recorder
                 .publish(
                     &Event {
                         type_: EventType::Warning,
                         reason: "BackupFailed".into(),
-                        note: Some(format!("Backup failed: {e}")),
+                        note: Some(format!("Backup failed: {summary}")),
                         action: "Backup".into(),
                         secondary: None,
                     },
@@ -1757,7 +1759,7 @@ async fn maybe_run_backup(
                 .await;
             Some(servarr_crds::BackupStatus {
                 last_backup_time: last_backup.map(|_| chrono_now()),
-                last_backup_result: Some(format!("error: {e}")),
+                last_backup_result: Some(format!("error: {summary}")),
                 backup_count: 0,
             })
         }
@@ -1940,8 +1942,9 @@ async fn try_restore(
         ));
     };
 
-    // Safe as-is: `ServarrClient::new` only ever returns `InvalidUrl`/`InvalidApiKey`, never a
-    // response-body-derived `ApiResponse` error, so `{e}` here never echoes external content.
+    // Safe as-is: `ServarrClient::new` builds the client but never sends a request, so it can
+    // never return the response-body-derived `ApiResponse` variant; `{e}` here never echoes
+    // external content.
     let servarr_client = servarr_api::ServarrClient::new(&base_url, &api_key, app_kind)
         .map_err(|e| anyhow::anyhow!("failed to create API client for restore: {e}"))?;
 
@@ -3528,6 +3531,55 @@ mod tests {
         assert!(cron::Schedule::from_str(&normalize_backup_schedule("0 3 * *")).is_err());
         // Whitespace-only normalizes to empty (caller's guard treats it as unset).
         assert_eq!(normalize_backup_schedule("   "), "");
+    }
+
+    // ---- maybe_run_backup ----
+
+    #[tokio::test]
+    async fn maybe_run_backup_secret_read_error_sanitizes_status_message() {
+        let mock_server = MockServer::start().await;
+        let client = build_mock_client(&mock_server.uri()).await;
+
+        let mut app = make_test_app("my-sonarr", "test", AppType::Sonarr);
+        app.spec.api_key_secret = Some("sonarr-api-key".into());
+        app.spec.backup = Some(servarr_crds::BackupSpec {
+            enabled: true,
+            schedule: "0 3 * * *".into(),
+            retention_count: 5,
+        });
+
+        // Secret read fails with a 403 whose message/reason echoes the secret name — must not
+        // leak into the tenant-visible BackupStatus.
+        Mock::given(method("GET"))
+            .and(path("/api/v1/namespaces/test/secrets/sonarr-api-key"))
+            .respond_with(ResponseTemplate::new(403).set_body_json(json!({
+                "apiVersion": "v1",
+                "kind": "Status",
+                "metadata": {},
+                "status": "Failure",
+                "message": "secrets \"sonarr-api-key\" is forbidden: User cannot get",
+                "reason": "Forbidden",
+                "code": 403
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let recorder = Recorder::new(client.clone(), "test".into());
+        let obj_ref = app.object_ref(&());
+
+        let status = maybe_run_backup(&client, &app, &recorder, &obj_ref).await;
+
+        let result = status
+            .and_then(|s| s.last_backup_result)
+            .expect("expected a last_backup_result for the secret-read failure");
+        assert!(
+            result.contains("403"),
+            "should keep the status code: {result}"
+        );
+        assert!(
+            !result.contains("sonarr-api-key"),
+            "must not leak the raw API server message: {result}"
+        );
     }
 
     // ---- print_crd ----
