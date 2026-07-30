@@ -13,6 +13,7 @@ use axum_server::tls_rustls::RustlsConfig;
 use kube::Client;
 use kube::api::{Api, ListParams};
 use serde::{Deserialize, Serialize};
+use servarr_api::k8s::kube_err_summary;
 use servarr_crds::{
     AppConfig, AppDefaults, AppType, RouteType, ServarrApp, ServarrAppSpec, SshMode,
 };
@@ -471,8 +472,9 @@ async fn validate_no_duplicate_instance(
     let existing = match api.list(&ListParams::default()).await {
         Ok(list) => list,
         Err(e) => {
-            warn!(error = %e, "failed to list ServarrApps for duplicate check");
-            errors.push(format!("failed to check for duplicate instances: {e}"));
+            let reason = kube_err_summary(&e);
+            warn!(error = %reason, "failed to list ServarrApps for duplicate check");
+            errors.push(format!("failed to check for duplicate instances: {reason}"));
             return;
         }
     };
@@ -734,7 +736,12 @@ fn parse_memory(s: &str) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
     use servarr_crds::*;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    use crate::testutils::build_mock_client;
 
     // ── Helper to build a minimal ServarrAppSpec ──
 
@@ -1962,5 +1969,43 @@ mod tests {
         validate_ssh_bastion_inputs(&spec, &mut errors);
         assert_eq!(errors.len(), 1);
         assert!(errors[0].contains("shell"));
+    }
+
+    // ── validate_no_duplicate_instance (admission-rejection message sanitization) ──
+
+    #[tokio::test]
+    async fn validate_spec_duplicate_check_error_sanitizes_message() {
+        let mock_server = MockServer::start().await;
+        let client = build_mock_client(&mock_server.uri()).await;
+
+        // The list call fails with a 403 whose message echoes a service-account name — must not
+        // leak into the admission-webhook rejection message shown to whoever ran `kubectl apply`.
+        Mock::given(method("GET"))
+            .and(path(
+                "/apis/servarr.dev/v1alpha1/namespaces/test/servarrapps",
+            ))
+            .respond_with(ResponseTemplate::new(403).set_body_json(json!({
+                "apiVersion": "v1",
+                "kind": "Status",
+                "metadata": {},
+                "status": "Failure",
+                "message": "forbidden: User \"system:serviceaccount:test:leaked-sa\" cannot list",
+                "reason": "Forbidden",
+                "code": 403
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let object = json!({ "spec": { "app": "Sonarr" } });
+
+        let result = validate_spec(&object, None, "CREATE", "test", &client).await;
+
+        let err =
+            result.expect_err("expected the duplicate-check API failure to surface as an error");
+        assert!(err.contains("403"), "should keep the status code: {err}");
+        assert!(
+            !err.contains("leaked-sa"),
+            "must not leak the raw API server message: {err}"
+        );
     }
 }
