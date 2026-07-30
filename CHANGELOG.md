@@ -53,6 +53,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Fix ~60 call sites across the controller writing raw Kubernetes API errors, secret-read
   errors, or upstream API errors straight into status conditions and Events instead of a
   sanitized summary (#407).
+- Fix the admission webhook echoing the raw Kubernetes API-server error (RBAC denial text,
+  service-account names) back to `kubectl apply` when its duplicate-instance check fails —
+  the rejection message now carries only the HTTP status code (#422). Two log-only
+  cleanup-failure warnings in the media-stack controller were sanitized the same way (#423).
 - Fix HTTPRoute, TCPRoute, and Certificate builders silently treating a resource-construction
   bug as "not configured" instead of surfacing it as an error (#399).
 - Fix SSH bastion host key changing after a persistence override (e.g. a MediaStack's
