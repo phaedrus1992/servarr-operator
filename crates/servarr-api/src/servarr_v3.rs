@@ -119,10 +119,12 @@ fn oo_str(v: &Option<Option<String>>) -> String {
 
 /// Extracts the real HTTP status from a generated OpenAPI SDK error, when one exists.
 ///
-/// The four generated `apis::Error<T>` types (sonarr/radarr/lidarr/prowlarr) are structurally
-/// identical but not the same Rust type, so this trait unifies them for `map_sdk_err` without
-/// forcing every `.map_err(map_sdk_err)` call site to name the concrete SDK crate.
-trait SdkResponseStatus {
+/// The five generated `apis::Error<T>` types (sonarr/radarr/lidarr/prowlarr/overseerr) are
+/// structurally identical but not the same Rust type, so this trait unifies them for
+/// `map_sdk_err` (and `prowlarr`/`overseerr`'s own crate-local `map_*` functions) without
+/// forcing every `.map_err(...)` call site to name the concrete SDK crate. `pub(crate)` so the
+/// other client modules in this crate can reuse it instead of re-implementing the same match.
+pub(crate) trait SdkResponseStatus {
     fn response_status(&self) -> Option<u16>;
 }
 
@@ -154,6 +156,15 @@ impl<T> SdkResponseStatus for lidarr::apis::Error<T> {
 }
 
 impl<T> SdkResponseStatus for prowlarr::apis::Error<T> {
+    fn response_status(&self) -> Option<u16> {
+        match self {
+            Self::ResponseError(rc) => Some(rc.status.as_u16()),
+            _ => None,
+        }
+    }
+}
+
+impl<T> SdkResponseStatus for overseerr::apis::Error<T> {
     fn response_status(&self) -> Option<u16> {
         match self {
             Self::ResponseError(rc) => Some(rc.status.as_u16()),

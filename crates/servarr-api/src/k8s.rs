@@ -15,19 +15,32 @@ pub enum SecretError {
 }
 
 impl SecretError {
-    /// Returns a log-safe summary. The `Kube` variant applies the same status-only reduction as
-    /// `kube_err_summary` in the operator crate (duplicated rather than shared — `k8s.rs` doesn't
-    /// depend on `servarr-operator`, and this is a two-line match, not worth a new shared crate);
-    /// the other variants already only carry curated secret/key names, never external response
+    /// Returns a log-safe summary. The `Kube` variant delegates to [`kube_err_summary`]; the
+    /// other variants already only carry curated secret/key names, never external response
     /// content, so their `Display` is safe as-is.
     pub fn log_summary(&self) -> String {
         match self {
-            Self::Kube(kube::Error::Api(status)) => {
-                format!("Kubernetes API error (status: {})", status.code)
-            }
-            Self::Kube(_) => "Kubernetes API error".to_string(),
+            Self::Kube(e) => kube_err_summary(e),
             other => other.to_string(),
         }
+    }
+}
+
+/// Returns a log-safe summary of a `kube::Error` that excludes the API server's free-text
+/// message/reason, keeping only the HTTP status code when available.
+///
+/// `kube::Error::Api`'s `Status` can carry arbitrary API-server detail in `message`/`reason`
+/// (resource names, RBAC denial text) — lower sensitivity than an upstream *arr app's response
+/// body, but still infra detail that shouldn't land verbatim in a tenant-visible Condition. Every
+/// other variant (transport, serde, discovery, config, ...) keeps its own `Display` unchanged:
+/// `kube::Error` gains variants across minor versions, so matching a wildcard here keeps this
+/// function correct without needing to track kube's variant list release to release, and those
+/// variants never carry anything as sensitive as an API-server message to begin with — so unlike
+/// `Api`, there's nothing to strip and no debugging signal to lose by leaving them alone.
+pub fn kube_err_summary(e: &kube::Error) -> String {
+    match e {
+        kube::Error::Api(status) => format!("Kubernetes API error (status: {})", status.code),
+        other => other.to_string(),
     }
 }
 
@@ -108,5 +121,15 @@ mod tests {
             key: "api-key".to_string(),
         };
         assert_eq!(err.log_summary(), err.to_string());
+    }
+
+    #[test]
+    fn kube_err_summary_preserves_display_for_non_api_variants() {
+        // Non-`Api` variants never carry anything as sensitive as an API-server message, so
+        // the wildcard arm keeps their `Display` unchanged instead of collapsing to a static
+        // string — there's nothing to strip, and doing so would only lose debugging signal.
+        let err = kube::Error::LinesCodecMaxLineLengthExceeded;
+        let summary = kube_err_summary(&err);
+        assert_eq!(summary, err.to_string());
     }
 }

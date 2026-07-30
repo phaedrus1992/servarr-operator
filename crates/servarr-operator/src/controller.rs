@@ -13,6 +13,7 @@ use kube::runtime::reflector::{self, ObjectRef};
 use kube::runtime::watcher;
 use kube::{Client, CustomResourceExt, Resource, ResourceExt};
 use servarr_api::AppKind;
+use servarr_api::k8s::kube_err_summary;
 use servarr_crds::{AppType, Condition, ServarrApp, ServarrAppStatus, condition_types};
 use thiserror::Error;
 use tokio::time::Duration;
@@ -1327,24 +1328,6 @@ struct ConditionSpec<'a> {
     fail_log: &'a str,
 }
 
-/// Returns a log-safe summary of a `kube::Error` that excludes the API server's free-text
-/// message/reason, keeping only the HTTP status code when available.
-///
-/// `kube::Error::Api`'s `Status` can carry arbitrary API-server detail in `message`/`reason`
-/// (resource names, RBAC denial text) — lower sensitivity than an upstream *arr app's response
-/// body, but still infra detail that shouldn't land verbatim in a tenant-visible Condition. Every
-/// other variant (transport, serde, discovery, config, ...) is bucketed to a single generic
-/// string rather than enumerated — `kube::Error` gains variants across minor versions, and the
-/// only one worth extracting structured detail from is `Api`'s status code; the rest never
-/// carried anything as sensitive as an API-server message to begin with, and matching a wildcard
-/// keeps this function correct without needing to track kube's variant list release to release.
-fn kube_err_summary(e: &kube::Error) -> String {
-    match e {
-        kube::Error::Api(status) => format!("Kubernetes API error (status: {})", status.code),
-        _ => "Kubernetes API error".to_string(),
-    }
-}
-
 /// Turn a reconcile sub-step `Result` into a status [`Condition`]: success
 /// yields an `ok` condition, failure yields a `fail` condition carrying the
 /// error string and emits a `warn!` keyed on `name`. (#15)
@@ -1662,6 +1645,9 @@ async fn maybe_run_backup(
     let base_url = format!("http://{app_name}.{ns}.svc:{port}");
 
     let app_kind = app_type_to_kind(&app.spec.app)?;
+    // Safe as-is: `ServarrClient::new` builds the client but never sends a request, so it can
+    // never return the response-body-derived `ApiResponse` variant; `{e}` here never echoes
+    // external content.
     let api_client = match servarr_api::ServarrClient::new(&base_url, &api_key, app_kind) {
         Ok(c) => c,
         Err(e) => {
@@ -2190,14 +2176,20 @@ async fn sync_prowlarr_apps(
                     .update_application(existing_app.id, &updated)
                     .await
                 {
-                    warn!(app = %app.name, error = %e, "failed to update Prowlarr application");
+                    let summary = e.log_summary();
+                    warn!(
+                        app = %app.name,
+                        error = %summary,
+                        "failed to update Prowlarr application"
+                    );
                 }
             }
         } else {
             // Add new
             info!(prowlarr = %prowlarr_name, app = %app.name, "adding application to Prowlarr");
             if let Err(e) = prowlarr_client.add_application(&new_app).await {
-                warn!(app = %app.name, error = %e, "failed to add Prowlarr application");
+                let summary = e.log_summary();
+                warn!(app = %app.name, error = %summary, "failed to add Prowlarr application");
             }
         }
     }
@@ -3297,31 +3289,6 @@ mod tests {
     use serde_json::json;
     use wiremock::matchers::{body_json, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
-
-    // ---- kube_err_summary ----
-
-    #[test]
-    fn kube_err_summary_drops_status_message_keeps_status_code() {
-        // kube-client is pinned to 3.1.0 (verify against Cargo.lock if this ever drifts):
-        // kube::Error::Api(Box<kube::core::Status>), Status { code: u16, message: String, ... }
-        // and Status derives Default, so only the fields under test need setting.
-        let status = kube::core::Status {
-            code: 403,
-            message: "secrets \"super-secret-name\" is forbidden: User cannot get".to_string(),
-            reason: "Forbidden".to_string(),
-            ..Default::default()
-        };
-        let err = kube::Error::Api(Box::new(status));
-        let summary = kube_err_summary(&err);
-        assert!(
-            summary.contains("403"),
-            "summary should keep the status code: {summary}"
-        );
-        assert!(
-            !summary.contains("super-secret-name"),
-            "summary must not leak the raw API server message: {summary}"
-        );
-    }
 
     // ---- json_is_subset ----
 

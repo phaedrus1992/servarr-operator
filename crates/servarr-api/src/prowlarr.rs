@@ -1,12 +1,10 @@
 use serde::{Deserialize, Serialize};
 
 use crate::client::ApiError;
+use crate::servarr_v3::SdkResponseStatus;
 
 fn map_sdk_err<T: std::fmt::Debug>(e: prowlarr::apis::Error<T>) -> ApiError {
-    let status = match &e {
-        prowlarr::apis::Error::ResponseError(rc) => rc.status.as_u16(),
-        _ => 0,
-    };
+    let status = e.response_status().unwrap_or(0);
     ApiError::ApiResponse {
         status,
         body: format!("{e:?}"),

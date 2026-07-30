@@ -1,6 +1,7 @@
 use serde::Serialize;
 
 use crate::client::ApiError;
+use crate::servarr_v3::SdkResponseStatus;
 
 /// Client for the Overseerr settings API.
 ///
@@ -18,10 +19,7 @@ struct LocalAuthRequest<'a> {
 }
 
 fn map_err<E: std::fmt::Debug>(e: overseerr::apis::Error<E>) -> ApiError {
-    let status = match &e {
-        overseerr::apis::Error::ResponseError(rc) => rc.status.as_u16(),
-        _ => 0,
-    };
+    let status = e.response_status().unwrap_or(0);
     ApiError::ApiResponse {
         status,
         body: format!("{e:?}"),
