@@ -37,6 +37,17 @@ pub enum Error {
     Internal(&'static str),
 }
 
+impl Error {
+    /// Returns a log-safe summary. The `Kube` variant delegates to [`kube_err_summary`]; the
+    /// other variants already only carry curated messages, never raw external response content.
+    pub fn log_summary(&self) -> String {
+        match self {
+            Self::Kube(e) => kube_err_summary(e),
+            other => other.to_string(),
+        }
+    }
+}
+
 pub fn print_crd() -> Result<()> {
     let crd = MediaStack::crd();
     let yaml = serde_yaml::to_string(&crd)?;
@@ -586,7 +597,7 @@ async fn patch_status(
 
 pub fn error_policy(_stack: Arc<MediaStack>, error: &Error, _ctx: Arc<Context>) -> Action {
     increment_stack_reconcile_total("error");
-    warn!(%error, "media-stack reconciliation failed, requeuing");
+    warn!(error = %error.log_summary(), "media-stack reconciliation failed, requeuing");
     Action::requeue(Duration::from_secs(60))
 }
 
@@ -602,6 +613,32 @@ mod tests {
     #[test]
     fn print_crd_returns_ok() {
         assert!(print_crd().is_ok());
+    }
+
+    #[test]
+    fn error_log_summary_kube_variant_drops_message_keeps_status_code() {
+        let status = kube::core::Status {
+            code: 403,
+            message: "secrets \"super-secret-name\" is forbidden: User cannot get".to_string(),
+            reason: "Forbidden".to_string(),
+            ..Default::default()
+        };
+        let err = Error::Kube(kube::Error::Api(Box::new(status)));
+        let summary = err.log_summary();
+        assert!(
+            summary.contains("403"),
+            "summary should keep the status code: {summary}"
+        );
+        assert!(
+            !summary.contains("super-secret-name"),
+            "summary must not leak the raw API server message: {summary}"
+        );
+    }
+
+    #[test]
+    fn error_log_summary_non_kube_variant_passes_through_unchanged() {
+        let err = Error::Internal("stack name is empty");
+        assert_eq!(err.log_summary(), err.to_string());
     }
 
     #[test]

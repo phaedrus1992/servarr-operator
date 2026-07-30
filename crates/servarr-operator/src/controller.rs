@@ -47,6 +47,17 @@ pub enum Error {
     AppDefaults(String),
 }
 
+impl Error {
+    /// Returns a log-safe summary. The `Kube` variant delegates to [`kube_err_summary`]; the
+    /// other variants already only carry curated messages, never raw external response content.
+    pub fn log_summary(&self) -> String {
+        match self {
+            Self::Kube(e) => kube_err_summary(e),
+            other => other.to_string(),
+        }
+    }
+}
+
 pub fn print_crd() -> Result<()> {
     let crd = ServarrApp::crd();
     let yaml = serde_yaml::to_string(&crd)?;
@@ -800,7 +811,7 @@ async fn patch_admin_credentials_checksum(
             warn!(
                 app = %app.name_any(),
                 secret = %secret_name,
-                error = %e,
+                error = %kube_err_summary(&e),
                 "admin-credentials: failed to fetch secret for checksum"
             );
             return Ok(());
@@ -1378,7 +1389,7 @@ pub(crate) async fn update_status(
             (replicas > 0, replicas)
         }
         Err(e) => {
-            warn!(%name, error = %e, "failed to get Deployment for status check, reporting not-ready");
+            warn!(%name, error = %kube_err_summary(&e), "failed to get Deployment for status check, reporting not-ready");
             (false, 0)
         }
     };
@@ -1501,11 +1512,11 @@ pub(crate) async fn update_status(
 pub fn error_policy(app: Arc<ServarrApp>, error: &Error, ctx: Arc<Context>) -> Action {
     let app_type = app.spec.app.as_str();
     increment_reconcile_total(app_type, "error");
-    warn!(%error, "reconciliation failed, requeuing");
+    let error_msg = error.log_summary();
+    warn!(error = %error_msg, "reconciliation failed, requeuing");
 
     let recorder = Recorder::new(ctx.client.clone(), ctx.reporter.clone());
     let obj_ref = app.object_ref(&());
-    let error_msg = error.to_string();
     tokio::spawn(async move {
         let _ = recorder
             .publish(
@@ -1843,7 +1854,7 @@ async fn maybe_restore_backup(
                     }
                 }
                 Err(e) => {
-                    warn!(%name, error = %e, "failed to check deployment status during restore");
+                    warn!(%name, error = %kube_err_summary(&e), "failed to check deployment status during restore");
                     break;
                 }
             }
@@ -2045,7 +2056,7 @@ pub(crate) async fn discover_namespace_apps(
         {
             Ok(k) => k,
             Err(e) => {
-                warn!(app = %app.name_any(), error = %e, "skipping app: failed to read API key");
+                warn!(app = %app.name_any(), error = %e.log_summary(), "skipping app: failed to read API key");
                 continue;
             }
         };
@@ -2238,7 +2249,7 @@ async fn prowlarr_sync_exists(client: &Client, namespace: &str) -> bool {
                 && a.spec.prowlarr_sync.as_ref().is_some_and(|s| s.enabled)
         }),
         Err(e) => {
-            warn!(error = %e, %namespace, "failed to list ServarrApps for prowlarr-sync check, assuming no sync exists");
+            warn!(error = %kube_err_summary(&e), %namespace, "failed to list ServarrApps for prowlarr-sync check, assuming no sync exists");
             false
         }
     }
@@ -2278,8 +2289,9 @@ async fn cleanup_prowlarr_registration(
         None => return Ok(()),
     };
 
-    let prowlarr_key =
-        servarr_api::read_secret_key(client, namespace, secret_name, "api-key").await?;
+    let prowlarr_key = servarr_api::read_secret_key(client, namespace, secret_name, "api-key")
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to read Prowlarr API key: {}", e.log_summary()))?;
 
     let prowlarr_app_name = servarr_resources::common::service_name(prowlarr);
     let prowlarr_defaults = servarr_crds::AppDefaults::for_app(&prowlarr.spec.app)
@@ -2784,7 +2796,7 @@ async fn sync_maintainerr_servers(
                 .into_iter()
                 .find(|app| app.spec.app == AppType::Plex),
             Err(e) => {
-                warn!(maintainerr = %maintainerr_name, error = %e,
+                warn!(maintainerr = %maintainerr_name, error = %kube_err_summary(&e),
                     "failed to list apps in target namespace; Plex will not be configured");
                 failures += 1;
                 None
@@ -3079,7 +3091,7 @@ async fn overseerr_sync_exists(client: &Client, namespace: &str) -> bool {
                 && a.spec.overseerr_sync.as_ref().is_some_and(|s| s.enabled)
         }),
         Err(e) => {
-            warn!(error = %e, %namespace, "failed to list ServarrApps for overseerr-sync check, assuming no sync exists");
+            warn!(error = %kube_err_summary(&e), %namespace, "failed to list ServarrApps for overseerr-sync check, assuming no sync exists");
             false
         }
     }
@@ -3125,8 +3137,9 @@ async fn cleanup_overseerr_registration(
     };
 
     let overseerr_ns = overseerr.namespace().unwrap_or_else(|| namespace.into());
-    let overseerr_key =
-        servarr_api::read_secret_key(client, &overseerr_ns, secret_name, "api-key").await?;
+    let overseerr_key = servarr_api::read_secret_key(client, &overseerr_ns, secret_name, "api-key")
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to read Overseerr API key: {}", e.log_summary()))?;
 
     let overseerr_app_name = servarr_resources::common::service_name(overseerr);
     let overseerr_defaults = servarr_crds::AppDefaults::for_app(&overseerr.spec.app)
@@ -3289,6 +3302,34 @@ mod tests {
     use serde_json::json;
     use wiremock::matchers::{body_json, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    // ---- Error::log_summary ----
+
+    #[test]
+    fn error_log_summary_kube_variant_drops_message_keeps_status_code() {
+        let status = kube::core::Status {
+            code: 403,
+            message: "secrets \"super-secret-name\" is forbidden: User cannot get".to_string(),
+            reason: "Forbidden".to_string(),
+            ..Default::default()
+        };
+        let err = Error::Kube(kube::Error::Api(Box::new(status)));
+        let summary = err.log_summary();
+        assert!(
+            summary.contains("403"),
+            "summary should keep the status code: {summary}"
+        );
+        assert!(
+            !summary.contains("super-secret-name"),
+            "summary must not leak the raw API server message: {summary}"
+        );
+    }
+
+    #[test]
+    fn error_log_summary_non_kube_variant_passes_through_unchanged() {
+        let err = Error::AppDefaults("missing entry for AppType::Radarr".to_string());
+        assert_eq!(err.log_summary(), err.to_string());
+    }
 
     // ---- json_is_subset ----
 
