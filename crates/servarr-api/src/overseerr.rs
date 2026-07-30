@@ -129,8 +129,9 @@ impl OverseerrClient {
             .send()
             .await
             .map_err(|e| ApiError::ApiResponse {
-                // reqwest::Error here means the request itself failed to complete (DNS, connect,
-                // timeout) — there is no HTTP response to read a status from. 0 is accurate, not a bug.
+                // reqwest::Error here means the request itself failed to complete (DNS,
+                // connect, timeout) — there is no HTTP response to read a status from.
+                // 0 is accurate, not a bug.
                 status: 0,
                 body: e.to_string(),
             })?;
