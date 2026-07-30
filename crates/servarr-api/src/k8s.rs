@@ -14,6 +14,23 @@ pub enum SecretError {
     InvalidUtf8 { name: String, key: String },
 }
 
+impl SecretError {
+    /// Returns a log-safe summary. The `Kube` variant applies the same status-only reduction as
+    /// `kube_err_summary` in the operator crate (duplicated rather than shared — `k8s.rs` doesn't
+    /// depend on `servarr-operator`, and this is a two-line match, not worth a new shared crate);
+    /// the other variants already only carry curated secret/key names, never external response
+    /// content, so their `Display` is safe as-is.
+    pub fn log_summary(&self) -> String {
+        match self {
+            Self::Kube(kube::Error::Api(status)) => {
+                format!("Kubernetes API error (status: {})", status.code)
+            }
+            Self::Kube(_) => "Kubernetes API error".to_string(),
+            other => other.to_string(),
+        }
+    }
+}
+
 /// Read a single key from a Kubernetes Secret.
 ///
 /// The value is returned as a decoded UTF-8 string (Kubernetes stores
@@ -41,4 +58,55 @@ pub async fn read_secret_key(
         name: secret_name.to_string(),
         key: key.to_string(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn log_summary_kube_variant_drops_message_keeps_status_code() {
+        let status = kube::core::Status {
+            code: 403,
+            message: "secrets \"super-secret-name\" is forbidden: User cannot get".to_string(),
+            reason: "Forbidden".to_string(),
+            ..Default::default()
+        };
+        let err = SecretError::Kube(kube::Error::Api(Box::new(status)));
+        let summary = err.log_summary();
+        assert!(
+            summary.contains("403"),
+            "summary should keep the status code: {summary}"
+        );
+        assert!(
+            !summary.contains("super-secret-name"),
+            "summary must not leak the raw API server message: {summary}"
+        );
+    }
+
+    #[test]
+    fn log_summary_no_data_passes_through_unchanged() {
+        let err = SecretError::NoData {
+            name: "my-secret".to_string(),
+        };
+        assert_eq!(err.log_summary(), err.to_string());
+    }
+
+    #[test]
+    fn log_summary_key_not_found_passes_through_unchanged() {
+        let err = SecretError::KeyNotFound {
+            name: "my-secret".to_string(),
+            key: "api-key".to_string(),
+        };
+        assert_eq!(err.log_summary(), err.to_string());
+    }
+
+    #[test]
+    fn log_summary_invalid_utf8_passes_through_unchanged() {
+        let err = SecretError::InvalidUtf8 {
+            name: "my-secret".to_string(),
+            key: "api-key".to_string(),
+        };
+        assert_eq!(err.log_summary(), err.to_string());
+    }
 }

@@ -1318,6 +1318,24 @@ struct ConditionSpec<'a> {
     fail_log: &'a str,
 }
 
+/// Returns a log-safe summary of a `kube::Error` that excludes the API server's free-text
+/// message/reason, keeping only the HTTP status code when available.
+///
+/// `kube::Error::Api`'s `Status` can carry arbitrary API-server detail in `message`/`reason`
+/// (resource names, RBAC denial text) — lower sensitivity than an upstream *arr app's response
+/// body, but still infra detail that shouldn't land verbatim in a tenant-visible Condition. Every
+/// other variant (transport, serde, discovery, config, ...) is bucketed to a single generic
+/// string rather than enumerated — `kube::Error` gains variants across minor versions, and the
+/// only one worth extracting structured detail from is `Api`'s status code; the rest never
+/// carried anything as sensitive as an API-server message to begin with, and matching a wildcard
+/// keeps this function correct without needing to track kube's variant list release to release.
+fn kube_err_summary(e: &kube::Error) -> String {
+    match e {
+        kube::Error::Api(status) => format!("Kubernetes API error (status: {})", status.code),
+        _ => "Kubernetes API error".to_string(),
+    }
+}
+
 /// Turn a reconcile sub-step `Result` into a status [`Condition`]: success
 /// yields an `ok` condition, failure yields a `fail` condition carrying the
 /// error string and emits a `warn!` keyed on `name`. (#15)
@@ -1809,7 +1827,9 @@ async fn maybe_restore_backup(
         deploy_api
             .patch(name, &PatchParams::default(), &Patch::Merge(scale_down))
             .await
-            .map_err(|e| anyhow::anyhow!("failed to scale down for restore: {e}"))?;
+            .map_err(|e| {
+                anyhow::anyhow!("failed to scale down for restore: {}", kube_err_summary(&e))
+            })?;
 
         // Wait for pods to terminate (poll for up to 60 seconds)
         for _ in 0..12 {
@@ -1871,7 +1891,13 @@ async fn maybe_restore_backup(
             &Patch::Merge(remove_annotation),
         )
         .await
-        .map_err(|e| anyhow::anyhow!("restore succeeded but failed to remove annotation (will re-trigger on next reconcile): {e}"))?;
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "restore succeeded but failed to remove annotation \
+                 (will re-trigger on next reconcile): {}",
+                kube_err_summary(&e)
+            )
+        })?;
 
     Ok(())
 }
@@ -1898,7 +1924,7 @@ async fn try_restore(
         .ok_or_else(|| anyhow::anyhow!("no api_key_secret configured, cannot restore"))?;
     let api_key = servarr_api::read_secret_key(client, ns, secret_name, "api-key")
         .await
-        .map_err(|e| anyhow::anyhow!("failed to read API key for restore: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("failed to read API key for restore: {}", e.log_summary()))?;
 
     let app_name = servarr_resources::common::service_name(app);
     let defaults = servarr_crds::AppDefaults::for_app(&app.spec.app)
@@ -1914,6 +1940,8 @@ async fn try_restore(
         ));
     };
 
+    // Safe as-is: `ServarrClient::new` only ever returns `InvalidUrl`/`InvalidApiKey`, never a
+    // response-body-derived `ApiResponse` error, so `{e}` here never echoes external content.
     let servarr_client = servarr_api::ServarrClient::new(&base_url, &api_key, app_kind)
         .map_err(|e| anyhow::anyhow!("failed to create API client for restore: {e}"))?;
 
@@ -1936,21 +1964,24 @@ async fn try_restore(
             Ok(())
         }
         Err(e) => {
-            warn!(%name, backup_id, error = %e, "restore API call failed");
+            let summary = e.log_summary();
+            warn!(%name, backup_id, error = %summary, "restore API call failed");
             increment_backup_operations(app.spec.app.as_str(), "restore", "error");
             let _ = recorder
                 .publish(
                     &Event {
                         type_: EventType::Warning,
                         reason: "RestoreFailed".into(),
-                        note: Some(format!("Failed to restore from backup {backup_id}: {e}")),
+                        note: Some(format!(
+                            "Failed to restore from backup {backup_id}: {summary}"
+                        )),
                         action: "Restore".into(),
                         secondary: None,
                     },
                     obj_ref,
                 )
                 .await;
-            Err(anyhow::anyhow!("restore API call failed: {e}"))
+            Err(anyhow::anyhow!("restore API call failed: {summary}"))
         }
     }
 }
@@ -1988,7 +2019,7 @@ pub(crate) async fn discover_namespace_apps(
     let apps = api
         .list(&ListParams::default())
         .await
-        .map_err(|e| anyhow::anyhow!("failed to list ServarrApps: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("failed to list ServarrApps: {}", kube_err_summary(&e)))?;
 
     let mut discovered = Vec::new();
     for app in &apps {
@@ -2569,10 +2600,11 @@ async fn sync_bazarr_apps(
                     .configure_sonarr(&app.host, app.port, &app.api_key)
                     .await
                 {
-                    warn!(bazarr = %bazarr_name, sonarr = %app.name, error = %e,
+                    let summary = e.log_summary();
+                    warn!(bazarr = %bazarr_name, sonarr = %app.name, error = %summary,
                         "failed to configure Sonarr in Bazarr");
                     first_error.get_or_insert_with(|| {
-                        anyhow::anyhow!("configure_sonarr({}) failed: {e}", app.name)
+                        anyhow::anyhow!("configure_sonarr({}) failed: {summary}", app.name)
                     });
                 }
             }
@@ -2582,10 +2614,11 @@ async fn sync_bazarr_apps(
                     .configure_radarr(&app.host, app.port, &app.api_key)
                     .await
                 {
-                    warn!(bazarr = %bazarr_name, radarr = %app.name, error = %e,
+                    let summary = e.log_summary();
+                    warn!(bazarr = %bazarr_name, radarr = %app.name, error = %summary,
                         "failed to configure Radarr in Bazarr");
                     first_error.get_or_insert_with(|| {
-                        anyhow::anyhow!("configure_radarr({}) failed: {e}", app.name)
+                        anyhow::anyhow!("configure_radarr({}) failed: {summary}", app.name)
                     });
                 }
             }
@@ -2595,12 +2628,14 @@ async fn sync_bazarr_apps(
 
     if auto_remove {
         if !has_sonarr && let Err(e) = bazarr_client.disable_sonarr().await {
-            warn!(bazarr = %bazarr_name, error = %e, "failed to disable Sonarr in Bazarr");
-            first_error.get_or_insert_with(|| anyhow::anyhow!("disable_sonarr failed: {e}"));
+            let summary = e.log_summary();
+            warn!(bazarr = %bazarr_name, error = %summary, "failed to disable Sonarr in Bazarr");
+            first_error.get_or_insert_with(|| anyhow::anyhow!("disable_sonarr failed: {summary}"));
         }
         if !has_radarr && let Err(e) = bazarr_client.disable_radarr().await {
-            warn!(bazarr = %bazarr_name, error = %e, "failed to disable Radarr in Bazarr");
-            first_error.get_or_insert_with(|| anyhow::anyhow!("disable_radarr failed: {e}"));
+            let summary = e.log_summary();
+            warn!(bazarr = %bazarr_name, error = %summary, "failed to disable Radarr in Bazarr");
+            first_error.get_or_insert_with(|| anyhow::anyhow!("disable_radarr failed: {summary}"));
         }
     }
 
@@ -2744,9 +2779,10 @@ async fn sync_maintainerr_servers(
         .list_sonarr()
         .await
         .map_err(|e| {
-            error!(maintainerr = %maintainerr_name, error = %e,
+            let summary = e.log_summary();
+            error!(maintainerr = %maintainerr_name, error = %summary,
                 "failed to list existing Sonarr servers from Maintainerr; aborting sync to prevent duplicates");
-            anyhow::anyhow!("list_sonarr failed: {e}")
+            anyhow::anyhow!("list_sonarr failed: {summary}")
         })?
         .into_iter()
         .map(|s| s.name)
@@ -2755,9 +2791,10 @@ async fn sync_maintainerr_servers(
         .list_radarr()
         .await
         .map_err(|e| {
-            error!(maintainerr = %maintainerr_name, error = %e,
+            let summary = e.log_summary();
+            error!(maintainerr = %maintainerr_name, error = %summary,
                 "failed to list existing Radarr servers from Maintainerr; aborting sync to prevent duplicates");
-            anyhow::anyhow!("list_radarr failed: {e}")
+            anyhow::anyhow!("list_radarr failed: {summary}")
         })?
         .into_iter()
         .map(|s| s.name)
@@ -2915,7 +2952,7 @@ async fn sync_subgen_jellyfin(
     let app_list = all_apps
         .list(&kube::api::ListParams::default())
         .await
-        .map_err(|e| anyhow::anyhow!("failed to list ServarrApps: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("failed to list ServarrApps: {}", kube_err_summary(&e)))?;
 
     let jellyfin = match app_list
         .items
@@ -2946,7 +2983,12 @@ async fn sync_subgen_jellyfin(
     // Verify the secret is readable; the Deployment will reference it via secretKeyRef.
     servarr_api::read_secret_key(client, target_ns, &jf_secret_name, "api-key")
         .await
-        .map_err(|e| anyhow::anyhow!("Jellyfin API key secret {jf_secret_name} unreadable: {e}"))?;
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "Jellyfin API key secret {jf_secret_name} unreadable: {}",
+                e.log_summary()
+            )
+        })?;
 
     let jf_app_name = servarr_resources::common::service_name(jellyfin);
     let jf_defaults = servarr_crds::AppDefaults::for_app(&jellyfin.spec.app)
@@ -2993,7 +3035,12 @@ async fn sync_subgen_jellyfin(
     deploy_api
         .patch(&subgen_name, &pp, &Patch::Apply(patch))
         .await
-        .map_err(|e| anyhow::anyhow!("failed to patch Subgen Deployment: {e}"))?;
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "failed to patch Subgen Deployment: {}",
+                kube_err_summary(&e)
+            )
+        })?;
 
     info!(subgen = %subgen_name, jellyfin = %jf_app_name, "subgen-sync: injected Jellyfin env vars");
     Ok(())
@@ -3219,6 +3266,31 @@ mod tests {
     use serde_json::json;
     use wiremock::matchers::{body_json, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    // ---- kube_err_summary ----
+
+    #[test]
+    fn kube_err_summary_drops_status_message_keeps_status_code() {
+        // kube-client is pinned to 3.1.0 (verify against Cargo.lock if this ever drifts):
+        // kube::Error::Api(Box<kube::core::Status>), Status { code: u16, message: String, ... }
+        // and Status derives Default, so only the fields under test need setting.
+        let status = kube::core::Status {
+            code: 403,
+            message: "secrets \"super-secret-name\" is forbidden: User cannot get".to_string(),
+            reason: "Forbidden".to_string(),
+            ..Default::default()
+        };
+        let err = kube::Error::Api(Box::new(status));
+        let summary = kube_err_summary(&err);
+        assert!(
+            summary.contains("403"),
+            "summary should keep the status code: {summary}"
+        );
+        assert!(
+            !summary.contains("super-secret-name"),
+            "summary must not leak the raw API server message: {summary}"
+        );
+    }
 
     // ---- json_is_subset ----
 
