@@ -29,17 +29,33 @@ impl ApiError {
     /// downstream API may echo back the submitted credential (API keys, tokens,
     /// passwords) in a validation error message.
     ///
-    /// Deliberately an exhaustive match with no wildcard arm: a future
-    /// variant that carries response-body content must add its own case
-    /// here rather than silently falling through to `Display` (which is
-    /// unsanitized by default) — see the `OperationFailed` case, added
-    /// after `message` was found leaking the Maintainerr `{status:"NOK",
-    /// message}` envelope body verbatim through the wildcard this replaced.
+    /// Deliberately an exhaustive match with no wildcard arm: a future variant that
+    /// carries response-body content must add its own case here rather than silently
+    /// falling through to `Display` (which is unsanitized by default). `Request` gets
+    /// its own reduction rather than `self.to_string()` — `reqwest::Error`'s `Display`
+    /// appends the full request URL, and Sabnzbd/Tautulli send API keys and admin
+    /// passwords as query parameters, so that URL can carry credentials.
+    /// `OperationFailed`'s `message` is upstream-controlled response content
+    /// (Maintainerr's `{status:"NOK", message}` envelope) and can echo a submitted
+    /// `apiKey` back the same way.
     pub fn log_summary(&self) -> String {
         match self {
             Self::ApiResponse { status, .. } => format!("HTTP API error (status: {status})"),
+            Self::Request(e) => format!(
+                "HTTP request failed ({})",
+                if e.is_timeout() {
+                    "timeout"
+                } else if e.is_connect() {
+                    "connect"
+                } else if e.is_decode() {
+                    "decode"
+                } else {
+                    "transport"
+                }
+            ),
             Self::OperationFailed { .. } => "operation rejected by API".to_string(),
-            Self::Request(_) | Self::InvalidUrl(_) | Self::InvalidApiKey => self.to_string(),
+            Self::InvalidUrl(_) => "invalid base URL".to_string(),
+            Self::InvalidApiKey => Self::InvalidApiKey.to_string(),
         }
     }
 }
@@ -155,30 +171,61 @@ mod tests {
     use super::*;
 
     #[test]
-    fn log_summary_excludes_api_response_body() {
+    fn log_summary_hides_response_body_for_api_response() {
         let err = ApiError::ApiResponse {
-            status: 500,
-            body: "leaked internal stack trace /etc/secrets".into(),
+            status: 401,
+            body: "invalid api key SUPER-SECRET-KEY".to_string(),
         };
         let summary = err.log_summary();
-        assert!(!summary.contains("leaked internal stack trace"));
-        assert!(summary.contains("500"));
+        assert!(summary.contains("401"));
+        assert!(!summary.contains("SUPER-SECRET-KEY"));
     }
 
     #[test]
-    fn log_summary_excludes_operation_failed_message() {
-        // The Maintainerr {status:"NOK", message} envelope lifts `message`
-        // verbatim from the upstream response body (#398 follow-up).
+    fn log_summary_hides_message_for_operation_failed() {
+        // The Maintainerr {status:"NOK", message} envelope lifts `message` verbatim from
+        // the upstream response body (#398 follow-up).
         let err = ApiError::OperationFailed {
-            message: "leaked internal detail from upstream envelope".into(),
+            message: "rejected apiKey=SUPER-SECRET-KEY".to_string(),
         };
         let summary = err.log_summary();
-        assert!(!summary.contains("leaked internal detail"));
+        assert_eq!(summary, "operation rejected by API");
+        assert!(!summary.contains("SUPER-SECRET-KEY"));
     }
 
     #[test]
     fn log_summary_invalid_api_key_matches_display() {
         let err = ApiError::InvalidApiKey;
         assert_eq!(err.log_summary(), err.to_string());
+    }
+
+    /// Regression test for the credential-leak this fix closes: `reqwest::Error`'s `Display`
+    /// includes the full request URL (verified against the pinned `reqwest` version), and
+    /// Sabnzbd/Tautulli send credentials as query parameters — so `ApiError::Request` reaching
+    /// `log_summary()` used to leak them via the previous wildcard-arm passthrough.
+    #[tokio::test]
+    async fn log_summary_hides_url_for_request_error() {
+        // Port 1 is reserved and never listening, guaranteeing a connect failure without
+        // depending on external network state.
+        let client = HttpClient::new("http://127.0.0.1:1", None).expect("valid base url");
+        let path =
+            "?mode=set_config&keyword=password&value=SUPER-SECRET-PASSWORD&apikey=SUPER-SECRET-KEY";
+        let result: Result<serde_json::Value, ApiError> = client.get(path).await;
+
+        let err = result.expect_err("connection to port 1 must fail");
+        assert!(
+            matches!(err, ApiError::Request(_)),
+            "expected ApiError::Request, got {err:?}"
+        );
+
+        // The raw error still carries the URL (that's the bug this fix guards against) —
+        // assert the precondition holds, so this test would fail loudly if reqwest ever
+        // stopped including it, rather than passing for the wrong reason.
+        assert!(err.to_string().contains("SUPER-SECRET-KEY"));
+
+        let summary = err.log_summary();
+        assert!(!summary.contains("SUPER-SECRET-KEY"));
+        assert!(!summary.contains("SUPER-SECRET-PASSWORD"));
+        assert!(!summary.contains("127.0.0.1"));
     }
 }

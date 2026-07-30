@@ -117,9 +117,66 @@ fn oo_str(v: &Option<Option<String>>) -> String {
         .to_string()
 }
 
-fn map_sdk_err<E: std::fmt::Debug>(e: E) -> ApiError {
+/// Extracts the real HTTP status from a generated OpenAPI SDK error, when one exists.
+///
+/// The five generated `apis::Error<T>` types (sonarr/radarr/lidarr/prowlarr/overseerr) are
+/// structurally identical but not the same Rust type, so this trait unifies them for
+/// `map_sdk_err` (and `prowlarr`/`overseerr`'s own crate-local `map_*` functions) without
+/// forcing every `.map_err(...)` call site to name the concrete SDK crate. `pub(crate)` so the
+/// other client modules in this crate can reuse it instead of re-implementing the same match.
+pub(crate) trait SdkResponseStatus {
+    fn response_status(&self) -> Option<u16>;
+}
+
+impl<T> SdkResponseStatus for sonarr::apis::Error<T> {
+    fn response_status(&self) -> Option<u16> {
+        match self {
+            Self::ResponseError(rc) => Some(rc.status.as_u16()),
+            _ => None,
+        }
+    }
+}
+
+impl<T> SdkResponseStatus for radarr::apis::Error<T> {
+    fn response_status(&self) -> Option<u16> {
+        match self {
+            Self::ResponseError(rc) => Some(rc.status.as_u16()),
+            _ => None,
+        }
+    }
+}
+
+impl<T> SdkResponseStatus for lidarr::apis::Error<T> {
+    fn response_status(&self) -> Option<u16> {
+        match self {
+            Self::ResponseError(rc) => Some(rc.status.as_u16()),
+            _ => None,
+        }
+    }
+}
+
+impl<T> SdkResponseStatus for prowlarr::apis::Error<T> {
+    fn response_status(&self) -> Option<u16> {
+        match self {
+            Self::ResponseError(rc) => Some(rc.status.as_u16()),
+            _ => None,
+        }
+    }
+}
+
+impl<T> SdkResponseStatus for overseerr::apis::Error<T> {
+    fn response_status(&self) -> Option<u16> {
+        match self {
+            Self::ResponseError(rc) => Some(rc.status.as_u16()),
+            _ => None,
+        }
+    }
+}
+
+fn map_sdk_err<E: std::fmt::Debug + SdkResponseStatus>(e: E) -> ApiError {
+    let status = e.response_status().unwrap_or(0);
     ApiError::ApiResponse {
-        status: 0,
+        status,
         body: format!("{e:?}"),
     }
 }
@@ -553,14 +610,32 @@ mod tests {
     }
 
     #[test]
-    fn map_sdk_err_formats_debug() {
-        let err = map_sdk_err("something went wrong");
+    fn map_sdk_err_preserves_response_status() {
+        let response_err = sonarr::apis::Error::ResponseError(sonarr::apis::ResponseContent {
+            status: reqwest::StatusCode::UNAUTHORIZED,
+            content: "invalid api key".to_string(),
+            entity: None::<()>,
+        });
+        let err = map_sdk_err(response_err);
         match err {
             ApiError::ApiResponse { status, body } => {
-                assert_eq!(status, 0);
-                assert_eq!(body, "\"something went wrong\"");
+                assert_eq!(status, 401);
+                assert!(body.contains("invalid api key"));
             }
-            other => panic!("expected ApiResponse, got: {other}"),
+            other => panic!("expected ApiResponse, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn map_sdk_err_falls_back_to_zero_for_non_response_errors() {
+        // Serde/Io/Reqwest variants never carry a real HTTP status — 0 is correct here,
+        // not a bug: it accurately means "no HTTP response was involved".
+        let serde_err: sonarr::apis::Error<()> =
+            sonarr::apis::Error::Serde(serde_json::from_str::<()>("not json").unwrap_err());
+        let err = map_sdk_err(serde_err);
+        match err {
+            ApiError::ApiResponse { status, .. } => assert_eq!(status, 0),
+            other => panic!("expected ApiResponse, got {other:?}"),
         }
     }
 
