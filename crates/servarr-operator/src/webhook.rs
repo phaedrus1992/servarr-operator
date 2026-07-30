@@ -1911,7 +1911,9 @@ mod tests {
         // The list call fails with a 403 whose message echoes a service-account name — must not
         // leak into the admission-webhook rejection message shown to whoever ran `kubectl apply`.
         Mock::given(method("GET"))
-            .and(path("/apis/servarr.dev/v1alpha1/namespaces/test/servarrapps"))
+            .and(path(
+                "/apis/servarr.dev/v1alpha1/namespaces/test/servarrapps",
+            ))
             .respond_with(ResponseTemplate::new(403).set_body_json(json!({
                 "apiVersion": "v1",
                 "kind": "Status",
