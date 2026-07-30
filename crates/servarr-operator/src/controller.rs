@@ -13,6 +13,7 @@ use kube::runtime::reflector::{self, ObjectRef};
 use kube::runtime::watcher;
 use kube::{Client, CustomResourceExt, Resource, ResourceExt};
 use servarr_api::AppKind;
+use servarr_api::k8s::kube_err_summary;
 use servarr_crds::{AppType, Condition, ServarrApp, ServarrAppStatus, condition_types};
 use thiserror::Error;
 use tokio::time::Duration;
@@ -541,7 +542,7 @@ pub async fn reconcile(app: Arc<ServarrApp>, ctx: Arc<Context>) -> Result<Action
     }
 
     // Build and apply cert-manager Certificate (if TLS is enabled)
-    if let Some(cert) = servarr_resources::certificate::build(&app) {
+    if let Some(cert) = servarr_resources::certificate::build(&app).map_err(Error::AppDefaults)? {
         let api_resource = kube::discovery::ApiResource {
             group: "cert-manager.io".into(),
             version: "v1".into(),
@@ -957,12 +958,16 @@ pub(crate) async fn sync_admin_credentials(
     {
         Ok(v) => v,
         Err(e) => {
-            warn!(app = %app.name_any(), error = %e, "admin-credentials: failed to read username");
+            let summary = e.log_summary();
+            warn!(
+                app = %app.name_any(), error = %summary,
+                "admin-credentials: failed to read username"
+            );
             return Some(Condition {
                 condition_type: condition_types::ADMIN_CREDENTIALS_CONFIGURED.to_string(),
                 status: "Unknown".to_string(),
                 reason: "SecretReadError".to_string(),
-                message: e.log_summary(),
+                message: summary,
                 last_transition_time: now,
             });
         }
@@ -971,12 +976,16 @@ pub(crate) async fn sync_admin_credentials(
     {
         Ok(v) => v,
         Err(e) => {
-            warn!(app = %app.name_any(), error = %e, "admin-credentials: failed to read password");
+            let summary = e.log_summary();
+            warn!(
+                app = %app.name_any(), error = %summary,
+                "admin-credentials: failed to read password"
+            );
             return Some(Condition {
                 condition_type: condition_types::ADMIN_CREDENTIALS_CONFIGURED.to_string(),
                 status: "Unknown".to_string(),
                 reason: "SecretReadError".to_string(),
-                message: e.log_summary(),
+                message: summary,
                 last_transition_time: now,
             });
         }
@@ -1218,12 +1227,13 @@ pub(crate) async fn check_api_health(
     let api_key = match servarr_api::read_secret_key(client, ns, secret_name, "api-key").await {
         Ok(k) => k,
         Err(e) => {
-            warn!(error = %e, "failed to read API key secret");
+            let summary = e.log_summary();
+            warn!(error = %summary, "failed to read API key secret");
             let cond = Condition {
                 condition_type: condition_types::APP_HEALTHY.to_string(),
                 status: "Unknown".to_string(),
                 reason: "SecretReadError".to_string(),
-                message: e.to_string(),
+                message: summary,
                 last_transition_time: now,
             };
             return (Some(cond), None);
@@ -1260,29 +1270,41 @@ pub(crate) async fn check_api_health(
             match servarr_api::ServarrClient::new(&base_url, &api_key, app_kind) {
                 Ok(c) => {
                     let h = c.is_healthy().await.map_err(|e| {
-                        warn!(app = %app.name_any(), error = %e, "health check failed");
-                        e.log_summary()
+                        let summary = e.log_summary();
+                        warn!(app = %app.name_any(), error = %summary, "health check failed");
+                        summary
                     });
                     let uc = check_update_available(&c, &now).await;
                     (h, uc)
                 }
                 Err(e) => {
-                    warn!(app = %app.name_any(), error = %e, "failed to construct API client for health check");
-                    (Err(e.log_summary()), None)
+                    let summary = e.log_summary();
+                    warn!(
+                        app = %app.name_any(),
+                        error = %summary,
+                        "failed to construct API client for health check"
+                    );
+                    (Err(summary), None)
                 }
             }
         }
         AppType::Sabnzbd => match servarr_api::SabnzbdClient::new(&base_url, &api_key) {
             Ok(c) => {
                 let h = c.is_healthy().await.map_err(|e| {
-                    warn!(app = %app.name_any(), error = %e, "health check failed");
-                    e.log_summary()
+                    let summary = e.log_summary();
+                    warn!(app = %app.name_any(), error = %summary, "health check failed");
+                    summary
                 });
                 (h, None)
             }
             Err(e) => {
-                warn!(app = %app.name_any(), error = %e, "failed to construct API client for health check");
-                (Err(e.log_summary()), None)
+                let summary = e.log_summary();
+                warn!(
+                    app = %app.name_any(),
+                    error = %summary,
+                    "failed to construct API client for health check"
+                );
+                (Err(summary), None)
             }
         },
         AppType::Transmission => {
@@ -1321,41 +1343,59 @@ pub(crate) async fn check_api_health(
             ) {
                 Ok(c) => {
                     let h = c.is_healthy().await.map_err(|e| {
-                        warn!(app = %app.name_any(), error = %e, "health check failed");
-                        e.log_summary()
+                        let summary = e.log_summary();
+                        warn!(app = %app.name_any(), error = %summary, "health check failed");
+                        summary
                     });
                     (h, None)
                 }
                 Err(e) => {
-                    warn!(app = %app.name_any(), error = %e, "failed to construct API client for health check");
-                    (Err(e.log_summary()), None)
+                    let summary = e.log_summary();
+                    warn!(
+                        app = %app.name_any(),
+                        error = %summary,
+                        "failed to construct API client for health check"
+                    );
+                    (Err(summary), None)
                 }
             }
         }
         AppType::Jellyfin => match servarr_api::JellyfinClient::new(&base_url) {
             Ok(c) => {
                 let h = c.is_healthy().await.map_err(|e| {
-                    warn!(app = %app.name_any(), error = %e, "health check failed");
-                    e.log_summary()
+                    let summary = e.log_summary();
+                    warn!(app = %app.name_any(), error = %summary, "health check failed");
+                    summary
                 });
                 (h, None)
             }
             Err(e) => {
-                warn!(app = %app.name_any(), error = %e, "failed to construct API client for health check");
-                (Err(e.log_summary()), None)
+                let summary = e.log_summary();
+                warn!(
+                    app = %app.name_any(),
+                    error = %summary,
+                    "failed to construct API client for health check"
+                );
+                (Err(summary), None)
             }
         },
         AppType::Plex => match servarr_api::PlexClient::new(&base_url) {
             Ok(c) => {
                 let h = c.is_healthy().await.map_err(|e| {
-                    warn!(app = %app.name_any(), error = %e, "health check failed");
-                    e.log_summary()
+                    let summary = e.log_summary();
+                    warn!(app = %app.name_any(), error = %summary, "health check failed");
+                    summary
                 });
                 (h, None)
             }
             Err(e) => {
-                warn!(app = %app.name_any(), error = %e, "failed to construct API client for health check");
-                (Err(e.log_summary()), None)
+                let summary = e.log_summary();
+                warn!(
+                    app = %app.name_any(),
+                    error = %summary,
+                    "failed to construct API client for health check"
+                );
+                (Err(summary), None)
             }
         },
         _ => return (None, None),
@@ -1686,9 +1726,10 @@ pub(crate) async fn maybe_run_backup(
     let api_key = match servarr_api::read_secret_key(client, ns, secret_name, "api-key").await {
         Ok(k) => k,
         Err(e) => {
-            warn!(error = %e, "backup: failed to read API key");
+            let summary = e.log_summary();
+            warn!(error = %summary, "backup: failed to read API key");
             return Some(servarr_crds::BackupStatus {
-                last_backup_result: Some(format!("secret read error: {e}")),
+                last_backup_result: Some(format!("secret read error: {summary}")),
                 ..Default::default()
             });
         }
@@ -1783,6 +1824,9 @@ pub(crate) async fn maybe_run_backup(
         .unwrap_or_else(|| format!("http://{app_name}.{ns}.svc:{port}"));
 
     let app_kind = app_type_to_kind(&app.spec.app)?;
+    // Safe as-is: `ServarrClient::new` builds the client but never sends a request, so it can
+    // never return the response-body-derived `ApiResponse` variant; `{e}` here never echoes
+    // external content.
     let api_client = match servarr_api::ServarrClient::new(&base_url, &api_key, app_kind) {
         Ok(c) => c,
         Err(e) => {
@@ -1871,16 +1915,16 @@ pub(crate) async fn maybe_run_backup(
             })
         }
         Err(e) => {
-            warn!(app = %app_name, error = %e, "backup failed");
+            let summary = e.log_summary();
+            warn!(app = %app_name, error = %summary, "backup failed");
             increment_backup_operations(app_type, "backup", "error");
-            let error_summary = e.log_summary();
             publish_event(
                 recorder,
                 obj_ref,
                 Event {
                     type_: EventType::Warning,
                     reason: "BackupFailed".into(),
-                    note: Some(format!("Backup failed: {error_summary}")),
+                    note: Some(format!("Backup failed: {summary}")),
                     action: "Backup".into(),
                     secondary: None,
                 },
@@ -1888,7 +1932,7 @@ pub(crate) async fn maybe_run_backup(
             .await;
             Some(servarr_crds::BackupStatus {
                 last_backup_time: last_backup.map(|_| chrono_now()),
-                last_backup_result: Some(format!("error: {error_summary}")),
+                last_backup_result: Some(format!("error: {summary}")),
                 backup_count: 0,
             })
         }
@@ -1959,7 +2003,9 @@ pub(crate) async fn maybe_restore_backup(
         deploy_api
             .patch(name, &PatchParams::default(), &Patch::Merge(scale_down))
             .await
-            .map_err(|e| anyhow::anyhow!("failed to scale down for restore: {e}"))?;
+            .map_err(|e| {
+                anyhow::anyhow!("failed to scale down for restore: {}", kube_err_summary(&e))
+            })?;
 
         // Wait for pods to terminate (poll for up to 60 seconds)
         for _ in 0..12 {
@@ -2023,7 +2069,13 @@ pub(crate) async fn maybe_restore_backup(
             &Patch::Merge(remove_annotation),
         )
         .await
-        .map_err(|e| anyhow::anyhow!("restore succeeded but failed to remove annotation (will re-trigger on next reconcile): {e}"))?;
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "restore succeeded but failed to remove annotation \
+                 (will re-trigger on next reconcile): {}",
+                kube_err_summary(&e)
+            )
+        })?;
 
     Ok(())
 }
@@ -2051,7 +2103,7 @@ pub(crate) async fn try_restore(
         .ok_or_else(|| anyhow::anyhow!("no api_key_secret configured, cannot restore"))?;
     let api_key = servarr_api::read_secret_key(client, ns, secret_name, "api-key")
         .await
-        .map_err(|e| anyhow::anyhow!("failed to read API key for restore: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("failed to read API key for restore: {}", e.log_summary()))?;
 
     let app_name = servarr_resources::common::service_name(app);
     let defaults = servarr_crds::AppDefaults::try_for_app(&app.spec.app)
@@ -2069,6 +2121,9 @@ pub(crate) async fn try_restore(
         ));
     };
 
+    // Safe as-is: `ServarrClient::new` builds the client but never sends a request, so it can
+    // never return the response-body-derived `ApiResponse` variant; `{e}` here never echoes
+    // external content.
     let servarr_client = servarr_api::ServarrClient::new(&base_url, &api_key, app_kind)
         .map_err(|e| anyhow::anyhow!("failed to create API client for restore: {e}"))?;
 
@@ -2091,9 +2146,9 @@ pub(crate) async fn try_restore(
             Ok(())
         }
         Err(e) => {
-            warn!(%name, backup_id, error = %e, "restore API call failed");
+            let summary = e.log_summary();
+            warn!(%name, backup_id, error = %summary, "restore API call failed");
             increment_backup_operations(app.spec.app.as_str(), "restore", "error");
-            let error_summary = e.log_summary();
             publish_event(
                 recorder,
                 obj_ref,
@@ -2101,14 +2156,14 @@ pub(crate) async fn try_restore(
                     type_: EventType::Warning,
                     reason: "RestoreFailed".into(),
                     note: Some(format!(
-                        "Failed to restore from backup {backup_id}: {error_summary}"
+                        "Failed to restore from backup {backup_id}: {summary}"
                     )),
                     action: "Restore".into(),
                     secondary: None,
                 },
             )
             .await;
-            Err(anyhow::anyhow!("restore API call failed: {error_summary}"))
+            Err(anyhow::anyhow!("restore API call failed: {summary}"))
         }
     }
 }
@@ -2146,7 +2201,7 @@ pub(crate) async fn discover_namespace_apps(
     let apps = api
         .list(&ListParams::default())
         .await
-        .map_err(|e| anyhow::anyhow!("failed to list ServarrApps: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("failed to list ServarrApps: {}", kube_err_summary(&e)))?;
 
     let mut discovered = Vec::new();
     for app in &apps {
@@ -2217,7 +2272,9 @@ pub(crate) async fn sync_prowlarr_apps(
         .api_key_secret
         .as_deref()
         .ok_or_else(|| anyhow::anyhow!("Prowlarr sync requires api_key_secret"))?;
-    let prowlarr_key = servarr_api::read_secret_key(client, &ns, secret_name, "api-key").await?;
+    let prowlarr_key = servarr_api::read_secret_key(client, &ns, secret_name, "api-key")
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to read Prowlarr API key: {}", e.log_summary()))?;
 
     let prowlarr_app_name = servarr_resources::common::service_name(prowlarr);
     let defaults = servarr_crds::AppDefaults::try_for_app(&prowlarr.spec.app)
@@ -2234,7 +2291,9 @@ pub(crate) async fn sync_prowlarr_apps(
     let discovered = discover_namespace_apps(client, target_ns).await?;
 
     // Get current Prowlarr applications
-    let existing = prowlarr_client.list_applications().await?;
+    let existing = prowlarr_client.list_applications().await.map_err(|e| {
+        anyhow::anyhow!("failed to list Prowlarr applications: {}", e.log_summary())
+    })?;
 
     // Build a map of existing apps by base URL for diffing
     let existing_by_url: std::collections::HashMap<String, &servarr_api::prowlarr::ProwlarrApp> =
@@ -2304,14 +2363,20 @@ pub(crate) async fn sync_prowlarr_apps(
                     .update_application(existing_app.id, &updated)
                     .await
                 {
-                    warn!(app = %app.name, error = %e, "failed to update Prowlarr application");
+                    let summary = e.log_summary();
+                    warn!(
+                        app = %app.name,
+                        error = %summary,
+                        "failed to update Prowlarr application"
+                    );
                 }
             }
         } else {
             // Add new
             info!(prowlarr = %prowlarr_name, app = %app.name, "adding application to Prowlarr");
             if let Err(e) = prowlarr_client.add_application(&new_app).await {
-                warn!(app = %app.name, error = %e, "failed to add Prowlarr application");
+                let summary = e.log_summary();
+                warn!(app = %app.name, error = %summary, "failed to add Prowlarr application");
             }
         }
     }
@@ -2468,7 +2533,9 @@ pub(crate) async fn sync_overseerr_servers(
         .api_key_secret
         .as_deref()
         .ok_or_else(|| anyhow::anyhow!("Overseerr sync requires api_key_secret"))?;
-    let overseerr_key = servarr_api::read_secret_key(client, &ns, secret_name, "api-key").await?;
+    let overseerr_key = servarr_api::read_secret_key(client, &ns, secret_name, "api-key")
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to read Overseerr API key: {}", e.log_summary()))?;
 
     let overseerr_app_name = servarr_resources::common::service_name(overseerr);
     let defaults = servarr_crds::AppDefaults::try_for_app(&overseerr.spec.app)
@@ -2485,8 +2552,18 @@ pub(crate) async fn sync_overseerr_servers(
     let discovered = discover_namespace_apps(client, target_ns).await?;
 
     // Get existing server registrations
-    let existing_sonarr = overseerr_client.list_sonarr().await?;
-    let existing_radarr = overseerr_client.list_radarr().await?;
+    let existing_sonarr = overseerr_client.list_sonarr().await.map_err(|e| {
+        anyhow::anyhow!(
+            "failed to list Overseerr Sonarr servers: {}",
+            e.log_summary()
+        )
+    })?;
+    let existing_radarr = overseerr_client.list_radarr().await.map_err(|e| {
+        anyhow::anyhow!(
+            "failed to list Overseerr Radarr servers: {}",
+            e.log_summary()
+        )
+    })?;
 
     // Get Overseerr config for default profile/directory settings
     let overseerr_config = match &overseerr.spec.app_config {
@@ -2703,7 +2780,9 @@ pub(crate) async fn sync_bazarr_apps(
 
     // Read Bazarr's operator-managed API key
     let api_key_secret = servarr_resources::common::child_name(bazarr, "api-key");
-    let bazarr_key = servarr_api::read_secret_key(client, &ns, &api_key_secret, "api-key").await?;
+    let bazarr_key = servarr_api::read_secret_key(client, &ns, &api_key_secret, "api-key")
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to read Bazarr API key: {}", e.log_summary()))?;
 
     let bazarr_app_name = servarr_resources::common::service_name(bazarr);
     let defaults = servarr_crds::AppDefaults::try_for_app(&bazarr.spec.app)
@@ -2739,14 +2818,11 @@ pub(crate) async fn sync_bazarr_apps(
                     .configure_sonarr(&app.host, app.port, &app.api_key)
                     .await
                 {
-                    warn!(bazarr = %bazarr_name, sonarr = %app.name, error = %e,
+                    let summary = e.log_summary();
+                    warn!(bazarr = %bazarr_name, sonarr = %app.name, error = %summary,
                         "failed to configure Sonarr in Bazarr");
                     first_error.get_or_insert_with(|| {
-                        anyhow::anyhow!(
-                            "configure_sonarr({}) failed: {}",
-                            app.name,
-                            e.log_summary()
-                        )
+                        anyhow::anyhow!("configure_sonarr({}) failed: {summary}", app.name)
                     });
                 }
             }
@@ -2756,14 +2832,11 @@ pub(crate) async fn sync_bazarr_apps(
                     .configure_radarr(&app.host, app.port, &app.api_key)
                     .await
                 {
-                    warn!(bazarr = %bazarr_name, radarr = %app.name, error = %e,
+                    let summary = e.log_summary();
+                    warn!(bazarr = %bazarr_name, radarr = %app.name, error = %summary,
                         "failed to configure Radarr in Bazarr");
                     first_error.get_or_insert_with(|| {
-                        anyhow::anyhow!(
-                            "configure_radarr({}) failed: {}",
-                            app.name,
-                            e.log_summary()
-                        )
+                        anyhow::anyhow!("configure_radarr({}) failed: {summary}", app.name)
                     });
                 }
             }
@@ -2773,16 +2846,14 @@ pub(crate) async fn sync_bazarr_apps(
 
     if auto_remove {
         if !has_sonarr && let Err(e) = bazarr_client.disable_sonarr().await {
-            warn!(bazarr = %bazarr_name, error = %e, "failed to disable Sonarr in Bazarr");
-            first_error.get_or_insert_with(|| {
-                anyhow::anyhow!("disable_sonarr failed: {}", e.log_summary())
-            });
+            let summary = e.log_summary();
+            warn!(bazarr = %bazarr_name, error = %summary, "failed to disable Sonarr in Bazarr");
+            first_error.get_or_insert_with(|| anyhow::anyhow!("disable_sonarr failed: {summary}"));
         }
         if !has_radarr && let Err(e) = bazarr_client.disable_radarr().await {
-            warn!(bazarr = %bazarr_name, error = %e, "failed to disable Radarr in Bazarr");
-            first_error.get_or_insert_with(|| {
-                anyhow::anyhow!("disable_radarr failed: {}", e.log_summary())
-            });
+            let summary = e.log_summary();
+            warn!(bazarr = %bazarr_name, error = %summary, "failed to disable Radarr in Bazarr");
+            first_error.get_or_insert_with(|| anyhow::anyhow!("disable_radarr failed: {summary}"));
         }
     }
 
@@ -2821,8 +2892,9 @@ pub(crate) async fn sync_maintainerr_servers(
 
     // Read Maintainerr's operator-managed API key
     let api_key_secret = servarr_resources::common::child_name(maintainerr, "api-key");
-    let maintainerr_key =
-        servarr_api::read_secret_key(client, &ns, &api_key_secret, "api-key").await?;
+    let maintainerr_key = servarr_api::read_secret_key(client, &ns, &api_key_secret, "api-key")
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to read Maintainerr API key: {}", e.log_summary()))?;
 
     let maintainerr_app_name = servarr_resources::common::service_name(maintainerr);
     let defaults = servarr_crds::AppDefaults::try_for_app(&maintainerr.spec.app)
@@ -2926,9 +2998,10 @@ pub(crate) async fn sync_maintainerr_servers(
         .list_sonarr()
         .await
         .map_err(|e| {
-            error!(maintainerr = %maintainerr_name, error = %e,
+            let summary = e.log_summary();
+            error!(maintainerr = %maintainerr_name, error = %summary,
                 "failed to list existing Sonarr servers from Maintainerr; aborting sync to prevent duplicates");
-            anyhow::anyhow!("list_sonarr failed: {}", e.log_summary())
+            anyhow::anyhow!("list_sonarr failed: {summary}")
         })?
         .into_iter()
         .map(|s| s.name)
@@ -2937,9 +3010,10 @@ pub(crate) async fn sync_maintainerr_servers(
         .list_radarr()
         .await
         .map_err(|e| {
-            error!(maintainerr = %maintainerr_name, error = %e,
+            let summary = e.log_summary();
+            error!(maintainerr = %maintainerr_name, error = %summary,
                 "failed to list existing Radarr servers from Maintainerr; aborting sync to prevent duplicates");
-            anyhow::anyhow!("list_radarr failed: {}", e.log_summary())
+            anyhow::anyhow!("list_radarr failed: {summary}")
         })?
         .into_iter()
         .map(|s| s.name)
@@ -3098,7 +3172,7 @@ pub(crate) async fn sync_subgen_jellyfin(
     let app_list = all_apps
         .list(&kube::api::ListParams::default())
         .await
-        .map_err(|e| anyhow::anyhow!("failed to list ServarrApps: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("failed to list ServarrApps: {}", kube_err_summary(&e)))?;
 
     let jellyfin = match app_list
         .items
@@ -3129,7 +3203,12 @@ pub(crate) async fn sync_subgen_jellyfin(
     // Verify the secret is readable; the Deployment will reference it via secretKeyRef.
     servarr_api::read_secret_key(client, target_ns, &jf_secret_name, "api-key")
         .await
-        .map_err(|e| anyhow::anyhow!("Jellyfin API key secret {jf_secret_name} unreadable: {e}"))?;
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "Jellyfin API key secret {jf_secret_name} unreadable: {}",
+                e.log_summary()
+            )
+        })?;
 
     let jf_app_name = servarr_resources::common::service_name(jellyfin);
     let jf_defaults = servarr_crds::AppDefaults::try_for_app(&jellyfin.spec.app)
@@ -3178,7 +3257,12 @@ pub(crate) async fn sync_subgen_jellyfin(
     deploy_api
         .patch(&subgen_name, &pp, &Patch::Apply(patch))
         .await
-        .map_err(|e| anyhow::anyhow!("failed to patch Subgen Deployment: {e}"))?;
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "failed to patch Subgen Deployment: {}",
+                kube_err_summary(&e)
+            )
+        })?;
 
     info!(subgen = %subgen_name, jellyfin = %jf_app_name, "subgen-sync: injected Jellyfin env vars");
     Ok(())
@@ -3644,6 +3728,55 @@ mod tests {
         assert!(cron::Schedule::from_str(&normalize_backup_schedule("0 3 * *")).is_err());
         // Whitespace-only normalizes to empty (caller's guard treats it as unset).
         assert_eq!(normalize_backup_schedule("   "), "");
+    }
+
+    // ---- maybe_run_backup ----
+
+    #[tokio::test]
+    async fn maybe_run_backup_secret_read_error_sanitizes_status_message() {
+        let mock_server = MockServer::start().await;
+        let client = build_mock_client(&mock_server.uri()).await;
+
+        let mut app = make_test_app("my-sonarr", "test", AppType::Sonarr);
+        app.spec.api_key_secret = Some("sonarr-api-key".into());
+        app.spec.backup = Some(servarr_crds::BackupSpec {
+            enabled: true,
+            schedule: "0 3 * * *".into(),
+            retention_count: 5,
+        });
+
+        // Secret read fails with a 403 whose message/reason echoes the secret name — must not
+        // leak into the tenant-visible BackupStatus.
+        Mock::given(method("GET"))
+            .and(path("/api/v1/namespaces/test/secrets/sonarr-api-key"))
+            .respond_with(ResponseTemplate::new(403).set_body_json(json!({
+                "apiVersion": "v1",
+                "kind": "Status",
+                "metadata": {},
+                "status": "Failure",
+                "message": "secrets \"sonarr-api-key\" is forbidden: User cannot get",
+                "reason": "Forbidden",
+                "code": 403
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let recorder = Recorder::new(client.clone(), "test".into());
+        let obj_ref = app.object_ref(&());
+
+        let status = maybe_run_backup(&client, &app, &recorder, &obj_ref, None).await;
+
+        let result = status
+            .and_then(|s| s.last_backup_result)
+            .expect("expected a last_backup_result for the secret-read failure");
+        assert!(
+            result.contains("403"),
+            "should keep the status code: {result}"
+        );
+        assert!(
+            !result.contains("sonarr-api-key"),
+            "must not leak the raw API server message: {result}"
+        );
     }
 
     // ---- print_crd ----
@@ -4353,12 +4486,11 @@ mod tests {
             "raw response body must not leak into the condition message, got: {}",
             h.message
         );
-        // Sonarr's is_healthy() goes through the generated SDK client, whose
-        // errors map_sdk_err flattens to status 0 (#398 follow-up: the SDK
-        // path can't report the real HTTP status the way HttpClient::post
-        // can) — log_summary() still correctly omits the body either way.
+        // Sonarr's is_healthy() goes through the generated SDK client. #406 made
+        // map_sdk_err preserve the real upstream status instead of flattening to
+        // 0 — the mock returns 500, so that's what should show up here.
         assert!(
-            h.message.contains("HTTP API error (status: 0)"),
+            h.message.contains("HTTP API error (status: 500)"),
             "expected log_summary()'s sanitized form in: {}",
             h.message
         );
@@ -6836,12 +6968,12 @@ mod tests {
             !err_msg.contains("/etc/sonarr/secrets.db"),
             "raw response body must not leak into the returned error, got: {err_msg}"
         );
-        // restore_backup() goes through the generated SDK client, whose
-        // errors map_sdk_err flattens to status 0 (see the matching comment
-        // on check_api_health_sanitizes_response_body) — log_summary() still
-        // correctly omits the body either way.
+        // restore_backup() goes through the generated SDK client. #406 made
+        // map_sdk_err preserve the real upstream status instead of flattening to
+        // 0 (see the matching comment on check_api_health_sanitizes_response_body)
+        // — the mock returns 500, so that's what should show up here.
         assert!(
-            err_msg.contains("HTTP API error (status: 0)"),
+            err_msg.contains("HTTP API error (status: 500)"),
             "expected log_summary()'s sanitized form in: {err_msg}"
         );
     }

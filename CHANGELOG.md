@@ -40,9 +40,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   For admin-credential sync in particular, an upstream app that echoed a rejected request body
   back could have put the plaintext admin password into `.status.conditions[].message`,
   readable by anyone with `get servarrapps` in the namespace (#398).
+- Fix admin credentials and API keys leaking into `status.conditions[]` and Kubernetes Events
+  when Sabnzbd or Tautulli returned a transport error (connection refused, timeout, etc.)
+  during credential setup — both apps send credentials as URL query parameters, and the
+  error-sanitization helper wasn't stripping the request URL from that specific error variant
+  (#421).
 
 ### Fixed
 
+- Fix status conditions always reporting HTTP status 0 for Sonarr/Radarr/Lidarr/Prowlarr/
+  Overseerr API errors instead of the real upstream status (#406).
+- Fix ~60 call sites across the controller writing raw Kubernetes API errors, secret-read
+  errors, or upstream API errors straight into status conditions and Events instead of a
+  sanitized summary (#407).
+- Fix HTTPRoute, TCPRoute, and Certificate builders silently treating a resource-construction
+  bug as "not configured" instead of surfacing it as an error (#399).
 - Fix SSH bastion host key changing after a persistence override (e.g. a MediaStack's
   stack-wide `persistence.volumes` applied to a bastion with no per-app override) silently
   dropped the `host-keys` PVC volume, causing the bastion to generate a fresh SSH host key

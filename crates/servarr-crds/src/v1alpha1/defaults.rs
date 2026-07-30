@@ -29,6 +29,13 @@ impl AppDefaults {
     ///
     /// Returns an error string if the app has no image defaults or an unknown
     /// security profile.
+    ///
+    /// # Error safety
+    /// The returned `Err(String)` is always built from curated, internal-only data — the app
+    /// name (a `ServarrApp.spec.app` enum variant) and static strings from this module. It never
+    /// contains user-supplied secrets, upstream API response bodies, or raw
+    /// `kube::Error`/`reqwest::Error` text, so callers may interpolate it directly into logs,
+    /// Events, or status Conditions without going through a `log_summary()`-style reduction.
     pub fn try_for_app(app: &super::AppType) -> Result<Self, String> {
         let app_name = app.to_string();
         let img = image_defaults(&app_name)

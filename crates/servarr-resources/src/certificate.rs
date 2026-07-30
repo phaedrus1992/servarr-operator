@@ -6,18 +6,23 @@ use crate::common;
 
 /// Build a cert-manager Certificate resource (cert-manager.io/v1).
 ///
-/// Returns `Some` when the gateway is enabled and TLS is configured with
-/// a cert_issuer. Uses DynamicObject since cert-manager types are not
-/// in kube-rs / k8s-openapi.
-pub fn build(app: &ServarrApp) -> Option<DynamicObject> {
-    let gateway = app.spec.gateway.as_ref()?;
+/// Returns `Ok(Some(_))` when the gateway is enabled and TLS is configured with
+/// a cert_issuer, `Ok(None)` when not applicable, `Err` if the constructed
+/// document fails to deserialize into a `DynamicObject`. Uses DynamicObject
+/// since cert-manager types are not in kube-rs / k8s-openapi.
+pub fn build(app: &ServarrApp) -> Result<Option<DynamicObject>, String> {
+    let Some(gateway) = app.spec.gateway.as_ref() else {
+        return Ok(None);
+    };
     if !gateway.is_enabled() {
-        return None;
+        return Ok(None);
     }
 
-    let tls = gateway.tls.as_ref()?;
+    let Some(tls) = gateway.tls.as_ref() else {
+        return Ok(None);
+    };
     if !tls.enabled || tls.cert_issuer.is_empty() {
-        return None;
+        return Ok(None);
     }
 
     let name = common::app_name(app);
@@ -49,5 +54,7 @@ pub fn build(app: &ServarrApp) -> Option<DynamicObject> {
         },
     });
 
-    serde_json::from_value(cert).ok()
+    Ok(Some(serde_json::from_value(cert).map_err(|e| {
+        format!("failed to build Certificate: {e}")
+    })?))
 }
