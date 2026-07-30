@@ -28,10 +28,32 @@ impl ApiError {
     /// Use for credential-bearing API calls where the response body from the
     /// downstream API may echo back the submitted credential (API keys, tokens,
     /// passwords) in a validation error message.
+    ///
+    /// Matches exhaustively (no wildcard) so a new variant is a compile error here,
+    /// not a silent leak. `Request` used to fall through a wildcard to
+    /// `reqwest::Error`'s `Display`, which appends the full request URL — several
+    /// clients (Sabnzbd, Tautulli) send API keys and admin passwords as query
+    /// parameters, so that URL can carry credentials. `OperationFailed` used to fall
+    /// through the same wildcard; its `message` is upstream-controlled response
+    /// content (Maintainerr's NOK envelope) and can echo a submitted `apiKey` back.
     pub fn log_summary(&self) -> String {
         match self {
             Self::ApiResponse { status, .. } => format!("HTTP API error (status: {status})"),
-            other => other.to_string(),
+            Self::Request(e) => format!(
+                "HTTP request failed ({})",
+                if e.is_timeout() {
+                    "timeout"
+                } else if e.is_connect() {
+                    "connect"
+                } else if e.is_decode() {
+                    "decode"
+                } else {
+                    "transport"
+                }
+            ),
+            Self::OperationFailed { .. } => "operation rejected by API".to_string(),
+            Self::InvalidUrl(_) => "invalid base URL".to_string(),
+            Self::InvalidApiKey => Self::InvalidApiKey.to_string(),
         }
     }
 }
@@ -139,5 +161,61 @@ impl std::fmt::Debug for HttpClient {
         f.debug_struct("HttpClient")
             .field("base_url", &self.base_url.as_str())
             .finish()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn log_summary_hides_response_body_for_api_response() {
+        let err = ApiError::ApiResponse {
+            status: 401,
+            body: "invalid api key SUPER-SECRET-KEY".to_string(),
+        };
+        let summary = err.log_summary();
+        assert!(summary.contains("401"));
+        assert!(!summary.contains("SUPER-SECRET-KEY"));
+    }
+
+    #[test]
+    fn log_summary_hides_message_for_operation_failed() {
+        let err = ApiError::OperationFailed {
+            message: "rejected apiKey=SUPER-SECRET-KEY".to_string(),
+        };
+        let summary = err.log_summary();
+        assert_eq!(summary, "operation rejected by API");
+        assert!(!summary.contains("SUPER-SECRET-KEY"));
+    }
+
+    /// Regression test for the credential-leak this fix closes: `reqwest::Error`'s `Display`
+    /// includes the full request URL (verified against the pinned `reqwest` version), and
+    /// Sabnzbd/Tautulli send credentials as query parameters — so `ApiError::Request` reaching
+    /// `log_summary()` used to leak them via the previous wildcard-arm passthrough.
+    #[tokio::test]
+    async fn log_summary_hides_url_for_request_error() {
+        // Port 1 is reserved and never listening, guaranteeing a connect failure without
+        // depending on external network state.
+        let client = HttpClient::new("http://127.0.0.1:1", None).expect("valid base url");
+        let path =
+            "?mode=set_config&keyword=password&value=SUPER-SECRET-PASSWORD&apikey=SUPER-SECRET-KEY";
+        let result: Result<serde_json::Value, ApiError> = client.get(path).await;
+
+        let err = result.expect_err("connection to port 1 must fail");
+        assert!(
+            matches!(err, ApiError::Request(_)),
+            "expected ApiError::Request, got {err:?}"
+        );
+
+        // The raw error still carries the URL (that's the bug this fix guards against) —
+        // assert the precondition holds, so this test would fail loudly if reqwest ever
+        // stopped including it, rather than passing for the wrong reason.
+        assert!(err.to_string().contains("SUPER-SECRET-KEY"));
+
+        let summary = err.log_summary();
+        assert!(!summary.contains("SUPER-SECRET-KEY"));
+        assert!(!summary.contains("SUPER-SECRET-PASSWORD"));
+        assert!(!summary.contains("127.0.0.1"));
     }
 }
