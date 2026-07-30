@@ -1122,7 +1122,7 @@ fn test_secret_ssh_app_valid_users_returns_secret() {
 #[test]
 fn test_certificate_no_gateway_returns_none() {
     let app = make_app(AppType::Sonarr);
-    let cert = servarr_resources::certificate::build(&app);
+    let cert = servarr_resources::certificate::build(&app).unwrap();
     assert!(cert.is_none());
 }
 
@@ -1145,7 +1145,7 @@ fn test_certificate_gateway_disabled_returns_none() {
         },
         status: None,
     };
-    let cert = servarr_resources::certificate::build(&app);
+    let cert = servarr_resources::certificate::build(&app).unwrap();
     assert!(cert.is_none());
 }
 
@@ -1169,7 +1169,7 @@ fn test_certificate_gateway_enabled_no_tls_returns_none() {
         },
         status: None,
     };
-    let cert = servarr_resources::certificate::build(&app);
+    let cert = servarr_resources::certificate::build(&app).unwrap();
     assert!(cert.is_none());
 }
 
@@ -1197,7 +1197,7 @@ fn test_certificate_tls_disabled_returns_none() {
         },
         status: None,
     };
-    let cert = servarr_resources::certificate::build(&app);
+    let cert = servarr_resources::certificate::build(&app).unwrap();
     assert!(cert.is_none());
 }
 
@@ -1225,7 +1225,7 @@ fn test_certificate_tls_enabled_empty_issuer_returns_none() {
         },
         status: None,
     };
-    let cert = servarr_resources::certificate::build(&app);
+    let cert = servarr_resources::certificate::build(&app).unwrap();
     assert!(cert.is_none());
 }
 
@@ -1254,7 +1254,7 @@ fn test_certificate_tls_enabled_valid_issuer_returns_certificate() {
         },
         status: None,
     };
-    let cert = servarr_resources::certificate::build(&app);
+    let cert = servarr_resources::certificate::build(&app).unwrap();
     assert!(cert.is_some());
 
     let cert = cert.unwrap();
@@ -1295,7 +1295,9 @@ fn test_certificate_custom_secret_name() {
         },
         status: None,
     };
-    let cert = servarr_resources::certificate::build(&app).unwrap();
+    let cert = servarr_resources::certificate::build(&app)
+        .unwrap()
+        .unwrap();
     assert_eq!(cert.metadata.name.as_deref(), Some("test-app"));
     assert_eq!(cert.data["spec"]["secretName"], "my-custom-tls-secret");
 }

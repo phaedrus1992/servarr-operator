@@ -497,7 +497,7 @@ pub async fn reconcile(app: Arc<ServarrApp>, ctx: Arc<Context>) -> Result<Action
     }
 
     // Build and apply cert-manager Certificate (if TLS is enabled)
-    if let Some(cert) = servarr_resources::certificate::build(&app) {
+    if let Some(cert) = servarr_resources::certificate::build(&app).map_err(Error::AppDefaults)? {
         let api_resource = kube::discovery::ApiResource {
             group: "cert-manager.io".into(),
             version: "v1".into(),
