@@ -116,10 +116,6 @@ pub fn build(
     let container_ports = build_container_ports(svc_spec, app);
     let has_host_port = container_ports.iter().any(|p| p.host_port.is_some());
     let volume_mounts = build_volume_mounts(&persistence, app);
-    // Clone for sidecar containers that share the main container's data volumes.
-    // Particularly the Lidarr YouTube Downloader which needs access to the config
-    // and music volumes at the paths its env vars reference (#293).
-    let yt_volume_mounts = volume_mounts.clone();
     let volumes = build_volumes(app, &persistence);
     let env_vars = build_env_vars(app, &defaults, uid, gid, &persistence);
     let (container_security, pod_security) = build_security_contexts(security, uid, gid);
@@ -204,90 +200,7 @@ pub fn build(
         ..Default::default()
     };
 
-    let mut containers = vec![container];
-
-    // Lidarr YouTube Downloader sidecar
-    if matches!(app.spec.app, AppType::Lidarr)
-        && let Some(AppConfig::Lidarr(cfg)) = &app.spec.app_config
-        && let Some(yt) = &cfg.youtube_downloader
-    {
-        let yt_image = yt
-            .image
-            .clone()
-            .unwrap_or_else(|| "ghcr.io/dmzoneill/lidarr-youtube-downloader:latest".into());
-
-        let mut yt_env = vec![
-            EnvVar {
-                name: "LIDARR_HOST".into(),
-                value: Some("localhost".into()),
-                ..Default::default()
-            },
-            EnvVar {
-                name: "LIDARR_PORT".into(),
-                value: Some(
-                    svc_spec
-                        .ports
-                        .first()
-                        .map_or("8686".into(), |p| p.port.to_string()),
-                ),
-                ..Default::default()
-            },
-        ];
-        // Add LIDARR_API_KEY from the app's env if available
-        if let Some(api_key) = app.spec.env.iter().find(|e| e.name == "LIDARR_API_KEY") {
-            yt_env.push(EnvVar {
-                name: api_key.name.clone(),
-                value: Some(api_key.value.clone()),
-                ..Default::default()
-            });
-        }
-
-        if let Some(path) = &yt.lidarr_db_path {
-            yt_env.push(EnvVar {
-                name: "LIDARR_DB".into(),
-                value: Some(path.clone()),
-                ..Default::default()
-            });
-        }
-        if let Some(path) = &yt.lidarr_music_path {
-            yt_env.push(EnvVar {
-                name: "LIDARR_MUSIC_PATH".into(),
-                value: Some(path.clone()),
-                ..Default::default()
-            });
-        }
-        if let Some(file) = &yt.yt_cookies_file {
-            yt_env.push(EnvVar {
-                name: "YT_COOKIES_FILE".into(),
-                value: Some(file.clone()),
-                ..Default::default()
-            });
-        }
-        if let Some(thresh) = yt.match_threshold {
-            yt_env.push(EnvVar {
-                name: "MATCH_THRESHOLD".into(),
-                value: Some(thresh.to_string()),
-                ..Default::default()
-            });
-        }
-        if let Some(keywords) = &yt.blacklist_keywords {
-            yt_env.push(EnvVar {
-                name: "BLACKLIST_KEYWORDS".into(),
-                value: Some(keywords.clone()),
-                ..Default::default()
-            });
-        }
-
-        let yt_container = Container {
-            name: "lidarr-youtube-downloader".into(),
-            image: Some(yt_image),
-            image_pull_policy: Some("IfNotPresent".into()),
-            env: Some(yt_env),
-            volume_mounts: Some(yt_volume_mounts),
-            ..Default::default()
-        };
-        containers.push(yt_container);
-    }
+    let containers = vec![container];
 
     let mut pod_spec = PodSpec {
         automount_service_account_token: Some(false),
