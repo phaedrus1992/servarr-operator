@@ -13,7 +13,7 @@ use axum_server::tls_rustls::RustlsConfig;
 use kube::Client;
 use kube::api::{Api, ListParams};
 use serde::{Deserialize, Serialize};
-use servarr_api::k8s::kube_err_summary;
+use servarr_api::k8s::{kube_err_public_summary, kube_err_summary};
 use servarr_crds::{
     AppConfig, AppDefaults, AppType, RouteType, ServarrApp, ServarrAppSpec, SshMode,
 };
@@ -472,9 +472,11 @@ async fn validate_no_duplicate_instance(
     let existing = match api.list(&ListParams::default()).await {
         Ok(list) => list,
         Err(e) => {
-            let reason = kube_err_summary(&e);
-            warn!(error = %reason, "failed to list ServarrApps for duplicate check");
-            errors.push(format!("failed to check for duplicate instances: {reason}"));
+            warn!(error = %kube_err_summary(&e), "failed to list ServarrApps for duplicate check");
+            errors.push(format!(
+                "failed to check for duplicate instances: {}",
+                kube_err_public_summary(&e)
+            ));
             return;
         }
     };

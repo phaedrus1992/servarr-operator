@@ -581,20 +581,41 @@ async fn test_error_policy_returns_requeue_60s() {
     );
 }
 
-/// Verify `Error::sanitized_message` returns safe strings for every variant.
+/// Verify `Error::public_summary` returns safe strings for every variant.
 #[test]
-fn test_error_sanitized_message_all_variants() {
+fn test_error_public_summary_all_variants() {
     let ser_err = servarr_operator::controller::Error::Serialization(
         serde_json::from_str::<serde_json::Value>("invalid").unwrap_err(),
     );
-    assert_eq!(ser_err.sanitized_message(), "Serialization error");
+    assert!(
+        ser_err.public_summary().starts_with("Serialization error"),
+        "Serialization is built from operator-owned structs only, safe to pass through: {}",
+        ser_err.public_summary()
+    );
 
     let app_err = servarr_operator::controller::Error::AppDefaults(
         "no image defaults for app: sonarr".to_string(),
     );
     assert_eq!(
-        app_err.sanitized_message(),
-        "no image defaults for app: sonarr"
+        app_err.public_summary(),
+        "app defaults error: no image defaults for app: sonarr"
+    );
+
+    let kube_err =
+        servarr_operator::controller::Error::Kube(kube::Error::Api(Box::new(kube::core::Status {
+            code: 403,
+            message: "secrets \"super-secret-name\" is forbidden".to_string(),
+            reason: "Forbidden".to_string(),
+            ..Default::default()
+        })));
+    let summary = kube_err.public_summary();
+    assert!(
+        summary.contains("403"),
+        "should keep status code: {summary}"
+    );
+    assert!(
+        !summary.contains("super-secret-name"),
+        "must not leak the raw API server message: {summary}"
     );
 }
 
