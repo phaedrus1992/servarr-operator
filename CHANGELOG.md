@@ -16,6 +16,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   during credential setup — both apps send credentials as URL query parameters, and the
   error-sanitization helper wasn't stripping the request URL from that specific error variant
   (#421).
+- Fix `error_policy` publishing raw Kubernetes API error text (RBAC denial detail, exec-auth
+  credential-plugin failures, kubeconfig paths) into the tenant-visible reconciliation-failure
+  Warning Event and several status Condition messages instead of a sanitized summary. The
+  admission webhook's duplicate-instance rejection message — the one other tenant-facing caller
+  of the sanitizer — is now routed through a stricter summary that never passes through the
+  underlying error's raw text, closing a gap where a non-API-server failure (auth, transport,
+  kubeconfig) could still leak past the #422 fix (#428, #429, #430).
 
 ### Fixed
 
