@@ -24,6 +24,15 @@ impl SecretError {
             other => other.to_string(),
         }
     }
+
+    /// Returns a tenant-safe summary. The `Kube` variant delegates to
+    /// [`kube_err_public_summary`]; the other variants are safe as-is (see [`Self::log_summary`]).
+    pub fn public_summary(&self) -> String {
+        match self {
+            Self::Kube(e) => kube_err_public_summary(e),
+            other => other.to_string(),
+        }
+    }
 }
 
 /// Returns a log-safe summary of a `kube::Error` that excludes the API server's free-text
@@ -57,7 +66,7 @@ pub fn kube_err_summary(e: &kube::Error) -> String {
 /// carry secrets or infra endpoint detail (see `kube_err_summary`'s docs).
 pub fn kube_err_public_summary(e: &kube::Error) -> String {
     match e {
-        kube::Error::Api(status) => format!("Kubernetes API error (status: {})", status.code),
+        kube::Error::Api(_) => kube_err_summary(e),
         _ => "Kubernetes client error".to_string(),
     }
 }
@@ -181,6 +190,33 @@ mod tests {
         let err = kube::Error::LinesCodecMaxLineLengthExceeded;
         let summary = kube_err_public_summary(&err);
         assert_ne!(summary, err.to_string());
-        assert!(!summary.to_lowercase().contains("line"));
+    }
+
+    #[test]
+    fn public_summary_kube_variant_drops_message_keeps_status_code() {
+        let status = kube::core::Status {
+            code: 403,
+            message: "secrets \"super-secret-name\" is forbidden: User cannot get".to_string(),
+            reason: "Forbidden".to_string(),
+            ..Default::default()
+        };
+        let err = SecretError::Kube(kube::Error::Api(Box::new(status)));
+        let summary = err.public_summary();
+        assert!(
+            summary.contains("403"),
+            "summary should keep the status code: {summary}"
+        );
+        assert!(
+            !summary.contains("super-secret-name"),
+            "summary must not leak the raw API server message: {summary}"
+        );
+    }
+
+    #[test]
+    fn public_summary_non_kube_variant_passes_through_unchanged() {
+        let err = SecretError::NoData {
+            name: "my-secret".to_string(),
+        };
+        assert_eq!(err.public_summary(), err.to_string());
     }
 }

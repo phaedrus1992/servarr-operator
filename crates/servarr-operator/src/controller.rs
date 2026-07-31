@@ -13,7 +13,7 @@ use kube::runtime::reflector::{self, ObjectRef};
 use kube::runtime::watcher;
 use kube::{Client, CustomResourceExt, Resource, ResourceExt};
 use servarr_api::AppKind;
-use servarr_api::k8s::kube_err_summary;
+use servarr_api::k8s::{kube_err_public_summary, kube_err_summary};
 use servarr_crds::{AppType, Condition, ServarrApp, ServarrAppStatus, condition_types};
 use thiserror::Error;
 use tokio::time::Duration;
@@ -53,6 +53,15 @@ impl Error {
     pub fn log_summary(&self) -> String {
         match self {
             Self::Kube(e) => kube_err_summary(e),
+            other => other.to_string(),
+        }
+    }
+
+    /// Returns a tenant-safe summary. The `Kube` variant delegates to
+    /// [`kube_err_public_summary`]; the other variants are safe as-is (see [`Self::log_summary`]).
+    pub fn public_summary(&self) -> String {
+        match self {
+            Self::Kube(e) => kube_err_public_summary(e),
             other => other.to_string(),
         }
     }
@@ -878,16 +887,15 @@ async fn sync_admin_credentials(client: &Client, app: &ServarrApp) -> Option<Con
     {
         Ok(v) => v,
         Err(e) => {
-            let summary = e.log_summary();
             warn!(
-                app = %app.name_any(), error = %summary,
+                app = %app.name_any(), error = %e.log_summary(),
                 "admin-credentials: failed to read username"
             );
             return Some(Condition {
                 condition_type: condition_types::ADMIN_CREDENTIALS_CONFIGURED.to_string(),
                 status: "Unknown".to_string(),
                 reason: "SecretReadError".to_string(),
-                message: summary,
+                message: e.public_summary(),
                 last_transition_time: now,
             });
         }
@@ -896,16 +904,15 @@ async fn sync_admin_credentials(client: &Client, app: &ServarrApp) -> Option<Con
     {
         Ok(v) => v,
         Err(e) => {
-            let summary = e.log_summary();
             warn!(
-                app = %app.name_any(), error = %summary,
+                app = %app.name_any(), error = %e.log_summary(),
                 "admin-credentials: failed to read password"
             );
             return Some(Condition {
                 condition_type: condition_types::ADMIN_CREDENTIALS_CONFIGURED.to_string(),
                 status: "Unknown".to_string(),
                 reason: "SecretReadError".to_string(),
-                message: summary,
+                message: e.public_summary(),
                 last_transition_time: now,
             });
         }
@@ -940,7 +947,7 @@ async fn sync_admin_credentials(client: &Client, app: &ServarrApp) -> Option<Con
                                 .to_string(),
                             status: "Unknown".to_string(),
                             reason: "ApiKeyReadError".to_string(),
-                            message: e.log_summary(),
+                            message: e.public_summary(),
                             last_transition_time: now,
                         });
                     }
@@ -1021,7 +1028,7 @@ async fn sync_admin_credentials(client: &Client, app: &ServarrApp) -> Option<Con
                                 .to_string(),
                             status: "Unknown".to_string(),
                             reason: "ApiKeyReadError".to_string(),
-                            message: e.log_summary(),
+                            message: e.public_summary(),
                             last_transition_time: now,
                         });
                     }
@@ -1050,7 +1057,7 @@ async fn sync_admin_credentials(client: &Client, app: &ServarrApp) -> Option<Con
                                 .to_string(),
                             status: "Unknown".to_string(),
                             reason: "ApiKeyReadError".to_string(),
-                            message: e.log_summary(),
+                            message: e.public_summary(),
                             last_transition_time: now,
                         });
                     }
@@ -1086,7 +1093,7 @@ async fn sync_admin_credentials(client: &Client, app: &ServarrApp) -> Option<Con
                         condition_type: condition_types::ADMIN_CREDENTIALS_CONFIGURED.to_string(),
                         status: "Unknown".to_string(),
                         reason: "ApiKeyReadError".to_string(),
-                        message: e.log_summary(),
+                        message: e.public_summary(),
                         last_transition_time: now,
                     });
                 }
@@ -1144,13 +1151,12 @@ pub(crate) async fn check_api_health(
     let api_key = match servarr_api::read_secret_key(client, ns, secret_name, "api-key").await {
         Ok(k) => k,
         Err(e) => {
-            let summary = e.log_summary();
-            warn!(error = %summary, "failed to read API key secret");
+            warn!(error = %e.log_summary(), "failed to read API key secret");
             let cond = Condition {
                 condition_type: condition_types::APP_HEALTHY.to_string(),
                 status: "Unknown".to_string(),
                 reason: "SecretReadError".to_string(),
-                message: summary,
+                message: e.public_summary(),
                 last_transition_time: now,
             };
             return (Some(cond), None);
@@ -1512,18 +1518,20 @@ pub(crate) async fn update_status(
 pub fn error_policy(app: Arc<ServarrApp>, error: &Error, ctx: Arc<Context>) -> Action {
     let app_type = app.spec.app.as_str();
     increment_reconcile_total(app_type, "error");
-    let error_msg = error.log_summary();
-    warn!(error = %error_msg, "reconciliation failed, requeuing");
+    warn!(error = %error.log_summary(), "reconciliation failed, requeuing");
 
     let recorder = Recorder::new(ctx.client.clone(), ctx.reporter.clone());
     let obj_ref = app.object_ref(&());
+    // The Event note is tenant-visible (readable via `kubectl get events` in the app's
+    // namespace), so it must go through the stricter public_summary(), not log_summary().
+    let event_msg = error.public_summary();
     tokio::spawn(async move {
         let _ = recorder
             .publish(
                 &Event {
                     type_: EventType::Warning,
                     reason: "ReconcileError".into(),
-                    note: Some(error_msg),
+                    note: Some(event_msg),
                     action: "Reconcile".into(),
                     secondary: None,
                 },
@@ -1876,7 +1884,7 @@ async fn maybe_restore_backup(
         .patch(name, &PatchParams::default(), &Patch::Merge(scale_up))
         .await
     {
-        warn!(%name, error = %se, "failed to scale back up after restore; deployment may be at zero replicas");
+        warn!(%name, error = %kube_err_summary(&se), "failed to scale back up after restore; deployment may be at zero replicas");
     }
 
     restore_outcome?;
@@ -2274,7 +2282,10 @@ async fn cleanup_prowlarr_registration(
 
     // Find the Prowlarr instance
     let sa_api = Api::<ServarrApp>::namespaced(client.clone(), namespace);
-    let apps = sa_api.list(&ListParams::default()).await?;
+    let apps = sa_api
+        .list(&ListParams::default())
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to list ServarrApps: {}", kube_err_summary(&e)))?;
     let prowlarr = apps.iter().find(|a| {
         a.spec.app == AppType::Prowlarr && a.spec.prowlarr_sync.as_ref().is_some_and(|s| s.enabled)
     });
@@ -2759,7 +2770,7 @@ async fn sync_maintainerr_servers(
                     maintainerr = %maintainerr_name,
                     secret = %secret_name,
                     namespace = %ns,
-                    error = %e,
+                    error = %kube_err_summary(&e),
                     "failed to read Plex token secret due to Kubernetes API error"
                 );
                 failures += 1;
@@ -3120,7 +3131,10 @@ async fn cleanup_overseerr_registration(
 
     // Find the Overseerr instance
     let sa_api = Api::<ServarrApp>::namespaced(client.clone(), namespace);
-    let apps = sa_api.list(&ListParams::default()).await?;
+    let apps = sa_api
+        .list(&ListParams::default())
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to list ServarrApps: {}", kube_err_summary(&e)))?;
     let overseerr = apps.iter().find(|a| {
         a.spec.app == AppType::Overseerr
             && a.spec.overseerr_sync.as_ref().is_some_and(|s| s.enabled)
@@ -3329,6 +3343,19 @@ mod tests {
     fn error_log_summary_non_kube_variant_passes_through_unchanged() {
         let err = Error::AppDefaults("missing entry for AppType::Radarr".to_string());
         assert_eq!(err.log_summary(), err.to_string());
+    }
+
+    #[test]
+    fn error_public_summary_kube_variant_collapses_non_api_with_no_passthrough() {
+        let err = Error::Kube(kube::Error::LinesCodecMaxLineLengthExceeded);
+        let summary = err.public_summary();
+        assert_ne!(summary, err.to_string());
+    }
+
+    #[test]
+    fn error_public_summary_non_kube_variant_passes_through_unchanged() {
+        let err = Error::AppDefaults("missing entry for AppType::Radarr".to_string());
+        assert_eq!(err.public_summary(), err.to_string());
     }
 
     // ---- json_is_subset ----
