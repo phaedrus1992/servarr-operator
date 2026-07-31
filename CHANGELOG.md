@@ -52,6 +52,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   of the sanitizer — is now routed through a stricter summary that never passes through the
   underlying error's raw text, closing a gap where a non-API-server failure (auth, transport,
   kubeconfig) could still leak past the #422 fix (#428, #429, #430).
+- Fix ~31 remaining call sites across backup/restore, Prowlarr/Overseerr/Bazarr/Maintainerr sync,
+  and Subgen-Jellyfin sync using the log-only error summary (safe for logs, not for tenants)
+  instead of the stricter tenant-safe one wherever the result reaches a status Condition or
+  `status.backupStatus.lastBackupResult`, and several places interpolating an upstream API
+  client error's raw text instead of its sanitized summary — same failure class as #428/#429/#430,
+  found while sweeping the rest of the controller for the same pattern (#437, #438).
 
 ### Fixed
 
