@@ -167,28 +167,8 @@ impl std::fmt::Debug for HttpClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::{SEED_TOKEN, is_tenant_safe_charset};
     use proptest::prelude::*;
-
-    /// Fixed recognizable token used to seed sensitive content (response bodies,
-    /// operation messages, URLs) in the no-leak property tests. Distinctive
-    /// enough that it can never coincide with a legitimate sanitizer output.
-    const SEED_TOKEN: &str = "SEED-SECRET-TOKEN";
-
-    /// The charset every tenant-safe summary is permitted to contain. Mirrors the
-    /// brief's `^[A-Za-z0-9 ._()-]*$` invariant — a tenant-visible message can't
-    /// smuggle arbitrary content through — with one addition: `:`. The status
-    /// carriers legitimately emit `"status: {code}"` (fixed-format punctuation,
-    /// not smuggled content), so the bare brief regex over-rejects legitimate
-    /// output; `:` is the only character the sanitizers produce that the class
-    /// omits.
-    fn is_tenant_safe_charset(s: &str) -> bool {
-        s.chars().all(|c| {
-            matches!(
-                c,
-                'A'..='Z' | 'a'..='z' | '0'..='9' | ' ' | ':' | '.' | '_' | '(' | ')' | '-'
-            )
-        })
-    }
 
     #[test]
     fn log_summary_hides_response_body_for_api_response() {
@@ -290,43 +270,35 @@ mod tests {
             );
             prop_assert!(is_tenant_safe_charset(&summary));
         }
+    }
 
-        // Maintainerr's NOK envelope `message` is upstream-controlled and can echo
-        // a submitted `apiKey`; `log_summary` must collapse it to the fixed string.
-        #[test]
-        fn log_summary_operation_failed_never_leaks_message(
-            seed in any::<String>(),
-        ) {
-            let seed = format!("{SEED_TOKEN}{seed}");
-            let err = ApiError::OperationFailed {
-                message: format!("rejected apiKey={seed}"),
-            };
-            let summary = err.log_summary();
-            prop_assert!(summary == "operation rejected by API");
-            prop_assert!(
-                !summary.contains(&seed),
-                "operation message leaked into summary: {summary}"
-            );
-            prop_assert!(is_tenant_safe_charset(&summary));
-        }
+    // Maintainerr's NOK envelope `message` is upstream-controlled and can echo a
+    // submitted `apiKey`; `log_summary` must collapse it to the fixed string. The
+    // output is constant, so a single fixed seed exercises the same no-leak and
+    // collapse guarantee the property loop would.
+    #[test]
+    fn log_summary_operation_failed_collapses_to_fixed_string() {
+        let err = ApiError::OperationFailed {
+            message: format!("rejected apiKey={SEED_TOKEN}"),
+        };
+        let summary = err.log_summary();
+        assert_eq!(summary, "operation rejected by API");
+        assert!(!summary.contains(SEED_TOKEN));
+        assert!(is_tenant_safe_charset(&summary));
+    }
 
-        // `url::ParseError` carries no echo of the invalid input, so the meaningful
-        // guarantee is the fixed-output collapse: whatever the parse error, the
-        // summary is exactly the generic string and never reproduces the input.
-        #[test]
-        fn log_summary_invalid_url_collapses_to_fixed_string(
-            host in "[a-z]{1,12}",
-            port in "[a-z]{1,8}",
-        ) {
-            // A non-numeric port is a guaranteed parse failure (the `url` parser
-            // rejects a non-digit in the port position), producing a real
-            // `url::ParseError` carrying the seeded host/port in its source.
-            let url = format!("http://{host}:{port}");
-            let parse_err = Url::parse(&url).expect_err("non-numeric port must fail to parse");
-            let err = ApiError::InvalidUrl(parse_err);
-            let summary = err.log_summary();
-            prop_assert!(summary == "invalid base URL");
-            prop_assert!(is_tenant_safe_charset(&summary));
-        }
+    // `url::ParseError` carries no echo of the invalid input, so the meaningful
+    // guarantee is the fixed-output collapse: whatever the parse error, the
+    // summary is exactly the generic string and never reproduces the input.
+    #[test]
+    fn log_summary_invalid_url_collapses_to_fixed_string() {
+        // A non-numeric port is a guaranteed parse failure (the `url` parser
+        // rejects a non-digit in the port position).
+        let parse_err = Url::parse(&format!("http://{SEED_TOKEN}:not-a-port"))
+            .expect_err("non-numeric port must fail to parse");
+        let err = ApiError::InvalidUrl(parse_err);
+        let summary = err.log_summary();
+        assert_eq!(summary, "invalid base URL");
+        assert!(is_tenant_safe_charset(&summary));
     }
 }

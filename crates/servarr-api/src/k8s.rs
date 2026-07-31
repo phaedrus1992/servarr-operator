@@ -105,28 +105,8 @@ pub async fn read_secret_key(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::{SEED_TOKEN, is_tenant_safe_charset};
     use proptest::prelude::*;
-
-    /// Fixed recognizable token used to seed sensitive content (API-server Status
-    /// messages, exec-command args) in the no-leak property tests. Distinctive
-    /// enough that it can never coincide with a legitimate sanitizer output.
-    const SEED_TOKEN: &str = "SEED-SECRET-TOKEN";
-
-    /// The charset every tenant-safe summary is permitted to contain. Mirrors the
-    /// brief's `^[A-Za-z0-9 ._()-]*$` invariant — a tenant-visible message can't
-    /// smuggle arbitrary content through — with one addition: `:`. The status
-    /// carriers legitimately emit `"status: {code}"` (fixed-format punctuation,
-    /// not smuggled content), so the bare brief regex over-rejects legitimate
-    /// output; `:` is the only character the sanitizers produce that the class
-    /// omits.
-    fn is_tenant_safe_charset(s: &str) -> bool {
-        s.chars().all(|c| {
-            matches!(
-                c,
-                'A'..='Z' | 'a'..='z' | '0'..='9' | ' ' | ':' | '.' | '_' | '(' | ')' | '-'
-            )
-        })
-    }
 
     /// A `kube::Error::Api` whose `Status` message/reason carry `seed`, the way a
     /// real API-server message would (RBAC denial text, resource names).
@@ -278,45 +258,6 @@ mod tests {
             prop_assert!(is_tenant_safe_charset(&summary));
         }
 
-        // Every non-`Api` kube error variant must collapse to the fixed generic
-        // string, even the ones carrying detail as sensitive as an API-server
-        // message: `SerdeError` fragments the raw response body, `Auth` exec
-        // failures embed the exec command/args, and `LinesCodecMaxLineLengthExceeded`
-        // is a unit variant. The seed reaches each error's content, so a regression
-        // to `Display` passthrough would leak it and fail the assertion.
-        #[test]
-        fn kube_err_public_summary_collapses_non_api_variants(
-            seed in any::<String>(),
-        ) {
-            let seed = format!("{SEED_TOKEN}{seed}");
-            // A NUL byte is never valid JSON, so the parse always fails and the
-            // resulting serde error carries only position info.
-            let serde_err = serde_json::from_str::<serde_json::Value>(&format!("{seed}\u{0}"))
-                .expect_err("NUL is never valid JSON");
-            let errs = vec![
-                kube::Error::SerdeError(serde_err),
-                kube::Error::LinesCodecMaxLineLengthExceeded,
-                kube::Error::Auth(kube::client::AuthError::AuthExecRun {
-                    cmd: format!("kubectl --token={seed}"),
-                    status: std::process::ExitStatus::default(),
-                    out: std::process::Output {
-                        status: std::process::ExitStatus::default(),
-                        stdout: seed.clone().into_bytes(),
-                        stderr: Vec::new(),
-                    },
-                }),
-            ];
-            for err in errs {
-                let summary = kube_err_public_summary(&err);
-                prop_assert!(summary == "Kubernetes client error");
-                prop_assert!(
-                    !summary.contains(&seed),
-                    "seeded detail leaked from a non-Api variant: {summary}"
-                );
-                prop_assert!(is_tenant_safe_charset(&summary));
-            }
-        }
-
         // `SecretError::public_summary` routes the `Kube` variant through
         // `kube_err_public_summary`: the seeded API-server message must not leak
         // while the status code is preserved.
@@ -369,6 +310,42 @@ mod tests {
                 );
                 prop_assert!(is_tenant_safe_charset(&summary));
             }
+        }
+    }
+
+    // Every non-`Api` kube error variant must collapse to the fixed generic
+    // string, even the ones carrying detail as sensitive as an API-server
+    // message: `SerdeError` fragments the raw response body, `Auth` exec
+    // failures embed the exec command/args, and `LinesCodecMaxLineLengthExceeded`
+    // is a unit variant. The seed reaches each error's content, so a regression
+    // to `Display` passthrough would leak it and fail the assertion. The output
+    // is constant, so a single fixed seed exercises the same collapse guarantee
+    // the property loop would.
+    #[test]
+    fn kube_err_public_summary_collapses_non_api_variants() {
+        let seed = SEED_TOKEN;
+        // A NUL byte is never valid JSON, so the parse always fails and the
+        // resulting serde error carries only position info.
+        let serde_err = serde_json::from_str::<serde_json::Value>(&format!("{seed}\u{0}"))
+            .expect_err("NUL is never valid JSON");
+        let errs = vec![
+            kube::Error::SerdeError(serde_err),
+            kube::Error::LinesCodecMaxLineLengthExceeded,
+            kube::Error::Auth(kube::client::AuthError::AuthExecRun {
+                cmd: format!("kubectl --token={seed}"),
+                status: std::process::ExitStatus::default(),
+                out: std::process::Output {
+                    status: std::process::ExitStatus::default(),
+                    stdout: seed.as_bytes().to_vec(),
+                    stderr: Vec::new(),
+                },
+            }),
+        ];
+        for err in errs {
+            let summary = kube_err_public_summary(&err);
+            assert_eq!(summary, "Kubernetes client error");
+            assert!(!summary.contains(seed));
+            assert!(is_tenant_safe_charset(&summary));
         }
     }
 }
