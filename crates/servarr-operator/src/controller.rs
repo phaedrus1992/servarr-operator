@@ -1573,13 +1573,11 @@ async fn maybe_run_backup(
     let api_key = match servarr_api::read_secret_key(client, ns, secret_name, "api-key").await {
         Ok(k) => k,
         Err(e) => {
-            let summary = e.log_summary();
-            warn!(error = %summary, "backup: failed to read API key");
-            // The Condition.message is tenant-visible (user sees the status.backupStatus.lastBackupResult),
-            // so it must go through the stricter public_summary(), not log_summary().
-            let public_summary = e.public_summary();
+            warn!(error = %e.log_summary(), "backup: failed to read API key");
+            // status.backupStatus.lastBackupResult is tenant-visible, so it must go through
+            // the stricter public_summary(), not log_summary().
             return Some(servarr_crds::BackupStatus {
-                last_backup_result: Some(format!("secret read error: {public_summary}")),
+                last_backup_result: Some(format!("secret read error: {}", e.public_summary())),
                 ..Default::default()
             });
         }
@@ -2271,6 +2269,10 @@ async fn prowlarr_sync_exists(client: &Client, namespace: &str) -> bool {
 }
 
 /// Remove this app's registration from Prowlarr when the CR is deleted.
+///
+/// `Err` is only ever consumed by a `warn!` in `reconcile()` — never a Condition or Event — so
+/// every sanitizer call below intentionally uses the log-only variant (`log_summary()` /
+/// `kube_err_summary()`), not the stricter tenant-safe one.
 async fn cleanup_prowlarr_registration(
     client: &Client,
     app: &ServarrApp,
@@ -3134,6 +3136,10 @@ async fn overseerr_sync_exists(client: &Client, namespace: &str) -> bool {
 }
 
 /// Remove this app's registration from Overseerr when the CR is deleted.
+///
+/// `Err` is only ever consumed by a `warn!` in `reconcile()` — never a Condition or Event — so
+/// every sanitizer call below intentionally uses the log-only variant (`log_summary()` /
+/// `kube_err_summary()`), not the stricter tenant-safe one.
 async fn cleanup_overseerr_registration(
     client: &Client,
     app: &ServarrApp,
