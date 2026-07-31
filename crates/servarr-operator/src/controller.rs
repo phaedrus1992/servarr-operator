@@ -13,6 +13,7 @@ use kube::runtime::reflector::{self, ObjectRef};
 use kube::runtime::watcher;
 use kube::{Client, CustomResourceExt, Resource, ResourceExt};
 use servarr_api::AppKind;
+use servarr_api::TenantSafeMessage;
 use servarr_api::k8s::{kube_err_public_summary, kube_err_summary};
 use servarr_crds::{AppType, Condition, ServarrApp, ServarrAppStatus, condition_types};
 use thiserror::Error;
@@ -1347,8 +1348,11 @@ struct ConditionSpec<'a> {
 
 /// Turn a reconcile sub-step `Result` into a status [`Condition`]: success
 /// yields an `ok` condition, failure yields a `fail` condition carrying the
-/// error string and emits a `warn!` keyed on `name`. (#15)
-fn result_to_condition<E: std::fmt::Display>(
+/// sanitized [`TenantSafeMessage`] and emits a `warn!` keyed on `name`. (#15)
+///
+/// The generic error must convert into a [`TenantSafeMessage`], so only
+/// sanitizer output can ever reach the tenant-visible Condition message.
+fn result_to_condition<E: Into<TenantSafeMessage>>(
     result: Result<(), E>,
     spec: ConditionSpec<'_>,
     name: &str,
@@ -1357,8 +1361,9 @@ fn result_to_condition<E: std::fmt::Display>(
     match result {
         Ok(()) => Condition::ok(spec.condition_type, spec.ok_reason, spec.ok_message, now),
         Err(e) => {
-            warn!(%name, error = %e, "{}", spec.fail_log);
-            Condition::fail(spec.condition_type, spec.fail_reason, &e.to_string(), now)
+            let msg: TenantSafeMessage = e.into();
+            warn!(%name, error = %msg, "{}", spec.fail_log);
+            Condition::fail(spec.condition_type, spec.fail_reason, msg.as_ref(), now)
         }
     }
 }
@@ -1799,7 +1804,7 @@ async fn maybe_restore_backup(
     restore_id: &str,
     recorder: &Recorder,
     obj_ref: &k8s_openapi::api::core::v1::ObjectReference,
-) -> Result<(), anyhow::Error> {
+) -> Result<(), TenantSafeMessage> {
     let ns = app.namespace().unwrap_or_else(|| "default".into());
     let ns = ns.as_str();
     let name = app.name_any();
@@ -1814,7 +1819,9 @@ async fn maybe_restore_backup(
     }
 
     let backup_id: i64 = restore_id.parse().map_err(|_| {
-        anyhow::anyhow!("invalid restore-from value {restore_id:?}: expected integer backup ID")
+        TenantSafeMessage::new(format!(
+            "invalid restore-from value {restore_id:?}: expected integer backup ID"
+        ))
     })?;
 
     info!(%name, backup_id, "restore-from-backup triggered");
@@ -1837,7 +1844,7 @@ async fn maybe_restore_backup(
 
     // Step 1: Scale deployment to 0 and wait for pods to terminate.
     // Captured as a Result so scale-up (Step 3) always runs even if this fails.
-    let scale_down_outcome: Result<(), anyhow::Error> = async {
+    let scale_down_outcome: Result<(), TenantSafeMessage> = async {
         let scale_down = serde_json::json!({
             "spec": { "replicas": 0 }
         });
@@ -1845,7 +1852,10 @@ async fn maybe_restore_backup(
             .patch(name, &PatchParams::default(), &Patch::Merge(scale_down))
             .await
             .map_err(|e| {
-                anyhow::anyhow!("failed to scale down for restore: {}", kube_err_public_summary(&e))
+                TenantSafeMessage::new(format!(
+                    "failed to scale down for restore: {}",
+                    kube_err_public_summary(&e)
+                ))
             })?;
 
         // Wait for pods to terminate (poll for up to 60 seconds)
@@ -1909,11 +1919,11 @@ async fn maybe_restore_backup(
         )
         .await
         .map_err(|e| {
-            anyhow::anyhow!(
+            TenantSafeMessage::new(format!(
                 "restore succeeded but failed to remove annotation \
                  (will re-trigger on next reconcile): {}",
                 kube_err_public_summary(&e)
-            )
+            ))
         })?;
 
     Ok(())
@@ -1929,41 +1939,45 @@ async fn try_restore(
     backup_id: i64,
     recorder: &Recorder,
     obj_ref: &k8s_openapi::api::core::v1::ObjectReference,
-) -> Result<(), anyhow::Error> {
+) -> Result<(), TenantSafeMessage> {
     let ns = app.namespace().unwrap_or_else(|| "default".into());
     let ns = ns.as_str();
     let name = app.name_any();
     let name = name.as_str();
-    let secret_name = app
-        .spec
-        .api_key_secret
-        .as_deref()
-        .ok_or_else(|| anyhow::anyhow!("no api_key_secret configured, cannot restore"))?;
+    let secret_name =
+        app.spec.api_key_secret.as_deref().ok_or_else(|| {
+            TenantSafeMessage::new("no api_key_secret configured, cannot restore")
+        })?;
     let api_key = servarr_api::read_secret_key(client, ns, secret_name, "api-key")
         .await
         .map_err(|e| {
-            anyhow::anyhow!("failed to read API key for restore: {}", e.public_summary())
+            TenantSafeMessage::new(format!(
+                "failed to read API key for restore: {}",
+                e.public_summary()
+            ))
         })?;
 
     let app_name = servarr_resources::common::service_name(app);
     let defaults = servarr_crds::AppDefaults::for_app(&app.spec.app)
-        .map_err(|e| anyhow::anyhow!("failed to load app defaults: {e}"))?;
+        .map_err(|e| TenantSafeMessage::new(format!("failed to load app defaults: {e}")))?;
     let svc_spec = app.spec.service.as_ref().unwrap_or(&defaults.service);
     let port = svc_spec.ports.first().map(|p| p.port).unwrap_or(80);
     let base_url = format!("http://{app_name}.{ns}.svc:{port}");
 
     let Some(app_kind) = app_type_to_kind(&app.spec.app) else {
-        return Err(anyhow::anyhow!(
+        return Err(TenantSafeMessage::new(format!(
             "restore: app type {:?} has no AppKind mapping",
             app.spec.app
-        ));
+        )));
     };
 
     // Safe as-is: `ServarrClient::new` builds the client but never sends a request, so it can
     // never return the response-body-derived `ApiResponse` variant; `{e}` here never echoes
     // external content.
-    let servarr_client = servarr_api::ServarrClient::new(&base_url, &api_key, app_kind)
-        .map_err(|e| anyhow::anyhow!("failed to create API client for restore: {e}"))?;
+    let servarr_client =
+        servarr_api::ServarrClient::new(&base_url, &api_key, app_kind).map_err(|e| {
+            TenantSafeMessage::new(format!("failed to create API client for restore: {e}"))
+        })?;
 
     match servarr_client.restore_backup(backup_id).await {
         Ok(()) => {
@@ -2001,7 +2015,9 @@ async fn try_restore(
                     obj_ref,
                 )
                 .await;
-            Err(anyhow::anyhow!("restore API call failed: {summary}"))
+            Err(TenantSafeMessage::new(format!(
+                "restore API call failed: {summary}"
+            )))
         }
     }
 }
@@ -2032,15 +2048,15 @@ impl DiscoveredApp {
 pub(crate) async fn discover_namespace_apps(
     client: &Client,
     namespace: &str,
-) -> Result<Vec<DiscoveredApp>, anyhow::Error> {
+) -> Result<Vec<DiscoveredApp>, TenantSafeMessage> {
     use kube::api::ListParams;
 
     let api = Api::<ServarrApp>::namespaced(client.clone(), namespace);
     let apps = api.list(&ListParams::default()).await.map_err(|e| {
-        anyhow::anyhow!(
+        TenantSafeMessage::new(format!(
             "failed to list ServarrApps: {}",
             kube_err_public_summary(&e)
-        )
+        ))
     })?;
 
     let mut discovered = Vec::new();
@@ -2076,7 +2092,7 @@ pub(crate) async fn discover_namespace_apps(
 
         let app_name = servarr_resources::common::service_name(app);
         let defaults = servarr_crds::AppDefaults::for_app(&app.spec.app)
-            .map_err(|e| anyhow::anyhow!("failed to load app defaults: {e}"))?;
+            .map_err(|e| TenantSafeMessage::new(format!("failed to load app defaults: {e}")))?;
         let svc_spec = app.spec.service.as_ref().unwrap_or(&defaults.service);
         let port = svc_spec.ports.first().map(|p| p.port).unwrap_or(80);
         let host = format!("{app_name}.{namespace}.svc");
@@ -2101,7 +2117,7 @@ async fn sync_prowlarr_apps(
     target_ns: &str,
     recorder: &Recorder,
     obj_ref: &k8s_openapi::api::core::v1::ObjectReference,
-) -> Result<(), anyhow::Error> {
+) -> Result<(), TenantSafeMessage> {
     let prowlarr_name = prowlarr.name_any();
     let ns = prowlarr.namespace().unwrap_or_else(|| "default".into());
 
@@ -2110,27 +2126,40 @@ async fn sync_prowlarr_apps(
         .spec
         .api_key_secret
         .as_deref()
-        .ok_or_else(|| anyhow::anyhow!("Prowlarr sync requires api_key_secret"))?;
+        .ok_or_else(|| TenantSafeMessage::new("Prowlarr sync requires api_key_secret"))?;
     let prowlarr_key = servarr_api::read_secret_key(client, &ns, secret_name, "api-key")
         .await
-        .map_err(|e| anyhow::anyhow!("failed to read Prowlarr API key: {}", e.public_summary()))?;
+        .map_err(|e| {
+            TenantSafeMessage::new(format!(
+                "failed to read Prowlarr API key: {}",
+                e.public_summary()
+            ))
+        })?;
 
     let prowlarr_app_name = servarr_resources::common::service_name(prowlarr);
     let defaults = servarr_crds::AppDefaults::for_app(&prowlarr.spec.app)
-        .map_err(|e| anyhow::anyhow!("failed to load app defaults: {e}"))?;
+        .map_err(|e| TenantSafeMessage::new(format!("failed to load app defaults: {e}")))?;
     let svc_spec = prowlarr.spec.service.as_ref().unwrap_or(&defaults.service);
     let port = svc_spec.ports.first().map(|p| p.port).unwrap_or(80);
     let prowlarr_url = format!("http://{prowlarr_app_name}.{ns}.svc:{port}");
 
-    let prowlarr_client = servarr_api::ProwlarrClient::new(&prowlarr_url, &prowlarr_key)
-        .map_err(|e| anyhow::anyhow!("failed to create Prowlarr client: {}", e.log_summary()))?;
+    let prowlarr_client =
+        servarr_api::ProwlarrClient::new(&prowlarr_url, &prowlarr_key).map_err(|e| {
+            TenantSafeMessage::new(format!(
+                "failed to create Prowlarr client: {}",
+                e.log_summary()
+            ))
+        })?;
 
     // Discover apps in target namespace
     let discovered = discover_namespace_apps(client, target_ns).await?;
 
     // Get current Prowlarr applications
     let existing = prowlarr_client.list_applications().await.map_err(|e| {
-        anyhow::anyhow!("failed to list Prowlarr applications: {}", e.log_summary())
+        TenantSafeMessage::new(format!(
+            "failed to list Prowlarr applications: {}",
+            e.log_summary()
+        ))
     })?;
 
     // Build a map of existing apps by base URL for diffing
@@ -2377,7 +2406,7 @@ async fn sync_overseerr_servers(
     target_ns: &str,
     recorder: &Recorder,
     obj_ref: &k8s_openapi::api::core::v1::ObjectReference,
-) -> Result<(), anyhow::Error> {
+) -> Result<(), TenantSafeMessage> {
     let overseerr_name = overseerr.name_any();
     let ns = overseerr.namespace().unwrap_or_else(|| "default".into());
 
@@ -2386,14 +2415,19 @@ async fn sync_overseerr_servers(
         .spec
         .api_key_secret
         .as_deref()
-        .ok_or_else(|| anyhow::anyhow!("Overseerr sync requires api_key_secret"))?;
+        .ok_or_else(|| TenantSafeMessage::new("Overseerr sync requires api_key_secret"))?;
     let overseerr_key = servarr_api::read_secret_key(client, &ns, secret_name, "api-key")
         .await
-        .map_err(|e| anyhow::anyhow!("failed to read Overseerr API key: {}", e.public_summary()))?;
+        .map_err(|e| {
+            TenantSafeMessage::new(format!(
+                "failed to read Overseerr API key: {}",
+                e.public_summary()
+            ))
+        })?;
 
     let overseerr_app_name = servarr_resources::common::service_name(overseerr);
     let defaults = servarr_crds::AppDefaults::for_app(&overseerr.spec.app)
-        .map_err(|e| anyhow::anyhow!("failed to load app defaults: {e}"))?;
+        .map_err(|e| TenantSafeMessage::new(format!("failed to load app defaults: {e}")))?;
     let svc_spec = overseerr.spec.service.as_ref().unwrap_or(&defaults.service);
     let port = svc_spec.ports.first().map(|p| p.port).unwrap_or(80);
     let overseerr_url = format!("http://{overseerr_app_name}.{ns}.svc:{port}");
@@ -2405,16 +2439,16 @@ async fn sync_overseerr_servers(
 
     // Get existing server registrations
     let existing_sonarr = overseerr_client.list_sonarr().await.map_err(|e| {
-        anyhow::anyhow!(
+        TenantSafeMessage::new(format!(
             "failed to list Overseerr Sonarr servers: {}",
             e.log_summary()
-        )
+        ))
     })?;
     let existing_radarr = overseerr_client.list_radarr().await.map_err(|e| {
-        anyhow::anyhow!(
+        TenantSafeMessage::new(format!(
             "failed to list Overseerr Radarr servers: {}",
             e.log_summary()
-        )
+        ))
     })?;
 
     // Get Overseerr config for default profile/directory settings
@@ -2625,7 +2659,7 @@ async fn sync_bazarr_apps(
     client: &Client,
     bazarr: &ServarrApp,
     target_ns: &str,
-) -> Result<(), anyhow::Error> {
+) -> Result<(), TenantSafeMessage> {
     let bazarr_name = bazarr.name_any();
     let ns = bazarr.namespace().unwrap_or_else(|| "default".into());
 
@@ -2633,17 +2667,26 @@ async fn sync_bazarr_apps(
     let api_key_secret = servarr_resources::common::child_name(bazarr, "api-key");
     let bazarr_key = servarr_api::read_secret_key(client, &ns, &api_key_secret, "api-key")
         .await
-        .map_err(|e| anyhow::anyhow!("failed to read Bazarr API key: {}", e.public_summary()))?;
+        .map_err(|e| {
+            TenantSafeMessage::new(format!(
+                "failed to read Bazarr API key: {}",
+                e.public_summary()
+            ))
+        })?;
 
     let bazarr_app_name = servarr_resources::common::service_name(bazarr);
     let defaults = servarr_crds::AppDefaults::for_app(&bazarr.spec.app)
-        .map_err(|e| anyhow::anyhow!("failed to load app defaults: {e}"))?;
+        .map_err(|e| TenantSafeMessage::new(format!("failed to load app defaults: {e}")))?;
     let svc_spec = bazarr.spec.service.as_ref().unwrap_or(&defaults.service);
     let port = svc_spec.ports.first().map(|p| p.port).unwrap_or(80);
     let bazarr_url = format!("http://{bazarr_app_name}.{ns}.svc:{port}");
 
-    let bazarr_client = servarr_api::BazarrClient::new(&bazarr_url, &bazarr_key)
-        .map_err(|e| anyhow::anyhow!("failed to create Bazarr client: {}", e.log_summary()))?;
+    let bazarr_client = servarr_api::BazarrClient::new(&bazarr_url, &bazarr_key).map_err(|e| {
+        TenantSafeMessage::new(format!(
+            "failed to create Bazarr client: {}",
+            e.log_summary()
+        ))
+    })?;
 
     let auto_remove = bazarr
         .spec
@@ -2658,7 +2701,7 @@ async fn sync_bazarr_apps(
     let has_sonarr = discovered.iter().any(|a| a.app_type == AppType::Sonarr);
     let has_radarr = discovered.iter().any(|a| a.app_type == AppType::Radarr);
 
-    let mut first_error: Option<anyhow::Error> = None;
+    let mut first_error: Option<TenantSafeMessage> = None;
 
     for app in &discovered {
         match app.app_type {
@@ -2672,7 +2715,10 @@ async fn sync_bazarr_apps(
                     warn!(bazarr = %bazarr_name, sonarr = %app.name, error = %summary,
                         "failed to configure Sonarr in Bazarr");
                     first_error.get_or_insert_with(|| {
-                        anyhow::anyhow!("configure_sonarr({}) failed: {summary}", app.name)
+                        TenantSafeMessage::new(format!(
+                            "configure_sonarr({}) failed: {summary}",
+                            app.name
+                        ))
                     });
                 }
             }
@@ -2686,7 +2732,10 @@ async fn sync_bazarr_apps(
                     warn!(bazarr = %bazarr_name, radarr = %app.name, error = %summary,
                         "failed to configure Radarr in Bazarr");
                     first_error.get_or_insert_with(|| {
-                        anyhow::anyhow!("configure_radarr({}) failed: {summary}", app.name)
+                        TenantSafeMessage::new(format!(
+                            "configure_radarr({}) failed: {summary}",
+                            app.name
+                        ))
                     });
                 }
             }
@@ -2698,12 +2747,16 @@ async fn sync_bazarr_apps(
         if !has_sonarr && let Err(e) = bazarr_client.disable_sonarr().await {
             let summary = e.log_summary();
             warn!(bazarr = %bazarr_name, error = %summary, "failed to disable Sonarr in Bazarr");
-            first_error.get_or_insert_with(|| anyhow::anyhow!("disable_sonarr failed: {summary}"));
+            first_error.get_or_insert_with(|| {
+                TenantSafeMessage::new(format!("disable_sonarr failed: {summary}"))
+            });
         }
         if !has_radarr && let Err(e) = bazarr_client.disable_radarr().await {
             let summary = e.log_summary();
             warn!(bazarr = %bazarr_name, error = %summary, "failed to disable Radarr in Bazarr");
-            first_error.get_or_insert_with(|| anyhow::anyhow!("disable_radarr failed: {summary}"));
+            first_error.get_or_insert_with(|| {
+                TenantSafeMessage::new(format!("disable_radarr failed: {summary}"))
+            });
         }
     }
 
@@ -2736,7 +2789,7 @@ async fn sync_maintainerr_servers(
     maintainerr: &ServarrApp,
     target_ns: &str,
     base_url_override: Option<&str>,
-) -> Result<(), anyhow::Error> {
+) -> Result<(), TenantSafeMessage> {
     let maintainerr_name = maintainerr.name_any();
     let ns = maintainerr.namespace().unwrap_or_else(|| "default".into());
 
@@ -2745,12 +2798,15 @@ async fn sync_maintainerr_servers(
     let maintainerr_key = servarr_api::read_secret_key(client, &ns, &api_key_secret, "api-key")
         .await
         .map_err(|e| {
-            anyhow::anyhow!("failed to read Maintainerr API key: {}", e.public_summary())
+            TenantSafeMessage::new(format!(
+                "failed to read Maintainerr API key: {}",
+                e.public_summary()
+            ))
         })?;
 
     let maintainerr_app_name = servarr_resources::common::service_name(maintainerr);
     let defaults = servarr_crds::AppDefaults::for_app(&maintainerr.spec.app)
-        .map_err(|e| anyhow::anyhow!("failed to load app defaults: {e}"))?;
+        .map_err(|e| TenantSafeMessage::new(format!("failed to load app defaults: {e}")))?;
     let svc_spec = maintainerr
         .spec
         .service
@@ -2759,7 +2815,9 @@ async fn sync_maintainerr_servers(
     // A Maintainerr service with no port is a malformed spec/defaults — surface it
     // rather than silently constructing a URL against the wrong port.
     let port = svc_spec.ports.first().map(|p| p.port).ok_or_else(|| {
-        anyhow::anyhow!("Maintainerr service spec has no ports; check spec.service or app defaults")
+        TenantSafeMessage::new(
+            "Maintainerr service spec has no ports; check spec.service or app defaults",
+        )
     })?;
     let maintainerr_url = base_url_override
         .map(str::to_owned)
@@ -2767,7 +2825,10 @@ async fn sync_maintainerr_servers(
 
     let maintainerr_client =
         servarr_api::MaintainerrClient::new(&maintainerr_url, &maintainerr_key).map_err(|e| {
-            anyhow::anyhow!("failed to create Maintainerr client: {}", e.log_summary())
+            TenantSafeMessage::new(format!(
+                "failed to create Maintainerr client: {}",
+                e.log_summary()
+            ))
         })?;
 
     let mut failures = 0;
@@ -2855,7 +2916,7 @@ async fn sync_maintainerr_servers(
             let summary = e.log_summary();
             error!(maintainerr = %maintainerr_name, error = %summary,
                 "failed to list existing Sonarr servers from Maintainerr; aborting sync to prevent duplicates");
-            anyhow::anyhow!("list_sonarr failed: {summary}")
+            TenantSafeMessage::new(format!("list_sonarr failed: {summary}"))
         })?
         .into_iter()
         .map(|s| s.name)
@@ -2867,7 +2928,7 @@ async fn sync_maintainerr_servers(
             let summary = e.log_summary();
             error!(maintainerr = %maintainerr_name, error = %summary,
                 "failed to list existing Radarr servers from Maintainerr; aborting sync to prevent duplicates");
-            anyhow::anyhow!("list_radarr failed: {summary}")
+            TenantSafeMessage::new(format!("list_radarr failed: {summary}"))
         })?
         .into_iter()
         .map(|s| s.name)
@@ -3001,9 +3062,9 @@ async fn sync_maintainerr_servers(
         "Maintainerr sync complete");
 
     if failures > 0 {
-        return Err(anyhow::anyhow!(
+        return Err(TenantSafeMessage::new(format!(
             "{failures} app(s) failed to sync into Maintainerr (see warnings above)"
-        ));
+        )));
     }
 
     Ok(())
@@ -3016,7 +3077,7 @@ async fn sync_subgen_jellyfin(
     client: &Client,
     subgen: &ServarrApp,
     target_ns: &str,
-) -> Result<(), anyhow::Error> {
+) -> Result<(), TenantSafeMessage> {
     let subgen_name = subgen.name_any();
     let ns = subgen.namespace().unwrap_or_else(|| "default".into());
 
@@ -3026,10 +3087,10 @@ async fn sync_subgen_jellyfin(
         .list(&kube::api::ListParams::default())
         .await
         .map_err(|e| {
-            anyhow::anyhow!(
+            TenantSafeMessage::new(format!(
                 "failed to list ServarrApps: {}",
                 kube_err_public_summary(&e)
-            )
+            ))
         })?;
 
     let jellyfin = match app_list
@@ -3041,9 +3102,9 @@ async fn sync_subgen_jellyfin(
         None => {
             warn!(subgen = %subgen_name,
                 "subgen-sync: no Jellyfin CR found in namespace {target_ns}, skipping");
-            return Err(anyhow::anyhow!(
+            return Err(TenantSafeMessage::new(format!(
                 "no Jellyfin CR found in namespace {target_ns}"
-            ));
+            )));
         }
     };
 
@@ -3053,8 +3114,8 @@ async fn sync_subgen_jellyfin(
         None => {
             warn!(subgen = %subgen_name,
                 "subgen-sync: Jellyfin CR has no apiKeySecret, skipping");
-            return Err(anyhow::anyhow!(
-                "Jellyfin CR has no apiKeySecret configured"
+            return Err(TenantSafeMessage::new(
+                "Jellyfin CR has no apiKeySecret configured",
             ));
         }
     };
@@ -3062,15 +3123,15 @@ async fn sync_subgen_jellyfin(
     servarr_api::read_secret_key(client, target_ns, &jf_secret_name, "api-key")
         .await
         .map_err(|e| {
-            anyhow::anyhow!(
+            TenantSafeMessage::new(format!(
                 "Jellyfin API key secret {jf_secret_name} unreadable: {}",
                 e.public_summary()
-            )
+            ))
         })?;
 
     let jf_app_name = servarr_resources::common::service_name(jellyfin);
     let jf_defaults = servarr_crds::AppDefaults::for_app(&jellyfin.spec.app)
-        .map_err(|e| anyhow::anyhow!("failed to load app defaults: {e}"))?;
+        .map_err(|e| TenantSafeMessage::new(format!("failed to load app defaults: {e}")))?;
     let jf_svc_spec = jellyfin
         .spec
         .service
@@ -3114,10 +3175,10 @@ async fn sync_subgen_jellyfin(
         .patch(&subgen_name, &pp, &Patch::Apply(patch))
         .await
         .map_err(|e| {
-            anyhow::anyhow!(
+            TenantSafeMessage::new(format!(
                 "failed to patch Subgen Deployment: {}",
                 kube_err_public_summary(&e)
-            )
+            ))
         })?;
 
     info!(subgen = %subgen_name, jellyfin = %jf_app_name, "subgen-sync: injected Jellyfin env vars");
@@ -3412,6 +3473,28 @@ mod tests {
     fn error_public_summary_non_kube_variant_passes_through_unchanged() {
         let err = Error::AppDefaults("missing entry for AppType::Radarr".to_string());
         assert_eq!(err.public_summary(), err.to_string());
+    }
+
+    // ---- result_to_condition golden tests ----
+
+    #[test]
+    fn result_to_condition_api_error_message_is_byte_identical_to_pre_sanitization() {
+        // Golden test (#443): an ApiResponse whose body would leak through the raw Display
+        // must still produce exactly the pre-existing sanitized Condition message.
+        let err = servarr_api::ApiError::ApiResponse {
+            status: 401,
+            body: "super-secret-leaky-body".to_string(),
+        };
+        let result: Result<(), TenantSafeMessage> = Err(TenantSafeMessage::from(err));
+        let spec = ConditionSpec {
+            condition_type: "Restore",
+            ok_reason: "Succeeded",
+            ok_message: "restore succeeded",
+            fail_reason: "Failed",
+            fail_log: "restore failed",
+        };
+        let condition = result_to_condition(result, spec, "my-app", "2026-07-31T00:00:00Z");
+        assert_eq!(condition.message, "HTTP API error (status: 401)");
     }
 
     // ---- json_is_subset ----
