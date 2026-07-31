@@ -2328,6 +2328,9 @@ async fn cleanup_prowlarr_registration(
 /// Turns a single error into the `(anyhow::Error, TenantSafeMessage)` pair a cleanup failure
 /// propagates: the anyhow side carries full detail for the operator log, while the
 /// `TenantSafeMessage` side is tenant-safe for the Kubernetes Event.
+///
+/// `prefix` is a short, static description of the failing operation; the sanitizer's summary
+/// of `e` is joined after it with `": "`. Callers must not include the separator in `prefix`.
 trait CleanupMapErr<T> {
     type Error;
     fn cleanup_map_err<F>(
@@ -2352,7 +2355,7 @@ where
     where
         F: FnOnce(&E) -> String,
     {
-        self.map_err(|e| (anyhow::anyhow!("{prefix}{}", summary(&e)), e.into()))
+        self.map_err(|e| (anyhow::anyhow!("{prefix}: {}", summary(&e)), e.into()))
     }
 }
 
@@ -2392,7 +2395,7 @@ async fn cleanup_prowlarr_registration_body(
     let apps = sa_api
         .list(&ListParams::default())
         .await
-        .cleanup_map_err("failed to list ServarrApps: ", kube_err_summary)?;
+        .cleanup_map_err("failed to list ServarrApps", kube_err_summary)?;
     let prowlarr = apps.iter().find(|a| {
         a.spec.app == AppType::Prowlarr && a.spec.prowlarr_sync.as_ref().is_some_and(|s| s.enabled)
     });
@@ -2407,7 +2410,7 @@ async fn cleanup_prowlarr_registration_body(
 
     let prowlarr_key = servarr_api::read_secret_key(client, namespace, secret_name, "api-key")
         .await
-        .cleanup_map_err("failed to read Prowlarr API key: ", |e| e.log_summary())?;
+        .cleanup_map_err("failed to read Prowlarr API key", |e| e.log_summary())?;
 
     let prowlarr_app_name = servarr_resources::common::service_name(prowlarr);
     let prowlarr_defaults = servarr_crds::AppDefaults::for_app(&prowlarr.spec.app)
@@ -2424,14 +2427,12 @@ async fn cleanup_prowlarr_registration_body(
         .unwrap_or_else(|| format!("http://{prowlarr_app_name}.{prowlarr_ns}.svc:{prowlarr_port}"));
 
     let prowlarr_client = servarr_api::ProwlarrClient::new(&prowlarr_url, &prowlarr_key)
-        .cleanup_map_err("failed to create Prowlarr client: ", |e| e.log_summary())?;
+        .cleanup_map_err("failed to create Prowlarr client", |e| e.log_summary())?;
 
     let existing = prowlarr_client
         .list_applications()
         .await
-        .cleanup_map_err("failed to list Prowlarr applications: ", |e| {
-            e.log_summary()
-        })?;
+        .cleanup_map_err("failed to list Prowlarr applications", |e| e.log_summary())?;
     if let Some(registered) = existing.iter().find(|a| {
         a.fields
             .iter()
@@ -2446,7 +2447,7 @@ async fn cleanup_prowlarr_registration_body(
             .delete_application(registered.id)
             .await
             .cleanup_map_err(
-                &format!("failed to delete Prowlarr application {}: ", registered.id),
+                &format!("failed to delete Prowlarr application {}", registered.id),
                 |e| e.log_summary(),
             )?;
 
@@ -3452,7 +3453,7 @@ where
     K: OverseerrAppKind,
 {
     let existing = kind.list(overseerr_client).await.cleanup_map_err(
-        &format!("failed to list Overseerr {} servers: ", kind.name()),
+        &format!("failed to list Overseerr {} servers", kind.name()),
         |e| e.log_summary(),
     )?;
     if let Some(registered) = existing
@@ -3467,7 +3468,7 @@ where
             kind.name()
         );
         kind.delete(overseerr_client, id).await.cleanup_map_err(
-            &format!("failed to delete Overseerr {} server {id}: ", kind.name()),
+            &format!("failed to delete Overseerr {} server {id}", kind.name()),
             |e| e.log_summary(),
         )?;
         return Ok(true);
@@ -3508,7 +3509,7 @@ async fn cleanup_overseerr_registration_body(
     let apps = sa_api
         .list(&ListParams::default())
         .await
-        .cleanup_map_err("failed to list ServarrApps: ", kube_err_summary)?;
+        .cleanup_map_err("failed to list ServarrApps", kube_err_summary)?;
     let overseerr = apps.iter().find(|a| {
         a.spec.app == AppType::Overseerr
             && a.spec.overseerr_sync.as_ref().is_some_and(|s| s.enabled)
@@ -3525,7 +3526,7 @@ async fn cleanup_overseerr_registration_body(
     let overseerr_ns = overseerr.namespace().unwrap_or_else(|| namespace.into());
     let overseerr_key = servarr_api::read_secret_key(client, &overseerr_ns, secret_name, "api-key")
         .await
-        .cleanup_map_err("failed to read Overseerr API key: ", |e| e.log_summary())?;
+        .cleanup_map_err("failed to read Overseerr API key", |e| e.log_summary())?;
 
     let overseerr_app_name = servarr_resources::common::service_name(overseerr);
     let overseerr_defaults = servarr_crds::AppDefaults::for_app(&overseerr.spec.app)
