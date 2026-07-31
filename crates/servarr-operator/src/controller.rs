@@ -2319,18 +2319,7 @@ async fn cleanup_prowlarr_registration(
     {
         Ok(()) => Ok(()),
         Err((err, tenant_msg)) => {
-            let _ = recorder
-                .publish(
-                    &Event {
-                        type_: EventType::Warning,
-                        reason: "CleanupFailed".into(),
-                        note: Some(tenant_msg.as_ref().to_string()),
-                        action: "Finalize".into(),
-                        secondary: None,
-                    },
-                    obj_ref,
-                )
-                .await;
+            publish_cleanup_failed(recorder, obj_ref, &tenant_msg).await;
             Err(err)
         }
     }
@@ -3293,18 +3282,7 @@ async fn cleanup_overseerr_registration(
     {
         Ok(()) => Ok(()),
         Err((err, tenant_msg)) => {
-            let _ = recorder
-                .publish(
-                    &Event {
-                        type_: EventType::Warning,
-                        reason: "CleanupFailed".into(),
-                        note: Some(tenant_msg.as_ref().to_string()),
-                        action: "Finalize".into(),
-                        secondary: None,
-                    },
-                    obj_ref,
-                )
-                .await;
+            publish_cleanup_failed(recorder, obj_ref, &tenant_msg).await;
             Err(err)
         }
     }
@@ -3422,6 +3400,28 @@ async fn publish_cleanup_normal(
                 type_: EventType::Normal,
                 reason: reason.into(),
                 note: Some(note),
+                action: "Finalize".into(),
+                secondary: None,
+            },
+            obj_ref,
+        )
+        .await;
+}
+
+/// Publish the Warning event (reason `CleanupFailed`) for a failed finalizer cleanup, shared
+/// by the Prowlarr and Overseerr cleanup wrappers. The note carries the tenant-safe message
+/// from the propagated cleanup error.
+async fn publish_cleanup_failed(
+    recorder: &Recorder,
+    obj_ref: &k8s_openapi::api::core::v1::ObjectReference,
+    msg: &TenantSafeMessage,
+) {
+    let _ = recorder
+        .publish(
+            &Event {
+                type_: EventType::Warning,
+                reason: "CleanupFailed".into(),
+                note: Some(msg.as_ref().to_string()),
                 action: "Finalize".into(),
                 secondary: None,
             },
