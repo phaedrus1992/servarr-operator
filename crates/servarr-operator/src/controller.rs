@@ -3416,7 +3416,7 @@ async fn publish_cleanup_failed(
     obj_ref: &k8s_openapi::api::core::v1::ObjectReference,
     msg: &TenantSafeMessage,
 ) {
-    let _ = recorder
+    if let Err(e) = recorder
         .publish(
             &Event {
                 type_: EventType::Warning,
@@ -3427,7 +3427,16 @@ async fn publish_cleanup_failed(
             },
             obj_ref,
         )
-        .await;
+        .await
+    {
+        // A failure to publish means the tenant never learns cleanup failed; log it rather
+        // than swallowing it silently. The full error is operator-log-only (never tenant-facing).
+        warn!(
+            error = %e,
+            object = %obj_ref.name.as_deref().unwrap_or("<unknown>"),
+            "failed to publish CleanupFailed event"
+        );
+    }
 }
 
 /// Remove one registered server (Sonarr or Radarr) matching `app_hostname:port` from Overseerr.
