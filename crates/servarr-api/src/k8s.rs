@@ -55,6 +55,8 @@ impl SecretError {
 pub fn kube_err_summary(e: &kube::Error) -> String {
     match e {
         kube::Error::Api(status) => format!("Kubernetes API error (status: {})", status.code),
+        // Operator log only — never tenant-visible. TenantSafeMessage routes through
+        // kube_err_public_summary, which collapses non-Api variants to a generic string.
         other => other.to_string(),
     }
 }

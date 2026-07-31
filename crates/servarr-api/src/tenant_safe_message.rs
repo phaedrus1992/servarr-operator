@@ -84,7 +84,9 @@ mod tests {
             ..Default::default()
         };
         let err = kube::Error::Api(Box::new(status));
+        let expected = kube_err_public_summary(&err);
         let msg = TenantSafeMessage::from(err);
+        assert_eq!(msg.as_ref(), expected);
         assert!(
             msg.as_ref().contains("403"),
             "message should keep the status code: {msg}"

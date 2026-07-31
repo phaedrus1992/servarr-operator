@@ -2333,10 +2333,9 @@ async fn cleanup_prowlarr_registration(
     }
 }
 
-/// Map a cleanup failure into the propagated-error + tenant-safe-message pair used by the
-/// `CleanupFailed` Event. `prefix` + `summary(&error)` build the log-only anyhow message
-/// (byte-identical to what `reconcile()`'s `warn!` logged before); the tenant-safe message
-/// derives from the original error.
+/// Turns a single error into the `(anyhow::Error, TenantSafeMessage)` pair a cleanup failure
+/// propagates: the anyhow side carries full detail for the operator log, while the
+/// `TenantSafeMessage` side is tenant-safe for the Kubernetes Event.
 trait CleanupMapErr<T> {
     type Error;
     fn cleanup_map_err<F>(
