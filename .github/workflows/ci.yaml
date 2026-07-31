@@ -52,7 +52,7 @@ jobs:
           persist-credentials: false
 
       - name: Run zizmor
-        uses: zizmorcore/zizmor-action@6599ee8b7a49aef6a770f63d261d214911a7ce02 # v0.6.0
+        uses: zizmorcore/zizmor-action@6fc4b006235f201fdab3722e17240ab420d580e5 # v0.6.1
         with:
           advanced-security: false
 
@@ -117,7 +117,7 @@ jobs:
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
 
       - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@c44f6b046f1c29ae5918b1e0bfdbb2f1813836fd # v2.84.1
+        uses: taiki-e/install-action@7572810d7dd469b651bb7793945692cf78da5dd7 # v2.85.0
         with:
           tool: cargo-llvm-cov
 
