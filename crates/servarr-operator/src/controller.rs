@@ -2122,7 +2122,8 @@ async fn sync_prowlarr_apps(
     let port = svc_spec.ports.first().map(|p| p.port).unwrap_or(80);
     let prowlarr_url = format!("http://{prowlarr_app_name}.{ns}.svc:{port}");
 
-    let prowlarr_client = servarr_api::ProwlarrClient::new(&prowlarr_url, &prowlarr_key)?;
+    let prowlarr_client = servarr_api::ProwlarrClient::new(&prowlarr_url, &prowlarr_key)
+        .map_err(|e| anyhow::anyhow!("failed to create Prowlarr client: {}", e.log_summary()))?;
 
     // Discover apps in target namespace
     let discovered = discover_namespace_apps(client, target_ns).await?;
@@ -2325,7 +2326,8 @@ async fn cleanup_prowlarr_registration(
     let prowlarr_ns = prowlarr.namespace().unwrap_or_else(|| namespace.into());
     let prowlarr_url = format!("http://{prowlarr_app_name}.{prowlarr_ns}.svc:{prowlarr_port}");
 
-    let prowlarr_client = servarr_api::ProwlarrClient::new(&prowlarr_url, &prowlarr_key)?;
+    let prowlarr_client = servarr_api::ProwlarrClient::new(&prowlarr_url, &prowlarr_key)
+        .map_err(|e| anyhow::anyhow!("failed to create Prowlarr client: {}", e.log_summary()))?;
 
     let existing = prowlarr_client.list_applications().await.map_err(|e| {
         anyhow::anyhow!("failed to list Prowlarr applications: {}", e.log_summary())
@@ -2640,7 +2642,8 @@ async fn sync_bazarr_apps(
     let port = svc_spec.ports.first().map(|p| p.port).unwrap_or(80);
     let bazarr_url = format!("http://{bazarr_app_name}.{ns}.svc:{port}");
 
-    let bazarr_client = servarr_api::BazarrClient::new(&bazarr_url, &bazarr_key)?;
+    let bazarr_client = servarr_api::BazarrClient::new(&bazarr_url, &bazarr_key)
+        .map_err(|e| anyhow::anyhow!("failed to create Bazarr client: {}", e.log_summary()))?;
 
     let auto_remove = bazarr
         .spec
@@ -2763,7 +2766,9 @@ async fn sync_maintainerr_servers(
         .unwrap_or_else(|| format!("http://{maintainerr_app_name}.{ns}.svc:{port}"));
 
     let maintainerr_client =
-        servarr_api::MaintainerrClient::new(&maintainerr_url, &maintainerr_key)?;
+        servarr_api::MaintainerrClient::new(&maintainerr_url, &maintainerr_key).map_err(|e| {
+            anyhow::anyhow!("failed to create Maintainerr client: {}", e.log_summary())
+        })?;
 
     let mut failures = 0;
 
