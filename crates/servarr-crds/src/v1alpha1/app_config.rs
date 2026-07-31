@@ -247,43 +247,14 @@ pub struct OverseerrServerDefaults4k {
 
 // --- Lidarr ---
 
-/// Configuration for Lidarr YouTube Downloader sidecar.
+/// Configuration for the Lidarr application.
 ///
-/// The [Lidarr YouTube Downloader](https://github.com/dmzoneill/lidarr-youtube-downloader)
-/// is a companion container that monitors Lidarr's API for new track additions
-/// and automatically downloads the corresponding YouTube video.
+/// The empty struct is kept so the `lidarr` appConfig key keeps deserializing;
+/// serde ignores the pruned legacy sidecar-config key on existing CRs.
 #[derive(Serialize, Deserialize, Clone, Debug, Default, JsonSchema)]
 #[serde(rename_all = "camelCase")]
-pub struct LidarrConfig {
-    /// Enable the Lidarr YouTube Downloader sidecar container.
-    #[serde(default)]
-    pub youtube_downloader: Option<LidarrYoutubeDownloaderSpec>,
-}
-
-/// YouTube downloader sidecar settings.
-#[derive(Serialize, Deserialize, Clone, Debug, Default, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct LidarrYoutubeDownloaderSpec {
-    /// Container image for the YouTube downloader.
-    /// Defaults to ghcr.io/dmzoneill/lidarr-youtube-downloader:latest.
-    #[serde(default)]
-    pub image: Option<String>,
-    /// Path to Lidarr's SQLite database file (e.g. /config/lidarr.db).
-    /// The operator mounts the Lidarr config volume into the sidecar at this path.
-    pub lidarr_db_path: Option<String>,
-    /// Path to Lidarr's music library on disk (e.g. /music).
-    /// The operator mounts the Lidarr downloads volume into the sidecar at this path.
-    pub lidarr_music_path: Option<String>,
-    /// YouTube cookies file path for authenticated downloads (e.g. /config/cookies.txt).
-    /// Mount a ConfigMap or Secret containing the cookies file at this path.
-    #[serde(default)]
-    pub yt_cookies_file: Option<String>,
-    /// Fuzzy match threshold for track matching (0.0 to 1.0).
-    /// Higher values require a closer match to the artist/track name.
-    #[serde(default)]
-    pub match_threshold: Option<f64>,
-    /// Comma-separated keywords that cause a YouTube result to be skipped.
-    /// Example: "live,karaoke,cover"
-    #[serde(default)]
-    pub blacklist_keywords: Option<String>,
-}
+#[expect(
+    clippy::empty_structs_with_brackets,
+    reason = "braced form deserializes from a map; a unit struct would reject existing `{lidarr: {…}}` CRs carrying the legacy sidecar key"
+)]
+pub struct LidarrConfig {}
