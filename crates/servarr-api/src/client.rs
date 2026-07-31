@@ -169,6 +169,8 @@ impl std::fmt::Debug for HttpClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::{SEED_TOKEN, is_tenant_safe_charset};
+    use proptest::prelude::*;
 
     #[test]
     fn log_summary_hides_response_body_for_api_response() {
@@ -227,5 +229,86 @@ mod tests {
         assert!(!summary.contains("SUPER-SECRET-KEY"));
         assert!(!summary.contains("SUPER-SECRET-PASSWORD"));
         assert!(!summary.contains("127.0.0.1"));
+        // The summary must be one of the four fixed forms — never the request URL.
+        assert!(
+            matches!(
+                summary.as_str(),
+                "HTTP request failed (timeout)"
+                    | "HTTP request failed (connect)"
+                    | "HTTP request failed (decode)"
+                    | "HTTP request failed (transport)"
+            ),
+            "unexpected Request summary: {summary}"
+        );
+        assert!(
+            is_tenant_safe_charset(&summary),
+            "summary has chars outside the allowlist: {summary}"
+        );
+    }
+
+    #[test]
+    fn log_summary_invalid_api_key_is_fixed_and_charset_safe() {
+        let summary = ApiError::InvalidApiKey.log_summary();
+        assert_eq!(
+            summary,
+            "API key contains invalid characters (non-visible ASCII)"
+        );
+        assert!(is_tenant_safe_charset(&summary));
+    }
+
+    proptest! {
+        // The response body from a credential-bearing call can echo the submitted
+        // API key; `log_summary` must drop it while keeping the status code.
+        #[test]
+        fn log_summary_api_response_never_leaks_body(
+            status in any::<u16>(),
+            seed in any::<String>(),
+        ) {
+            let seed = format!("{SEED_TOKEN}{seed}");
+            let err = ApiError::ApiResponse {
+                status,
+                body: format!("invalid api key {seed}"),
+            };
+            let summary = err.log_summary();
+            prop_assert!(
+                summary.contains(&status.to_string()),
+                "status code must be preserved: {summary}"
+            );
+            prop_assert!(
+                !summary.contains(&seed),
+                "response body leaked into summary: {summary}"
+            );
+            prop_assert!(is_tenant_safe_charset(&summary));
+        }
+    }
+
+    // Maintainerr's NOK envelope `message` is upstream-controlled and can echo a
+    // submitted `apiKey`; `log_summary` must collapse it to the fixed string. The
+    // output is constant, so a single fixed seed exercises the same no-leak and
+    // collapse guarantee the property loop would.
+    #[test]
+    fn log_summary_operation_failed_collapses_to_fixed_string() {
+        let err = ApiError::OperationFailed {
+            message: format!("rejected apiKey={SEED_TOKEN}"),
+        };
+        let summary = err.log_summary();
+        assert_eq!(summary, "operation rejected by API");
+        assert!(!summary.contains(SEED_TOKEN));
+        assert!(is_tenant_safe_charset(&summary));
+    }
+
+    // `url::ParseError` carries no echo of the invalid input, so the meaningful
+    // guarantee is the fixed-output collapse: whatever the parse error, the
+    // summary is exactly the generic string and never reproduces the input.
+    #[test]
+    fn log_summary_invalid_url_collapses_to_fixed_string() {
+        // A non-numeric port is a guaranteed parse failure (the `url` parser
+        // rejects a non-digit in the port position).
+        let parse_err = Url::parse(&format!("http://{SEED_TOKEN}:not-a-port"))
+            .expect_err("non-numeric port must fail to parse");
+        let err = ApiError::InvalidUrl(parse_err);
+        let summary = err.log_summary();
+        assert_eq!(summary, "invalid base URL");
+        assert!(is_tenant_safe_charset(&summary));
     }
 }
