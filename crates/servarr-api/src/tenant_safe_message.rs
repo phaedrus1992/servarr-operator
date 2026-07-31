@@ -74,6 +74,8 @@ impl From<ApiError> for TenantSafeMessage {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::{SEED_TOKEN, is_tenant_safe_charset};
+    use proptest::prelude::*;
 
     #[test]
     fn from_kube_api_error_keeps_status_code_not_body() {
@@ -128,5 +130,83 @@ mod tests {
             !msg.as_ref().contains("secret-leak-body"),
             "message must not contain the API response body: {msg}"
         );
+    }
+
+    // Every `From` impl must route through its sanitizer: the produced
+    // `TenantSafeMessage` is byte-identical to the sanitizer's output, stays
+    // within the tenant-safe charset, and never reproduces seeded detail.
+    // The error is consumed by `From`, so `expected` is computed first (none of
+    // `kube::Error` / `SecretError` / `ApiError` are `Clone`).
+    proptest! {
+        #[test]
+        fn from_kube_error_matches_sanitizer(
+            code in any::<u16>(),
+            seed in any::<String>(),
+        ) {
+            let seed = format!("{SEED_TOKEN}{seed}");
+            let err = kube::Error::Api(Box::new(kube::core::Status {
+                code,
+                message: format!("secrets \"{seed}\" is forbidden: User cannot get"),
+                reason: format!("Forbidden: {seed}"),
+                ..Default::default()
+            }));
+            let expected = kube_err_public_summary(&err);
+            let msg = TenantSafeMessage::from(err);
+            prop_assert_eq!(msg.as_ref(), expected);
+            prop_assert!(
+                !msg.as_ref().contains(&seed),
+                "seeded API-server message leaked into tenant-safe message: {msg}"
+            );
+            prop_assert!(is_tenant_safe_charset(msg.as_ref()));
+        }
+
+        #[test]
+        fn from_secret_error_matches_sanitizer(
+            code in any::<u16>(),
+            seed in any::<String>(),
+        ) {
+            let seed = format!("{SEED_TOKEN}{seed}");
+            let err = SecretError::Kube(kube::Error::Api(Box::new(kube::core::Status {
+                code,
+                message: format!("secrets \"{seed}\" is forbidden: User cannot get"),
+                reason: format!("Forbidden: {seed}"),
+                ..Default::default()
+            })));
+            let expected = err.public_summary();
+            let msg = TenantSafeMessage::from(err);
+            prop_assert_eq!(msg.as_ref(), expected);
+            prop_assert!(
+                !msg.as_ref().contains(&seed),
+                "seeded API-server message leaked into tenant-safe message: {msg}"
+            );
+            prop_assert!(is_tenant_safe_charset(msg.as_ref()));
+        }
+
+        #[test]
+        fn from_api_error_matches_sanitizer(
+            status in any::<u16>(),
+            seed in any::<String>(),
+        ) {
+            let seed = format!("{SEED_TOKEN}{seed}");
+            let errs = [
+                ApiError::ApiResponse {
+                    status,
+                    body: format!("invalid api key {seed}"),
+                },
+                ApiError::OperationFailed {
+                    message: format!("rejected apiKey={seed}"),
+                },
+            ];
+            for err in errs {
+                let expected = err.log_summary();
+                let msg = TenantSafeMessage::from(err);
+                prop_assert_eq!(msg.as_ref(), expected);
+                prop_assert!(
+                    !msg.as_ref().contains(&seed),
+                    "seeded API detail leaked into tenant-safe message: {msg}"
+                );
+                prop_assert!(is_tenant_safe_charset(msg.as_ref()));
+            }
+        }
     }
 }
