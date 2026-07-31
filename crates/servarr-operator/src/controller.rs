@@ -997,7 +997,7 @@ async fn sync_admin_credentials(client: &Client, app: &ServarrApp) -> Option<Con
                         }
                     }
                     Err(e) => {
-                        warn!(app = %app.name_any(), error = %e, "admin-credentials: Transmission session-set failed");
+                        warn!(app = %app.name_any(), error = %e.log_summary(), "admin-credentials: Transmission session-set failed");
                         Err(e.log_summary())
                     }
                 },
@@ -1214,7 +1214,7 @@ pub(crate) async fn check_api_health(
                 {
                     Ok(v) => Some(v),
                     Err(e) => {
-                        warn!(app = %app.name_any(), error = %e,
+                        warn!(app = %app.name_any(), error = %e.log_summary(),
                                 "health-check: failed to read Transmission username, proceeding unauthenticated");
                         None
                     }
@@ -1224,7 +1224,7 @@ pub(crate) async fn check_api_health(
                 {
                     Ok(v) => Some(v),
                     Err(e) => {
-                        warn!(app = %app.name_any(), error = %e,
+                        warn!(app = %app.name_any(), error = %e.log_summary(),
                                 "health-check: failed to read Transmission password, proceeding unauthenticated");
                         None
                     }
@@ -1294,7 +1294,7 @@ async fn check_update_available(
     let updates = match client.updates().await {
         Ok(u) => u,
         Err(e) => {
-            tracing::debug!(error = %e, "failed to fetch updates, skipping update condition");
+            tracing::debug!(error = %e.log_summary(), "failed to fetch updates, skipping update condition");
             return None;
         }
     };
@@ -1573,10 +1573,11 @@ async fn maybe_run_backup(
     let api_key = match servarr_api::read_secret_key(client, ns, secret_name, "api-key").await {
         Ok(k) => k,
         Err(e) => {
-            let summary = e.log_summary();
-            warn!(error = %summary, "backup: failed to read API key");
+            warn!(error = %e.log_summary(), "backup: failed to read API key");
+            // status.backupStatus.lastBackupResult is tenant-visible, so it must go through
+            // the stricter public_summary(), not log_summary().
             return Some(servarr_crds::BackupStatus {
-                last_backup_result: Some(format!("secret read error: {summary}")),
+                last_backup_result: Some(format!("secret read error: {}", e.public_summary())),
                 ..Default::default()
             });
         }
@@ -1738,7 +1739,7 @@ async fn maybe_run_backup(
                 let to_delete = sorted.len() - retention as usize;
                 for old in sorted.iter().take(to_delete) {
                     if let Err(e) = api_client.delete_backup(old.id).await {
-                        warn!(backup_id = old.id, error = %e, "failed to prune old backup");
+                        warn!(backup_id = old.id, error = %e.log_summary(), "failed to prune old backup");
                     }
                 }
             }
@@ -1844,7 +1845,7 @@ async fn maybe_restore_backup(
             .patch(name, &PatchParams::default(), &Patch::Merge(scale_down))
             .await
             .map_err(|e| {
-                anyhow::anyhow!("failed to scale down for restore: {}", kube_err_summary(&e))
+                anyhow::anyhow!("failed to scale down for restore: {}", kube_err_public_summary(&e))
             })?;
 
         // Wait for pods to terminate (poll for up to 60 seconds)
@@ -1911,7 +1912,7 @@ async fn maybe_restore_backup(
             anyhow::anyhow!(
                 "restore succeeded but failed to remove annotation \
                  (will re-trigger on next reconcile): {}",
-                kube_err_summary(&e)
+                kube_err_public_summary(&e)
             )
         })?;
 
@@ -1940,7 +1941,9 @@ async fn try_restore(
         .ok_or_else(|| anyhow::anyhow!("no api_key_secret configured, cannot restore"))?;
     let api_key = servarr_api::read_secret_key(client, ns, secret_name, "api-key")
         .await
-        .map_err(|e| anyhow::anyhow!("failed to read API key for restore: {}", e.log_summary()))?;
+        .map_err(|e| {
+            anyhow::anyhow!("failed to read API key for restore: {}", e.public_summary())
+        })?;
 
     let app_name = servarr_resources::common::service_name(app);
     let defaults = servarr_crds::AppDefaults::for_app(&app.spec.app)
@@ -2033,10 +2036,12 @@ pub(crate) async fn discover_namespace_apps(
     use kube::api::ListParams;
 
     let api = Api::<ServarrApp>::namespaced(client.clone(), namespace);
-    let apps = api
-        .list(&ListParams::default())
-        .await
-        .map_err(|e| anyhow::anyhow!("failed to list ServarrApps: {}", kube_err_summary(&e)))?;
+    let apps = api.list(&ListParams::default()).await.map_err(|e| {
+        anyhow::anyhow!(
+            "failed to list ServarrApps: {}",
+            kube_err_public_summary(&e)
+        )
+    })?;
 
     let mut discovered = Vec::new();
     for app in &apps {
@@ -2108,7 +2113,7 @@ async fn sync_prowlarr_apps(
         .ok_or_else(|| anyhow::anyhow!("Prowlarr sync requires api_key_secret"))?;
     let prowlarr_key = servarr_api::read_secret_key(client, &ns, secret_name, "api-key")
         .await
-        .map_err(|e| anyhow::anyhow!("failed to read Prowlarr API key: {}", e.log_summary()))?;
+        .map_err(|e| anyhow::anyhow!("failed to read Prowlarr API key: {}", e.public_summary()))?;
 
     let prowlarr_app_name = servarr_resources::common::service_name(prowlarr);
     let defaults = servarr_crds::AppDefaults::for_app(&prowlarr.spec.app)
@@ -2117,7 +2122,8 @@ async fn sync_prowlarr_apps(
     let port = svc_spec.ports.first().map(|p| p.port).unwrap_or(80);
     let prowlarr_url = format!("http://{prowlarr_app_name}.{ns}.svc:{port}");
 
-    let prowlarr_client = servarr_api::ProwlarrClient::new(&prowlarr_url, &prowlarr_key)?;
+    let prowlarr_client = servarr_api::ProwlarrClient::new(&prowlarr_url, &prowlarr_key)
+        .map_err(|e| anyhow::anyhow!("failed to create Prowlarr client: {}", e.log_summary()))?;
 
     // Discover apps in target namespace
     let discovered = discover_namespace_apps(client, target_ns).await?;
@@ -2225,7 +2231,7 @@ async fn sync_prowlarr_apps(
             if !url.is_empty() && !synced_urls.contains(url) {
                 info!(prowlarr = %prowlarr_name, app = %app.name, "removing stale application from Prowlarr");
                 if let Err(e) = prowlarr_client.delete_application(app.id).await {
-                    warn!(app = %app.name, error = %e, "failed to remove Prowlarr application");
+                    warn!(app = %app.name, error = %e.log_summary(), "failed to remove Prowlarr application");
                 }
             }
         }
@@ -2264,6 +2270,10 @@ async fn prowlarr_sync_exists(client: &Client, namespace: &str) -> bool {
 }
 
 /// Remove this app's registration from Prowlarr when the CR is deleted.
+///
+/// `Err` is only ever consumed by a `warn!` in `reconcile()` — never a Condition or Event — so
+/// every sanitizer call below intentionally uses the log-only variant (`log_summary()` /
+/// `kube_err_summary()`), not the stricter tenant-safe one.
 async fn cleanup_prowlarr_registration(
     client: &Client,
     app: &ServarrApp,
@@ -2316,9 +2326,12 @@ async fn cleanup_prowlarr_registration(
     let prowlarr_ns = prowlarr.namespace().unwrap_or_else(|| namespace.into());
     let prowlarr_url = format!("http://{prowlarr_app_name}.{prowlarr_ns}.svc:{prowlarr_port}");
 
-    let prowlarr_client = servarr_api::ProwlarrClient::new(&prowlarr_url, &prowlarr_key)?;
+    let prowlarr_client = servarr_api::ProwlarrClient::new(&prowlarr_url, &prowlarr_key)
+        .map_err(|e| anyhow::anyhow!("failed to create Prowlarr client: {}", e.log_summary()))?;
 
-    let existing = prowlarr_client.list_applications().await?;
+    let existing = prowlarr_client.list_applications().await.map_err(|e| {
+        anyhow::anyhow!("failed to list Prowlarr applications: {}", e.log_summary())
+    })?;
     if let Some(registered) = existing.iter().find(|a| {
         a.fields
             .iter()
@@ -2329,7 +2342,16 @@ async fn cleanup_prowlarr_registration(
             prowlarr_app_id = registered.id,
             "removing app from Prowlarr on deletion"
         );
-        prowlarr_client.delete_application(registered.id).await?;
+        prowlarr_client
+            .delete_application(registered.id)
+            .await
+            .map_err(|e| {
+                anyhow::anyhow!(
+                    "failed to delete Prowlarr application {}: {}",
+                    registered.id,
+                    e.log_summary()
+                )
+            })?;
 
         let _ = recorder
             .publish(
@@ -2367,7 +2389,7 @@ async fn sync_overseerr_servers(
         .ok_or_else(|| anyhow::anyhow!("Overseerr sync requires api_key_secret"))?;
     let overseerr_key = servarr_api::read_secret_key(client, &ns, secret_name, "api-key")
         .await
-        .map_err(|e| anyhow::anyhow!("failed to read Overseerr API key: {}", e.log_summary()))?;
+        .map_err(|e| anyhow::anyhow!("failed to read Overseerr API key: {}", e.public_summary()))?;
 
     let overseerr_app_name = servarr_resources::common::service_name(overseerr);
     let defaults = servarr_crds::AppDefaults::for_app(&overseerr.spec.app)
@@ -2471,12 +2493,12 @@ async fn sync_overseerr_servers(
                     let mut updated = settings;
                     updated.id = existing.id;
                     if let Err(e) = overseerr_client.update_sonarr(id, updated).await {
-                        warn!(app = %app.name, error = %e, "failed to update Sonarr in Overseerr");
+                        warn!(app = %app.name, error = %e.log_summary(), "failed to update Sonarr in Overseerr");
                     }
                 } else {
                     info!(overseerr = %overseerr_name, app = %app.name, "adding Sonarr server to Overseerr");
                     if let Err(e) = overseerr_client.create_sonarr(settings).await {
-                        warn!(app = %app.name, error = %e, "failed to add Sonarr to Overseerr");
+                        warn!(app = %app.name, error = %e.log_summary(), "failed to add Sonarr to Overseerr");
                     }
                 }
             }
@@ -2533,12 +2555,12 @@ async fn sync_overseerr_servers(
                     let mut updated = settings;
                     updated.id = existing.id;
                     if let Err(e) = overseerr_client.update_radarr(id, updated).await {
-                        warn!(app = %app.name, error = %e, "failed to update Radarr in Overseerr");
+                        warn!(app = %app.name, error = %e.log_summary(), "failed to update Radarr in Overseerr");
                     }
                 } else {
                     info!(overseerr = %overseerr_name, app = %app.name, "adding Radarr server to Overseerr");
                     if let Err(e) = overseerr_client.create_radarr(settings).await {
-                        warn!(app = %app.name, error = %e, "failed to add Radarr to Overseerr");
+                        warn!(app = %app.name, error = %e.log_summary(), "failed to add Radarr to Overseerr");
                     }
                 }
             }
@@ -2554,7 +2576,7 @@ async fn sync_overseerr_servers(
                 let id = existing.id.unwrap_or(0.0) as i32;
                 info!(overseerr = %overseerr_name, server = %existing.name, "removing stale Sonarr server from Overseerr");
                 if let Err(e) = overseerr_client.delete_sonarr(id).await {
-                    warn!(server = %existing.name, error = %e, "failed to remove stale Sonarr from Overseerr");
+                    warn!(server = %existing.name, error = %e.log_summary(), "failed to remove stale Sonarr from Overseerr");
                 }
             }
         }
@@ -2564,7 +2586,7 @@ async fn sync_overseerr_servers(
                 let id = existing.id.unwrap_or(0.0) as i32;
                 info!(overseerr = %overseerr_name, server = %existing.name, "removing stale Radarr server from Overseerr");
                 if let Err(e) = overseerr_client.delete_radarr(id).await {
-                    warn!(server = %existing.name, error = %e, "failed to remove stale Radarr from Overseerr");
+                    warn!(server = %existing.name, error = %e.log_summary(), "failed to remove stale Radarr from Overseerr");
                 }
             }
         }
@@ -2611,7 +2633,7 @@ async fn sync_bazarr_apps(
     let api_key_secret = servarr_resources::common::child_name(bazarr, "api-key");
     let bazarr_key = servarr_api::read_secret_key(client, &ns, &api_key_secret, "api-key")
         .await
-        .map_err(|e| anyhow::anyhow!("failed to read Bazarr API key: {}", e.log_summary()))?;
+        .map_err(|e| anyhow::anyhow!("failed to read Bazarr API key: {}", e.public_summary()))?;
 
     let bazarr_app_name = servarr_resources::common::service_name(bazarr);
     let defaults = servarr_crds::AppDefaults::for_app(&bazarr.spec.app)
@@ -2620,7 +2642,8 @@ async fn sync_bazarr_apps(
     let port = svc_spec.ports.first().map(|p| p.port).unwrap_or(80);
     let bazarr_url = format!("http://{bazarr_app_name}.{ns}.svc:{port}");
 
-    let bazarr_client = servarr_api::BazarrClient::new(&bazarr_url, &bazarr_key)?;
+    let bazarr_client = servarr_api::BazarrClient::new(&bazarr_url, &bazarr_key)
+        .map_err(|e| anyhow::anyhow!("failed to create Bazarr client: {}", e.log_summary()))?;
 
     let auto_remove = bazarr
         .spec
@@ -2721,7 +2744,9 @@ async fn sync_maintainerr_servers(
     let api_key_secret = servarr_resources::common::child_name(maintainerr, "api-key");
     let maintainerr_key = servarr_api::read_secret_key(client, &ns, &api_key_secret, "api-key")
         .await
-        .map_err(|e| anyhow::anyhow!("failed to read Maintainerr API key: {}", e.log_summary()))?;
+        .map_err(|e| {
+            anyhow::anyhow!("failed to read Maintainerr API key: {}", e.public_summary())
+        })?;
 
     let maintainerr_app_name = servarr_resources::common::service_name(maintainerr);
     let defaults = servarr_crds::AppDefaults::for_app(&maintainerr.spec.app)
@@ -2741,7 +2766,9 @@ async fn sync_maintainerr_servers(
         .unwrap_or_else(|| format!("http://{maintainerr_app_name}.{ns}.svc:{port}"));
 
     let maintainerr_client =
-        servarr_api::MaintainerrClient::new(&maintainerr_url, &maintainerr_key)?;
+        servarr_api::MaintainerrClient::new(&maintainerr_url, &maintainerr_key).map_err(|e| {
+            anyhow::anyhow!("failed to create Maintainerr client: {}", e.log_summary())
+        })?;
 
     let mut failures = 0;
 
@@ -2952,7 +2979,7 @@ async fn sync_maintainerr_servers(
                     "failed to set Plex token in Maintainerr");
                 failures += 1;
             } else if let Err(e) = maintainerr_client.set_plex(&plex_host, plex_port).await {
-                warn!(maintainerr = %maintainerr_name, plex = %plex_name, error = %e,
+                warn!(maintainerr = %maintainerr_name, plex = %plex_name, error = %e.log_summary(),
                     "failed to set Plex hostname/port in Maintainerr");
                 failures += 1;
             } else {
@@ -2998,7 +3025,12 @@ async fn sync_subgen_jellyfin(
     let app_list = all_apps
         .list(&kube::api::ListParams::default())
         .await
-        .map_err(|e| anyhow::anyhow!("failed to list ServarrApps: {}", kube_err_summary(&e)))?;
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "failed to list ServarrApps: {}",
+                kube_err_public_summary(&e)
+            )
+        })?;
 
     let jellyfin = match app_list
         .items
@@ -3032,7 +3064,7 @@ async fn sync_subgen_jellyfin(
         .map_err(|e| {
             anyhow::anyhow!(
                 "Jellyfin API key secret {jf_secret_name} unreadable: {}",
-                e.log_summary()
+                e.public_summary()
             )
         })?;
 
@@ -3084,7 +3116,7 @@ async fn sync_subgen_jellyfin(
         .map_err(|e| {
             anyhow::anyhow!(
                 "failed to patch Subgen Deployment: {}",
-                kube_err_summary(&e)
+                kube_err_public_summary(&e)
             )
         })?;
 
@@ -3109,6 +3141,10 @@ async fn overseerr_sync_exists(client: &Client, namespace: &str) -> bool {
 }
 
 /// Remove this app's registration from Overseerr when the CR is deleted.
+///
+/// `Err` is only ever consumed by a `warn!` in `reconcile()` — never a Condition or Event — so
+/// every sanitizer call below intentionally uses the log-only variant (`log_summary()` /
+/// `kube_err_summary()`), not the stricter tenant-safe one.
 async fn cleanup_overseerr_registration(
     client: &Client,
     app: &ServarrApp,
@@ -3171,7 +3207,12 @@ async fn cleanup_overseerr_registration(
     // Remove matching Sonarr or Radarr server by hostname + port
     match app.spec.app {
         AppType::Sonarr => {
-            let existing = overseerr_client.list_sonarr().await?;
+            let existing = overseerr_client.list_sonarr().await.map_err(|e| {
+                anyhow::anyhow!(
+                    "failed to list Overseerr Sonarr servers: {}",
+                    e.log_summary()
+                )
+            })?;
             if let Some(registered) = existing
                 .iter()
                 .find(|s| s.hostname == app_hostname && s.port == f64::from(port))
@@ -3182,7 +3223,12 @@ async fn cleanup_overseerr_registration(
                     overseerr_server_id = id,
                     "removing Sonarr from Overseerr on deletion"
                 );
-                overseerr_client.delete_sonarr(id).await?;
+                overseerr_client.delete_sonarr(id).await.map_err(|e| {
+                    anyhow::anyhow!(
+                        "failed to delete Overseerr Sonarr server {id}: {}",
+                        e.log_summary()
+                    )
+                })?;
 
                 let _ = recorder
                     .publish(
@@ -3199,7 +3245,12 @@ async fn cleanup_overseerr_registration(
             }
         }
         AppType::Radarr => {
-            let existing = overseerr_client.list_radarr().await?;
+            let existing = overseerr_client.list_radarr().await.map_err(|e| {
+                anyhow::anyhow!(
+                    "failed to list Overseerr Radarr servers: {}",
+                    e.log_summary()
+                )
+            })?;
             if let Some(registered) = existing
                 .iter()
                 .find(|s| s.hostname == app_hostname && s.port == f64::from(port))
@@ -3210,7 +3261,12 @@ async fn cleanup_overseerr_registration(
                     overseerr_server_id = id,
                     "removing Radarr from Overseerr on deletion"
                 );
-                overseerr_client.delete_radarr(id).await?;
+                overseerr_client.delete_radarr(id).await.map_err(|e| {
+                    anyhow::anyhow!(
+                        "failed to delete Overseerr Radarr server {id}: {}",
+                        e.log_summary()
+                    )
+                })?;
 
                 let _ = recorder
                     .publish(
@@ -3598,6 +3654,10 @@ mod tests {
 
     // ---- maybe_run_backup ----
 
+    /// For the `Api` variant specifically, `log_summary()` and `public_summary()` collapse to the
+    /// same status-code string — this guards that equivalence, not the log-only-vs-tenant-safe
+    /// distinction (see `maybe_run_backup_secret_read_error_sanitizes_backup_status` below for
+    /// that, which uses a non-`Api` `kube::Error` to force the two methods to actually diverge).
     #[tokio::test]
     async fn maybe_run_backup_secret_read_error_sanitizes_status_message() {
         let mock_server = MockServer::start().await;
@@ -4430,6 +4490,317 @@ mod tests {
         assert!(
             result.is_err(),
             "a failed Plex token call must surface as a sync failure"
+        );
+    }
+
+    // ---- #428-430 pattern check: kube::Error::Api still keeps its status code ----
+
+    /// For the `Api` variant specifically, `kube_err_summary` and `kube_err_public_summary`
+    /// collapse to the same status-code string — this guards that equivalence, not the
+    /// log-only-vs-tenant-safe distinction (see the `#437` tests below for that).
+    #[tokio::test]
+    async fn discover_namespace_apps_list_error_keeps_only_the_status_code() {
+        let mock_server = MockServer::start().await;
+        let client = build_mock_client(&mock_server.uri()).await;
+
+        Mock::given(method("GET"))
+            .and(path(
+                "/apis/servarr.dev/v1alpha1/namespaces/test/servarrapps",
+            ))
+            .respond_with(ResponseTemplate::new(403).set_body_json(json!({
+                "apiVersion": "v1",
+                "kind": "Status",
+                "metadata": {},
+                "status": "Failure",
+                "message": "servarrapps.servarr.dev is forbidden: User \
+                            \"system:serviceaccount:kube-system:leak-marker-sa\" cannot list",
+                "reason": "Forbidden",
+                "code": 403
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let err = discover_namespace_apps(&client, "test")
+            .await
+            .expect_err("a 403 on the ServarrApp list must surface as an error")
+            .to_string();
+
+        assert!(err.contains("403"), "should keep the status code: {err}");
+        assert!(
+            !err.contains("leak-marker-sa"),
+            "must not leak the API server's RBAC message: {err}"
+        );
+    }
+
+    // ---- #437: tenant-visible kube::Error/SecretError sanitization ----
+
+    /// A non-`Api` `kube::Error` is the only thing that tells `kube_err_summary` (log-safe) apart
+    /// from `kube_err_public_summary` (tenant-safe): for `Api` both collapse to the same
+    /// status-code string, but for every other variant the log-safe one passes `Display` through
+    /// verbatim. A 200 whose body has the wrong shape yields a deserialization error whose
+    /// `Display` embeds the offending value, so this marker reaches the caller if and only if the
+    /// call site used the log-only sanitizer. The same applies to `SecretError::Kube`, which just
+    /// delegates to the same two kube functions.
+    const SERDE_LEAK_MARKER: &str = "leak-marker-bearer-tok-abc123";
+
+    #[tokio::test]
+    async fn discover_namespace_apps_list_error_collapses_non_api_kube_errors() {
+        let mock_server = MockServer::start().await;
+        let client = build_mock_client(&mock_server.uri()).await;
+
+        Mock::given(method("GET"))
+            .and(path(
+                "/apis/servarr.dev/v1alpha1/namespaces/test/servarrapps",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "apiVersion": "servarr.dev/v1alpha1",
+                "kind": "ServarrAppList",
+                "metadata": {},
+                "items": SERDE_LEAK_MARKER
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let err = discover_namespace_apps(&client, "test")
+            .await
+            .expect_err("a malformed list body must surface as an error")
+            .to_string();
+
+        assert!(
+            err.contains("failed to list ServarrApps"),
+            "should keep the call-site context: {err}"
+        );
+        assert!(
+            !err.contains(SERDE_LEAK_MARKER),
+            "must not pass a non-Api kube::Error's Display through to the tenant: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn sync_prowlarr_apps_api_key_read_error_is_tenant_sanitized() {
+        let mock_server = MockServer::start().await;
+        let client = build_mock_client(&mock_server.uri()).await;
+
+        let mut prowlarr = make_test_app("my-prowlarr", "test", AppType::Prowlarr);
+        prowlarr.spec.api_key_secret = Some("prowlarr-api-key".into());
+
+        mount_secret_mock(
+            &mock_server,
+            "test",
+            "prowlarr-api-key",
+            json!(SERDE_LEAK_MARKER),
+        )
+        .await;
+
+        let recorder = Recorder::new(client.clone(), "test".into());
+        let obj_ref = prowlarr.object_ref(&());
+
+        let err = sync_prowlarr_apps(&client, &prowlarr, "test", &recorder, &obj_ref)
+            .await
+            .expect_err("an unreadable API-key secret must surface as an error")
+            .to_string();
+
+        assert!(
+            err.contains("failed to read Prowlarr API key"),
+            "should keep the call-site context: {err}"
+        );
+        assert!(
+            !err.contains(SERDE_LEAK_MARKER),
+            "must not pass a SecretError::Kube wrapping a non-Api kube::Error through to the tenant: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn sync_overseerr_servers_api_key_read_error_is_tenant_sanitized() {
+        let mock_server = MockServer::start().await;
+        let client = build_mock_client(&mock_server.uri()).await;
+
+        let mut overseerr = make_test_app("my-overseerr", "test", AppType::Overseerr);
+        overseerr.spec.api_key_secret = Some("overseerr-api-key".into());
+
+        mount_secret_mock(
+            &mock_server,
+            "test",
+            "overseerr-api-key",
+            json!(SERDE_LEAK_MARKER),
+        )
+        .await;
+
+        let recorder = Recorder::new(client.clone(), "test".into());
+        let obj_ref = overseerr.object_ref(&());
+
+        let err = sync_overseerr_servers(&client, &overseerr, "test", &recorder, &obj_ref)
+            .await
+            .expect_err("an unreadable API-key secret must surface as an error")
+            .to_string();
+
+        assert!(
+            err.contains("failed to read Overseerr API key"),
+            "should keep the call-site context: {err}"
+        );
+        assert!(
+            !err.contains(SERDE_LEAK_MARKER),
+            "must not pass a SecretError::Kube wrapping a non-Api kube::Error through to the tenant: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn sync_bazarr_apps_api_key_read_error_is_tenant_sanitized() {
+        let mock_server = MockServer::start().await;
+        let client = build_mock_client(&mock_server.uri()).await;
+
+        let bazarr = make_test_app("my-bazarr", "test", AppType::Bazarr);
+        let secret_name = servarr_resources::common::child_name(&bazarr, "api-key");
+
+        mount_secret_mock(&mock_server, "test", &secret_name, json!(SERDE_LEAK_MARKER)).await;
+
+        let err = sync_bazarr_apps(&client, &bazarr, "test")
+            .await
+            .expect_err("an unreadable API-key secret must surface as an error")
+            .to_string();
+
+        assert!(
+            err.contains("failed to read Bazarr API key"),
+            "should keep the call-site context: {err}"
+        );
+        assert!(
+            !err.contains(SERDE_LEAK_MARKER),
+            "must not pass a SecretError::Kube wrapping a non-Api kube::Error through to the tenant: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn sync_maintainerr_servers_api_key_read_error_is_tenant_sanitized() {
+        let mock_server = MockServer::start().await;
+        let client = build_mock_client(&mock_server.uri()).await;
+
+        let maintainerr = make_test_app("my-maintainerr-2", "test", AppType::Maintainerr);
+        let secret_name = servarr_resources::common::child_name(&maintainerr, "api-key");
+
+        mount_secret_mock(&mock_server, "test", &secret_name, json!(SERDE_LEAK_MARKER)).await;
+
+        let err = sync_maintainerr_servers(&client, &maintainerr, "test", None)
+            .await
+            .expect_err("an unreadable API-key secret must surface as an error")
+            .to_string();
+
+        assert!(
+            err.contains("failed to read Maintainerr API key"),
+            "should keep the call-site context: {err}"
+        );
+        assert!(
+            !err.contains(SERDE_LEAK_MARKER),
+            "must not pass a SecretError::Kube wrapping a non-Api kube::Error through to the tenant: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn sync_subgen_jellyfin_list_error_collapses_non_api_kube_errors() {
+        let mock_server = MockServer::start().await;
+        let client = build_mock_client(&mock_server.uri()).await;
+
+        let subgen = make_test_app("my-subgen", "test", AppType::Subgen);
+
+        Mock::given(method("GET"))
+            .and(path(
+                "/apis/servarr.dev/v1alpha1/namespaces/test/servarrapps",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "apiVersion": "servarr.dev/v1alpha1",
+                "kind": "ServarrAppList",
+                "metadata": {},
+                "items": SERDE_LEAK_MARKER
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let err = sync_subgen_jellyfin(&client, &subgen, "test")
+            .await
+            .expect_err("a malformed list body must surface as an error")
+            .to_string();
+
+        assert!(
+            err.contains("failed to list ServarrApps"),
+            "should keep the call-site context: {err}"
+        );
+        assert!(
+            !err.contains(SERDE_LEAK_MARKER),
+            "must not pass a non-Api kube::Error's Display through to the tenant: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn try_restore_api_key_read_error_is_tenant_sanitized() {
+        let mock_server = MockServer::start().await;
+        let client = build_mock_client(&mock_server.uri()).await;
+
+        let mut app = make_test_app("my-sonarr", "test", AppType::Sonarr);
+        app.spec.api_key_secret = Some("sonarr-api-key".into());
+
+        mount_secret_mock(
+            &mock_server,
+            "test",
+            "sonarr-api-key",
+            json!(SERDE_LEAK_MARKER),
+        )
+        .await;
+
+        let recorder = Recorder::new(client.clone(), "test".into());
+        let obj_ref = app.object_ref(&());
+
+        let err = try_restore(&client, &app, 1, &recorder, &obj_ref)
+            .await
+            .expect_err("an unreadable API-key secret must surface as an error")
+            .to_string();
+
+        assert!(
+            err.contains("failed to read API key for restore"),
+            "should keep the call-site context: {err}"
+        );
+        assert!(
+            !err.contains(SERDE_LEAK_MARKER),
+            "must not pass a SecretError::Kube wrapping a non-Api kube::Error through to the tenant: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn maybe_run_backup_secret_read_error_sanitizes_backup_status() {
+        let mock_server = MockServer::start().await;
+        let client = build_mock_client(&mock_server.uri()).await;
+
+        let mut app = make_test_app("my-sonarr-backup", "test", AppType::Sonarr);
+        app.spec.api_key_secret = Some("sonarr-backup-api-key".into());
+        app.spec.backup = Some(servarr_crds::BackupSpec {
+            enabled: true,
+            schedule: "0 3 * * *".into(),
+            retention_count: 5,
+        });
+
+        mount_secret_mock(
+            &mock_server,
+            "test",
+            "sonarr-backup-api-key",
+            json!(SERDE_LEAK_MARKER),
+        )
+        .await;
+
+        let recorder = Recorder::new(client.clone(), "test".into());
+        let obj_ref = app.object_ref(&());
+
+        let status = maybe_run_backup(&client, &app, &recorder, &obj_ref)
+            .await
+            .expect("a secret-read failure still yields a BackupStatus");
+        let result = status
+            .last_backup_result
+            .expect("failure path always sets last_backup_result");
+
+        assert!(
+            result.contains("secret read error"),
+            "should keep the call-site context: {result}"
+        );
+        assert!(
+            !result.contains(SERDE_LEAK_MARKER),
+            "must not pass a SecretError::Kube wrapping a non-Api kube::Error through to the tenant-visible status.backupStatus.lastBackupResult: {result}"
         );
     }
 }
