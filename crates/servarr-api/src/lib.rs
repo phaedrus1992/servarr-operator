@@ -10,6 +10,9 @@ pub mod prowlarr;
 pub mod sabnzbd;
 pub mod servarr_v3;
 pub mod tautulli;
+mod tenant_safe_message;
+#[cfg(test)]
+mod test_support;
 pub mod transmission;
 
 pub use bazarr::BazarrClient;
@@ -24,4 +27,5 @@ pub use prowlarr::ProwlarrClient;
 pub use sabnzbd::SabnzbdClient;
 pub use servarr_v3::{AppKind, ServarrClient};
 pub use tautulli::TautulliClient;
+pub use tenant_safe_message::TenantSafeMessage;
 pub use transmission::TransmissionClient;

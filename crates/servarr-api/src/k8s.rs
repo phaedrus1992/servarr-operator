@@ -55,6 +55,8 @@ impl SecretError {
 pub fn kube_err_summary(e: &kube::Error) -> String {
     match e {
         kube::Error::Api(status) => format!("Kubernetes API error (status: {})", status.code),
+        // Operator log only — never tenant-visible. TenantSafeMessage routes through
+        // kube_err_public_summary, which collapses non-Api variants to a generic string.
         other => other.to_string(),
     }
 }
@@ -103,6 +105,19 @@ pub async fn read_secret_key(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::{SEED_TOKEN, is_tenant_safe_charset};
+    use proptest::prelude::*;
+
+    /// A `kube::Error::Api` whose `Status` message/reason carry `seed`, the way a
+    /// real API-server message would (RBAC denial text, resource names).
+    fn api_error_with_seeded_status(code: u16, seed: &str) -> kube::Error {
+        kube::Error::Api(Box::new(kube::core::Status {
+            code,
+            message: format!("secrets \"{seed}\" is forbidden: User cannot get"),
+            reason: format!("Forbidden: {seed}"),
+            ..Default::default()
+        }))
+    }
 
     #[test]
     fn log_summary_kube_variant_drops_message_keeps_status_code() {
@@ -219,5 +234,119 @@ mod tests {
             name: "my-secret".to_string(),
         };
         assert_eq!(err.public_summary(), err.to_string());
+    }
+
+    proptest! {
+        // The tenant-safe kube summary must keep the HTTP status code but never
+        // reproduce the API server's free-text message/reason, which can carry
+        // resource names and RBAC denial text.
+        #[test]
+        fn kube_err_public_summary_keeps_status_code_and_hides_seeded_message(
+            code in any::<u16>(),
+            seed in any::<String>(),
+        ) {
+            let seed = format!("{SEED_TOKEN}{seed}");
+            let err = api_error_with_seeded_status(code, &seed);
+            let summary = kube_err_public_summary(&err);
+            prop_assert!(
+                summary.contains(&code.to_string()),
+                "status code must be preserved: {summary}"
+            );
+            prop_assert!(
+                !summary.contains(&seed),
+                "seeded API-server message leaked into summary: {summary}"
+            );
+            prop_assert!(is_tenant_safe_charset(&summary));
+        }
+
+        // `SecretError::public_summary` routes the `Kube` variant through
+        // `kube_err_public_summary`: the seeded API-server message must not leak
+        // while the status code is preserved.
+        #[test]
+        fn secret_error_public_summary_kube_variant_hides_seeded_message(
+            code in any::<u16>(),
+            seed in any::<String>(),
+        ) {
+            let seed = format!("{SEED_TOKEN}{seed}");
+            let err = SecretError::Kube(api_error_with_seeded_status(code, &seed));
+            let summary = err.public_summary();
+            prop_assert!(summary.contains(&code.to_string()));
+            prop_assert!(
+                !summary.contains(&seed),
+                "seeded API-server message leaked into summary: {summary}"
+            );
+            prop_assert!(is_tenant_safe_charset(&summary));
+        }
+
+        // The non-`Kube` `SecretError` variants carry only curated secret/key names
+        // (operator-supplied, never external response content), so `public_summary`
+        // passes their `Display` through unchanged — the summary is exactly the
+        // curated name/key wrapped in the fixed format string, and nothing else can
+        // be smuggled in alongside. Names/keys are constrained to the charset the
+        // real K8s objects allow, matching how these variants are actually produced.
+        #[test]
+        fn secret_error_public_summary_non_kube_variants_pass_through_unchanged(
+            name in "[a-z0-9._-]{1,32}",
+            key in "[a-zA-Z0-9._-]{1,32}",
+        ) {
+            let errs = [
+                SecretError::NoData {
+                    name: name.clone(),
+                },
+                SecretError::KeyNotFound {
+                    name: name.clone(),
+                    key: key.clone(),
+                },
+                SecretError::InvalidUtf8 {
+                    name: name.clone(),
+                    key: key.clone(),
+                },
+            ];
+            for err in errs {
+                let summary = err.public_summary();
+                prop_assert!(summary == err.to_string());
+                prop_assert!(
+                    summary.contains(&name),
+                    "curated secret name must be exposed: {summary}"
+                );
+                prop_assert!(is_tenant_safe_charset(&summary));
+            }
+        }
+    }
+
+    // Every non-`Api` kube error variant must collapse to the fixed generic
+    // string, even the ones carrying detail as sensitive as an API-server
+    // message: `SerdeError` fragments the raw response body, `Auth` exec
+    // failures embed the exec command/args, and `LinesCodecMaxLineLengthExceeded`
+    // is a unit variant. The seed reaches each error's content, so a regression
+    // to `Display` passthrough would leak it and fail the assertion. The output
+    // is constant, so a single fixed seed exercises the same collapse guarantee
+    // the property loop would.
+    #[test]
+    fn kube_err_public_summary_collapses_non_api_variants() {
+        let seed = SEED_TOKEN;
+        // A NUL byte is never valid JSON, so the parse always fails and the
+        // resulting serde error carries only position info.
+        let serde_err = serde_json::from_str::<serde_json::Value>(&format!("{seed}\u{0}"))
+            .expect_err("NUL is never valid JSON");
+        let errs = vec![
+            kube::Error::SerdeError(serde_err),
+            kube::Error::LinesCodecMaxLineLengthExceeded,
+            kube::Error::Auth(kube::client::AuthError::AuthExecRun {
+                cmd: format!("kubectl --token={seed}"),
+                status: std::process::ExitStatus::default(),
+                out: std::process::Output {
+                    status: std::process::ExitStatus::default(),
+                    stdout: seed.as_bytes().to_vec(),
+                    stderr: Vec::new(),
+                },
+            }),
+        ];
+        for err in errs {
+            let summary = kube_err_public_summary(&err);
+            assert_eq!(summary, "Kubernetes client error");
+            assert!(!summary.contains(seed));
+            assert!(is_tenant_safe_charset(&summary));
+        }
     }
 }
