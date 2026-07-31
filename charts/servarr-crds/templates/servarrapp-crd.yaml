@@ -103,11 +103,7 @@ spec:
                   - lidarr
                 properties:
                   lidarr:
-                    description: |-
-                      Configuration for the Lidarr application.
-
-                      The empty struct is kept so the `lidarr` appConfig key keeps deserializing;
-                      serde ignores the pruned legacy sidecar-config key on existing CRs.
+                    description: Configuration for the Lidarr application.
                     type: object
                   overseerr:
                     description: |-

@@ -248,9 +248,11 @@ pub struct OverseerrServerDefaults4k {
 // --- Lidarr ---
 
 /// Configuration for the Lidarr application.
-///
-/// The empty struct is kept so the `lidarr` appConfig key keeps deserializing;
-/// serde ignores the pruned legacy sidecar-config key on existing CRs.
+//
+// This stays an empty braced struct (not a unit struct) so existing CRs that
+// still carry the legacy sidecar config key keep deserializing — serde drops
+// the unknown key. Keep this note as a `//` comment, not `///`: a doc comment
+// would leak the internal rationale into the generated CRD schema description.
 #[derive(Serialize, Deserialize, Clone, Debug, Default, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 #[expect(
