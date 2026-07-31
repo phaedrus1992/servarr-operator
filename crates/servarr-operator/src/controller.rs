@@ -1971,12 +1971,15 @@ async fn try_restore(
         )));
     };
 
-    // Safe as-is: `ServarrClient::new` builds the client but never sends a request, so it can
-    // never return the response-body-derived `ApiResponse` variant; `{e}` here never echoes
-    // external content.
+    // `ServarrClient::new` can fail with any `ApiError` variant (an invalid base URL, an
+    // API-key charset rejection, a client-build transport error); `log_summary()` drops any
+    // echoed input so the tenant-facing message never carries external content.
     let servarr_client =
         servarr_api::ServarrClient::new(&base_url, &api_key, app_kind).map_err(|e| {
-            TenantSafeMessage::new(format!("failed to create API client for restore: {e}"))
+            TenantSafeMessage::new(format!(
+                "failed to create API client for restore: {}",
+                e.log_summary()
+            ))
         })?;
 
     match servarr_client.restore_backup(backup_id).await {
