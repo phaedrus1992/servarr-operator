@@ -13,6 +13,7 @@ use kube::runtime::reflector::{self, ObjectRef};
 use kube::runtime::watcher;
 use kube::{Client, CustomResourceExt, Resource, ResourceExt};
 use servarr_api::AppKind;
+use servarr_api::TenantSafeMessage;
 use servarr_api::k8s::{kube_err_public_summary, kube_err_summary};
 use servarr_crds::{AppType, Condition, ServarrApp, ServarrAppStatus, condition_types};
 use thiserror::Error;
@@ -1347,8 +1348,11 @@ struct ConditionSpec<'a> {
 
 /// Turn a reconcile sub-step `Result` into a status [`Condition`]: success
 /// yields an `ok` condition, failure yields a `fail` condition carrying the
-/// error string and emits a `warn!` keyed on `name`. (#15)
-fn result_to_condition<E: std::fmt::Display>(
+/// sanitized [`TenantSafeMessage`] and emits a `warn!` keyed on `name`. (#15)
+///
+/// The generic error must convert into a [`TenantSafeMessage`], so only
+/// sanitizer output can ever reach the tenant-visible Condition message.
+fn result_to_condition<E: Into<TenantSafeMessage>>(
     result: Result<(), E>,
     spec: ConditionSpec<'_>,
     name: &str,
@@ -1357,8 +1361,9 @@ fn result_to_condition<E: std::fmt::Display>(
     match result {
         Ok(()) => Condition::ok(spec.condition_type, spec.ok_reason, spec.ok_message, now),
         Err(e) => {
-            warn!(%name, error = %e, "{}", spec.fail_log);
-            Condition::fail(spec.condition_type, spec.fail_reason, &e.to_string(), now)
+            let msg: TenantSafeMessage = e.into();
+            warn!(%name, error = %msg, "{}", spec.fail_log);
+            Condition::fail(spec.condition_type, spec.fail_reason, msg.as_ref(), now)
         }
     }
 }
@@ -1799,7 +1804,7 @@ async fn maybe_restore_backup(
     restore_id: &str,
     recorder: &Recorder,
     obj_ref: &k8s_openapi::api::core::v1::ObjectReference,
-) -> Result<(), anyhow::Error> {
+) -> Result<(), TenantSafeMessage> {
     let ns = app.namespace().unwrap_or_else(|| "default".into());
     let ns = ns.as_str();
     let name = app.name_any();
@@ -1814,7 +1819,9 @@ async fn maybe_restore_backup(
     }
 
     let backup_id: i64 = restore_id.parse().map_err(|_| {
-        anyhow::anyhow!("invalid restore-from value {restore_id:?}: expected integer backup ID")
+        TenantSafeMessage::new(format!(
+            "invalid restore-from value {restore_id:?}: expected integer backup ID"
+        ))
     })?;
 
     info!(%name, backup_id, "restore-from-backup triggered");
@@ -1837,7 +1844,7 @@ async fn maybe_restore_backup(
 
     // Step 1: Scale deployment to 0 and wait for pods to terminate.
     // Captured as a Result so scale-up (Step 3) always runs even if this fails.
-    let scale_down_outcome: Result<(), anyhow::Error> = async {
+    let scale_down_outcome: Result<(), TenantSafeMessage> = async {
         let scale_down = serde_json::json!({
             "spec": { "replicas": 0 }
         });
@@ -1845,7 +1852,10 @@ async fn maybe_restore_backup(
             .patch(name, &PatchParams::default(), &Patch::Merge(scale_down))
             .await
             .map_err(|e| {
-                anyhow::anyhow!("failed to scale down for restore: {}", kube_err_public_summary(&e))
+                TenantSafeMessage::new(format!(
+                    "failed to scale down for restore: {}",
+                    kube_err_public_summary(&e)
+                ))
             })?;
 
         // Wait for pods to terminate (poll for up to 60 seconds)
@@ -1909,11 +1919,11 @@ async fn maybe_restore_backup(
         )
         .await
         .map_err(|e| {
-            anyhow::anyhow!(
+            TenantSafeMessage::new(format!(
                 "restore succeeded but failed to remove annotation \
                  (will re-trigger on next reconcile): {}",
                 kube_err_public_summary(&e)
-            )
+            ))
         })?;
 
     Ok(())
@@ -1929,41 +1939,48 @@ async fn try_restore(
     backup_id: i64,
     recorder: &Recorder,
     obj_ref: &k8s_openapi::api::core::v1::ObjectReference,
-) -> Result<(), anyhow::Error> {
+) -> Result<(), TenantSafeMessage> {
     let ns = app.namespace().unwrap_or_else(|| "default".into());
     let ns = ns.as_str();
     let name = app.name_any();
     let name = name.as_str();
-    let secret_name = app
-        .spec
-        .api_key_secret
-        .as_deref()
-        .ok_or_else(|| anyhow::anyhow!("no api_key_secret configured, cannot restore"))?;
+    let secret_name =
+        app.spec.api_key_secret.as_deref().ok_or_else(|| {
+            TenantSafeMessage::new("no api_key_secret configured, cannot restore")
+        })?;
     let api_key = servarr_api::read_secret_key(client, ns, secret_name, "api-key")
         .await
         .map_err(|e| {
-            anyhow::anyhow!("failed to read API key for restore: {}", e.public_summary())
+            TenantSafeMessage::new(format!(
+                "failed to read API key for restore: {}",
+                e.public_summary()
+            ))
         })?;
 
     let app_name = servarr_resources::common::service_name(app);
     let defaults = servarr_crds::AppDefaults::for_app(&app.spec.app)
-        .map_err(|e| anyhow::anyhow!("failed to load app defaults: {e}"))?;
+        .map_err(|e| TenantSafeMessage::new(format!("failed to load app defaults: {e}")))?;
     let svc_spec = app.spec.service.as_ref().unwrap_or(&defaults.service);
     let port = svc_spec.ports.first().map(|p| p.port).unwrap_or(80);
     let base_url = format!("http://{app_name}.{ns}.svc:{port}");
 
     let Some(app_kind) = app_type_to_kind(&app.spec.app) else {
-        return Err(anyhow::anyhow!(
+        return Err(TenantSafeMessage::new(format!(
             "restore: app type {:?} has no AppKind mapping",
             app.spec.app
-        ));
+        )));
     };
 
-    // Safe as-is: `ServarrClient::new` builds the client but never sends a request, so it can
-    // never return the response-body-derived `ApiResponse` variant; `{e}` here never echoes
-    // external content.
-    let servarr_client = servarr_api::ServarrClient::new(&base_url, &api_key, app_kind)
-        .map_err(|e| anyhow::anyhow!("failed to create API client for restore: {e}"))?;
+    // `ServarrClient::new` can fail with any `ApiError` variant (an invalid base URL, an
+    // API-key charset rejection, a client-build transport error); `log_summary()` drops any
+    // echoed input so the tenant-facing message never carries external content.
+    let servarr_client =
+        servarr_api::ServarrClient::new(&base_url, &api_key, app_kind).map_err(|e| {
+            TenantSafeMessage::new(format!(
+                "failed to create API client for restore: {}",
+                e.log_summary()
+            ))
+        })?;
 
     match servarr_client.restore_backup(backup_id).await {
         Ok(()) => {
@@ -2001,7 +2018,9 @@ async fn try_restore(
                     obj_ref,
                 )
                 .await;
-            Err(anyhow::anyhow!("restore API call failed: {summary}"))
+            Err(TenantSafeMessage::new(format!(
+                "restore API call failed: {summary}"
+            )))
         }
     }
 }
@@ -2032,15 +2051,15 @@ impl DiscoveredApp {
 pub(crate) async fn discover_namespace_apps(
     client: &Client,
     namespace: &str,
-) -> Result<Vec<DiscoveredApp>, anyhow::Error> {
+) -> Result<Vec<DiscoveredApp>, TenantSafeMessage> {
     use kube::api::ListParams;
 
     let api = Api::<ServarrApp>::namespaced(client.clone(), namespace);
     let apps = api.list(&ListParams::default()).await.map_err(|e| {
-        anyhow::anyhow!(
+        TenantSafeMessage::new(format!(
             "failed to list ServarrApps: {}",
             kube_err_public_summary(&e)
-        )
+        ))
     })?;
 
     let mut discovered = Vec::new();
@@ -2076,7 +2095,7 @@ pub(crate) async fn discover_namespace_apps(
 
         let app_name = servarr_resources::common::service_name(app);
         let defaults = servarr_crds::AppDefaults::for_app(&app.spec.app)
-            .map_err(|e| anyhow::anyhow!("failed to load app defaults: {e}"))?;
+            .map_err(|e| TenantSafeMessage::new(format!("failed to load app defaults: {e}")))?;
         let svc_spec = app.spec.service.as_ref().unwrap_or(&defaults.service);
         let port = svc_spec.ports.first().map(|p| p.port).unwrap_or(80);
         let host = format!("{app_name}.{namespace}.svc");
@@ -2101,7 +2120,7 @@ async fn sync_prowlarr_apps(
     target_ns: &str,
     recorder: &Recorder,
     obj_ref: &k8s_openapi::api::core::v1::ObjectReference,
-) -> Result<(), anyhow::Error> {
+) -> Result<(), TenantSafeMessage> {
     let prowlarr_name = prowlarr.name_any();
     let ns = prowlarr.namespace().unwrap_or_else(|| "default".into());
 
@@ -2110,27 +2129,40 @@ async fn sync_prowlarr_apps(
         .spec
         .api_key_secret
         .as_deref()
-        .ok_or_else(|| anyhow::anyhow!("Prowlarr sync requires api_key_secret"))?;
+        .ok_or_else(|| TenantSafeMessage::new("Prowlarr sync requires api_key_secret"))?;
     let prowlarr_key = servarr_api::read_secret_key(client, &ns, secret_name, "api-key")
         .await
-        .map_err(|e| anyhow::anyhow!("failed to read Prowlarr API key: {}", e.public_summary()))?;
+        .map_err(|e| {
+            TenantSafeMessage::new(format!(
+                "failed to read Prowlarr API key: {}",
+                e.public_summary()
+            ))
+        })?;
 
     let prowlarr_app_name = servarr_resources::common::service_name(prowlarr);
     let defaults = servarr_crds::AppDefaults::for_app(&prowlarr.spec.app)
-        .map_err(|e| anyhow::anyhow!("failed to load app defaults: {e}"))?;
+        .map_err(|e| TenantSafeMessage::new(format!("failed to load app defaults: {e}")))?;
     let svc_spec = prowlarr.spec.service.as_ref().unwrap_or(&defaults.service);
     let port = svc_spec.ports.first().map(|p| p.port).unwrap_or(80);
     let prowlarr_url = format!("http://{prowlarr_app_name}.{ns}.svc:{port}");
 
-    let prowlarr_client = servarr_api::ProwlarrClient::new(&prowlarr_url, &prowlarr_key)
-        .map_err(|e| anyhow::anyhow!("failed to create Prowlarr client: {}", e.log_summary()))?;
+    let prowlarr_client =
+        servarr_api::ProwlarrClient::new(&prowlarr_url, &prowlarr_key).map_err(|e| {
+            TenantSafeMessage::new(format!(
+                "failed to create Prowlarr client: {}",
+                e.log_summary()
+            ))
+        })?;
 
     // Discover apps in target namespace
     let discovered = discover_namespace_apps(client, target_ns).await?;
 
     // Get current Prowlarr applications
     let existing = prowlarr_client.list_applications().await.map_err(|e| {
-        anyhow::anyhow!("failed to list Prowlarr applications: {}", e.log_summary())
+        TenantSafeMessage::new(format!(
+            "failed to list Prowlarr applications: {}",
+            e.log_summary()
+        ))
     })?;
 
     // Build a map of existing apps by base URL for diffing
@@ -2271,9 +2303,11 @@ async fn prowlarr_sync_exists(client: &Client, namespace: &str) -> bool {
 
 /// Remove this app's registration from Prowlarr when the CR is deleted.
 ///
-/// `Err` is only ever consumed by a `warn!` in `reconcile()` — never a Condition or Event — so
-/// every sanitizer call below intentionally uses the log-only variant (`log_summary()` /
-/// `kube_err_summary()`), not the stricter tenant-safe one.
+/// On failure this publishes a `Warning` Event (reason `CleanupFailed`) with a tenant-safe
+/// message (via [`TenantSafeMessage`]) and still returns the full error for the `warn!` in
+/// `reconcile()`. Sanitizer calls below keep the log-only variant (`log_summary()` /
+/// `kube_err_summary()`) for the propagated error, and route the same error through
+/// `TenantSafeMessage` for the Event.
 async fn cleanup_prowlarr_registration(
     client: &Client,
     app: &ServarrApp,
@@ -2281,11 +2315,77 @@ async fn cleanup_prowlarr_registration(
     recorder: &Recorder,
     obj_ref: &k8s_openapi::api::core::v1::ObjectReference,
 ) -> Result<(), anyhow::Error> {
+    match cleanup_prowlarr_registration_body(client, app, namespace, recorder, obj_ref, None).await
+    {
+        Ok(()) => Ok(()),
+        Err((err, tenant_msg)) => {
+            publish_cleanup_failed(recorder, obj_ref, &tenant_msg).await;
+            Err(err)
+        }
+    }
+}
+
+/// Turns a single error into the `(anyhow::Error, TenantSafeMessage)` pair a cleanup failure
+/// propagates: the anyhow side carries full detail for the operator log, while the
+/// `TenantSafeMessage` side is tenant-safe for the Kubernetes Event.
+///
+/// `prefix` is a short, static description of the failing operation; the sanitizer's summary
+/// of `e` is joined after it with `": "`. Callers must not include the separator in `prefix`.
+trait CleanupMapErr<T> {
+    type Error;
+    fn cleanup_map_err<F>(
+        self,
+        prefix: &str,
+        summary: F,
+    ) -> Result<T, (anyhow::Error, TenantSafeMessage)>
+    where
+        F: FnOnce(&Self::Error) -> String;
+}
+
+impl<T, E> CleanupMapErr<T> for Result<T, E>
+where
+    E: Into<TenantSafeMessage>,
+{
+    type Error = E;
+    fn cleanup_map_err<F>(
+        self,
+        prefix: &str,
+        summary: F,
+    ) -> Result<T, (anyhow::Error, TenantSafeMessage)>
+    where
+        F: FnOnce(&E) -> String,
+    {
+        self.map_err(|e| (anyhow::anyhow!("{prefix}: {}", summary(&e)), e.into()))
+    }
+}
+
+/// Map a curated-string failure (e.g. `AppDefaults::for_app`) into the propagated-error +
+/// tenant-safe-message pair. The anyhow message is `{ctx}: {e}`; the tenant-safe message is the
+/// curated string itself.
+fn cleanup_err_new(e: String, ctx: &str) -> (anyhow::Error, TenantSafeMessage) {
+    (anyhow::anyhow!("{ctx}: {e}"), TenantSafeMessage::new(e))
+}
+
+/// Inner cleanup body shared by [`cleanup_prowlarr_registration`] and the success-path tests.
+///
+/// `base_url_override` lets tests point the Prowlarr client at a MockServer instead of the
+/// in-cluster `{name}.{ns}.svc` URL (which cannot resolve in tests); production passes `None`.
+///
+/// On failure returns both the full error (for the `warn!` in `reconcile()`) and the
+/// tenant-safe message (for the `CleanupFailed` Event the wrapper publishes).
+async fn cleanup_prowlarr_registration_body(
+    client: &Client,
+    app: &ServarrApp,
+    namespace: &str,
+    recorder: &Recorder,
+    obj_ref: &k8s_openapi::api::core::v1::ObjectReference,
+    base_url_override: Option<&str>,
+) -> Result<(), (anyhow::Error, TenantSafeMessage)> {
     use kube::api::ListParams;
 
     let app_name_str = servarr_resources::common::service_name(app);
     let defaults = servarr_crds::AppDefaults::for_app(&app.spec.app)
-        .map_err(|e| anyhow::anyhow!("failed to load app defaults: {e}"))?;
+        .map_err(|e| cleanup_err_new(e, "failed to load app defaults"))?;
     let svc_spec = app.spec.service.as_ref().unwrap_or(&defaults.service);
     let port = svc_spec.ports.first().map(|p| p.port).unwrap_or(80);
     let app_url = format!("http://{app_name_str}.{namespace}.svc:{port}");
@@ -2295,28 +2395,26 @@ async fn cleanup_prowlarr_registration(
     let apps = sa_api
         .list(&ListParams::default())
         .await
-        .map_err(|e| anyhow::anyhow!("failed to list ServarrApps: {}", kube_err_summary(&e)))?;
+        .cleanup_map_err("failed to list ServarrApps", kube_err_summary)?;
     let prowlarr = apps.iter().find(|a| {
         a.spec.app == AppType::Prowlarr && a.spec.prowlarr_sync.as_ref().is_some_and(|s| s.enabled)
     });
 
-    let prowlarr = match prowlarr {
-        Some(p) => p,
-        None => return Ok(()), // No Prowlarr with sync, nothing to clean up
+    let Some(prowlarr) = prowlarr else {
+        return Ok(()); // No Prowlarr with sync, nothing to clean up
     };
 
-    let secret_name = match prowlarr.spec.api_key_secret.as_deref() {
-        Some(s) => s,
-        None => return Ok(()),
+    let Some(secret_name) = prowlarr.spec.api_key_secret.as_deref() else {
+        return Ok(());
     };
 
     let prowlarr_key = servarr_api::read_secret_key(client, namespace, secret_name, "api-key")
         .await
-        .map_err(|e| anyhow::anyhow!("failed to read Prowlarr API key: {}", e.log_summary()))?;
+        .cleanup_map_err("failed to read Prowlarr API key", |e| e.log_summary())?;
 
     let prowlarr_app_name = servarr_resources::common::service_name(prowlarr);
     let prowlarr_defaults = servarr_crds::AppDefaults::for_app(&prowlarr.spec.app)
-        .map_err(|e| anyhow::anyhow!("failed to load app defaults: {e}"))?;
+        .map_err(|e| cleanup_err_new(e, "failed to load app defaults"))?;
     let prowlarr_svc = prowlarr
         .spec
         .service
@@ -2324,14 +2422,17 @@ async fn cleanup_prowlarr_registration(
         .unwrap_or(&prowlarr_defaults.service);
     let prowlarr_port = prowlarr_svc.ports.first().map(|p| p.port).unwrap_or(80);
     let prowlarr_ns = prowlarr.namespace().unwrap_or_else(|| namespace.into());
-    let prowlarr_url = format!("http://{prowlarr_app_name}.{prowlarr_ns}.svc:{prowlarr_port}");
+    let prowlarr_url = base_url_override
+        .map(str::to_owned)
+        .unwrap_or_else(|| format!("http://{prowlarr_app_name}.{prowlarr_ns}.svc:{prowlarr_port}"));
 
     let prowlarr_client = servarr_api::ProwlarrClient::new(&prowlarr_url, &prowlarr_key)
-        .map_err(|e| anyhow::anyhow!("failed to create Prowlarr client: {}", e.log_summary()))?;
+        .cleanup_map_err("failed to create Prowlarr client", |e| e.log_summary())?;
 
-    let existing = prowlarr_client.list_applications().await.map_err(|e| {
-        anyhow::anyhow!("failed to list Prowlarr applications: {}", e.log_summary())
-    })?;
+    let existing = prowlarr_client
+        .list_applications()
+        .await
+        .cleanup_map_err("failed to list Prowlarr applications", |e| e.log_summary())?;
     if let Some(registered) = existing.iter().find(|a| {
         a.fields
             .iter()
@@ -2345,26 +2446,18 @@ async fn cleanup_prowlarr_registration(
         prowlarr_client
             .delete_application(registered.id)
             .await
-            .map_err(|e| {
-                anyhow::anyhow!(
-                    "failed to delete Prowlarr application {}: {}",
-                    registered.id,
-                    e.log_summary()
-                )
-            })?;
+            .cleanup_map_err(
+                &format!("failed to delete Prowlarr application {}", registered.id),
+                |e| e.log_summary(),
+            )?;
 
-        let _ = recorder
-            .publish(
-                &Event {
-                    type_: EventType::Normal,
-                    reason: "ProwlarrCleanup".into(),
-                    note: Some(format!("Removed {} from Prowlarr", app.name_any())),
-                    action: "Finalize".into(),
-                    secondary: None,
-                },
-                obj_ref,
-            )
-            .await;
+        publish_cleanup_normal(
+            recorder,
+            obj_ref,
+            "ProwlarrCleanup",
+            format!("Removed {} from Prowlarr", app.name_any()),
+        )
+        .await;
     }
 
     Ok(())
@@ -2377,7 +2470,7 @@ async fn sync_overseerr_servers(
     target_ns: &str,
     recorder: &Recorder,
     obj_ref: &k8s_openapi::api::core::v1::ObjectReference,
-) -> Result<(), anyhow::Error> {
+) -> Result<(), TenantSafeMessage> {
     let overseerr_name = overseerr.name_any();
     let ns = overseerr.namespace().unwrap_or_else(|| "default".into());
 
@@ -2386,14 +2479,19 @@ async fn sync_overseerr_servers(
         .spec
         .api_key_secret
         .as_deref()
-        .ok_or_else(|| anyhow::anyhow!("Overseerr sync requires api_key_secret"))?;
+        .ok_or_else(|| TenantSafeMessage::new("Overseerr sync requires api_key_secret"))?;
     let overseerr_key = servarr_api::read_secret_key(client, &ns, secret_name, "api-key")
         .await
-        .map_err(|e| anyhow::anyhow!("failed to read Overseerr API key: {}", e.public_summary()))?;
+        .map_err(|e| {
+            TenantSafeMessage::new(format!(
+                "failed to read Overseerr API key: {}",
+                e.public_summary()
+            ))
+        })?;
 
     let overseerr_app_name = servarr_resources::common::service_name(overseerr);
     let defaults = servarr_crds::AppDefaults::for_app(&overseerr.spec.app)
-        .map_err(|e| anyhow::anyhow!("failed to load app defaults: {e}"))?;
+        .map_err(|e| TenantSafeMessage::new(format!("failed to load app defaults: {e}")))?;
     let svc_spec = overseerr.spec.service.as_ref().unwrap_or(&defaults.service);
     let port = svc_spec.ports.first().map(|p| p.port).unwrap_or(80);
     let overseerr_url = format!("http://{overseerr_app_name}.{ns}.svc:{port}");
@@ -2405,16 +2503,16 @@ async fn sync_overseerr_servers(
 
     // Get existing server registrations
     let existing_sonarr = overseerr_client.list_sonarr().await.map_err(|e| {
-        anyhow::anyhow!(
+        TenantSafeMessage::new(format!(
             "failed to list Overseerr Sonarr servers: {}",
             e.log_summary()
-        )
+        ))
     })?;
     let existing_radarr = overseerr_client.list_radarr().await.map_err(|e| {
-        anyhow::anyhow!(
+        TenantSafeMessage::new(format!(
             "failed to list Overseerr Radarr servers: {}",
             e.log_summary()
-        )
+        ))
     })?;
 
     // Get Overseerr config for default profile/directory settings
@@ -2625,7 +2723,7 @@ async fn sync_bazarr_apps(
     client: &Client,
     bazarr: &ServarrApp,
     target_ns: &str,
-) -> Result<(), anyhow::Error> {
+) -> Result<(), TenantSafeMessage> {
     let bazarr_name = bazarr.name_any();
     let ns = bazarr.namespace().unwrap_or_else(|| "default".into());
 
@@ -2633,17 +2731,26 @@ async fn sync_bazarr_apps(
     let api_key_secret = servarr_resources::common::child_name(bazarr, "api-key");
     let bazarr_key = servarr_api::read_secret_key(client, &ns, &api_key_secret, "api-key")
         .await
-        .map_err(|e| anyhow::anyhow!("failed to read Bazarr API key: {}", e.public_summary()))?;
+        .map_err(|e| {
+            TenantSafeMessage::new(format!(
+                "failed to read Bazarr API key: {}",
+                e.public_summary()
+            ))
+        })?;
 
     let bazarr_app_name = servarr_resources::common::service_name(bazarr);
     let defaults = servarr_crds::AppDefaults::for_app(&bazarr.spec.app)
-        .map_err(|e| anyhow::anyhow!("failed to load app defaults: {e}"))?;
+        .map_err(|e| TenantSafeMessage::new(format!("failed to load app defaults: {e}")))?;
     let svc_spec = bazarr.spec.service.as_ref().unwrap_or(&defaults.service);
     let port = svc_spec.ports.first().map(|p| p.port).unwrap_or(80);
     let bazarr_url = format!("http://{bazarr_app_name}.{ns}.svc:{port}");
 
-    let bazarr_client = servarr_api::BazarrClient::new(&bazarr_url, &bazarr_key)
-        .map_err(|e| anyhow::anyhow!("failed to create Bazarr client: {}", e.log_summary()))?;
+    let bazarr_client = servarr_api::BazarrClient::new(&bazarr_url, &bazarr_key).map_err(|e| {
+        TenantSafeMessage::new(format!(
+            "failed to create Bazarr client: {}",
+            e.log_summary()
+        ))
+    })?;
 
     let auto_remove = bazarr
         .spec
@@ -2658,7 +2765,7 @@ async fn sync_bazarr_apps(
     let has_sonarr = discovered.iter().any(|a| a.app_type == AppType::Sonarr);
     let has_radarr = discovered.iter().any(|a| a.app_type == AppType::Radarr);
 
-    let mut first_error: Option<anyhow::Error> = None;
+    let mut first_error: Option<TenantSafeMessage> = None;
 
     for app in &discovered {
         match app.app_type {
@@ -2672,7 +2779,10 @@ async fn sync_bazarr_apps(
                     warn!(bazarr = %bazarr_name, sonarr = %app.name, error = %summary,
                         "failed to configure Sonarr in Bazarr");
                     first_error.get_or_insert_with(|| {
-                        anyhow::anyhow!("configure_sonarr({}) failed: {summary}", app.name)
+                        TenantSafeMessage::new(format!(
+                            "configure_sonarr({}) failed: {summary}",
+                            app.name
+                        ))
                     });
                 }
             }
@@ -2686,7 +2796,10 @@ async fn sync_bazarr_apps(
                     warn!(bazarr = %bazarr_name, radarr = %app.name, error = %summary,
                         "failed to configure Radarr in Bazarr");
                     first_error.get_or_insert_with(|| {
-                        anyhow::anyhow!("configure_radarr({}) failed: {summary}", app.name)
+                        TenantSafeMessage::new(format!(
+                            "configure_radarr({}) failed: {summary}",
+                            app.name
+                        ))
                     });
                 }
             }
@@ -2698,12 +2811,16 @@ async fn sync_bazarr_apps(
         if !has_sonarr && let Err(e) = bazarr_client.disable_sonarr().await {
             let summary = e.log_summary();
             warn!(bazarr = %bazarr_name, error = %summary, "failed to disable Sonarr in Bazarr");
-            first_error.get_or_insert_with(|| anyhow::anyhow!("disable_sonarr failed: {summary}"));
+            first_error.get_or_insert_with(|| {
+                TenantSafeMessage::new(format!("disable_sonarr failed: {summary}"))
+            });
         }
         if !has_radarr && let Err(e) = bazarr_client.disable_radarr().await {
             let summary = e.log_summary();
             warn!(bazarr = %bazarr_name, error = %summary, "failed to disable Radarr in Bazarr");
-            first_error.get_or_insert_with(|| anyhow::anyhow!("disable_radarr failed: {summary}"));
+            first_error.get_or_insert_with(|| {
+                TenantSafeMessage::new(format!("disable_radarr failed: {summary}"))
+            });
         }
     }
 
@@ -2736,7 +2853,7 @@ async fn sync_maintainerr_servers(
     maintainerr: &ServarrApp,
     target_ns: &str,
     base_url_override: Option<&str>,
-) -> Result<(), anyhow::Error> {
+) -> Result<(), TenantSafeMessage> {
     let maintainerr_name = maintainerr.name_any();
     let ns = maintainerr.namespace().unwrap_or_else(|| "default".into());
 
@@ -2745,12 +2862,15 @@ async fn sync_maintainerr_servers(
     let maintainerr_key = servarr_api::read_secret_key(client, &ns, &api_key_secret, "api-key")
         .await
         .map_err(|e| {
-            anyhow::anyhow!("failed to read Maintainerr API key: {}", e.public_summary())
+            TenantSafeMessage::new(format!(
+                "failed to read Maintainerr API key: {}",
+                e.public_summary()
+            ))
         })?;
 
     let maintainerr_app_name = servarr_resources::common::service_name(maintainerr);
     let defaults = servarr_crds::AppDefaults::for_app(&maintainerr.spec.app)
-        .map_err(|e| anyhow::anyhow!("failed to load app defaults: {e}"))?;
+        .map_err(|e| TenantSafeMessage::new(format!("failed to load app defaults: {e}")))?;
     let svc_spec = maintainerr
         .spec
         .service
@@ -2759,7 +2879,9 @@ async fn sync_maintainerr_servers(
     // A Maintainerr service with no port is a malformed spec/defaults — surface it
     // rather than silently constructing a URL against the wrong port.
     let port = svc_spec.ports.first().map(|p| p.port).ok_or_else(|| {
-        anyhow::anyhow!("Maintainerr service spec has no ports; check spec.service or app defaults")
+        TenantSafeMessage::new(
+            "Maintainerr service spec has no ports; check spec.service or app defaults",
+        )
     })?;
     let maintainerr_url = base_url_override
         .map(str::to_owned)
@@ -2767,7 +2889,10 @@ async fn sync_maintainerr_servers(
 
     let maintainerr_client =
         servarr_api::MaintainerrClient::new(&maintainerr_url, &maintainerr_key).map_err(|e| {
-            anyhow::anyhow!("failed to create Maintainerr client: {}", e.log_summary())
+            TenantSafeMessage::new(format!(
+                "failed to create Maintainerr client: {}",
+                e.log_summary()
+            ))
         })?;
 
     let mut failures = 0;
@@ -2855,7 +2980,7 @@ async fn sync_maintainerr_servers(
             let summary = e.log_summary();
             error!(maintainerr = %maintainerr_name, error = %summary,
                 "failed to list existing Sonarr servers from Maintainerr; aborting sync to prevent duplicates");
-            anyhow::anyhow!("list_sonarr failed: {summary}")
+            TenantSafeMessage::new(format!("list_sonarr failed: {summary}"))
         })?
         .into_iter()
         .map(|s| s.name)
@@ -2867,7 +2992,7 @@ async fn sync_maintainerr_servers(
             let summary = e.log_summary();
             error!(maintainerr = %maintainerr_name, error = %summary,
                 "failed to list existing Radarr servers from Maintainerr; aborting sync to prevent duplicates");
-            anyhow::anyhow!("list_radarr failed: {summary}")
+            TenantSafeMessage::new(format!("list_radarr failed: {summary}"))
         })?
         .into_iter()
         .map(|s| s.name)
@@ -3001,9 +3126,9 @@ async fn sync_maintainerr_servers(
         "Maintainerr sync complete");
 
     if failures > 0 {
-        return Err(anyhow::anyhow!(
+        return Err(TenantSafeMessage::new(format!(
             "{failures} app(s) failed to sync into Maintainerr (see warnings above)"
-        ));
+        )));
     }
 
     Ok(())
@@ -3016,7 +3141,7 @@ async fn sync_subgen_jellyfin(
     client: &Client,
     subgen: &ServarrApp,
     target_ns: &str,
-) -> Result<(), anyhow::Error> {
+) -> Result<(), TenantSafeMessage> {
     let subgen_name = subgen.name_any();
     let ns = subgen.namespace().unwrap_or_else(|| "default".into());
 
@@ -3026,10 +3151,10 @@ async fn sync_subgen_jellyfin(
         .list(&kube::api::ListParams::default())
         .await
         .map_err(|e| {
-            anyhow::anyhow!(
+            TenantSafeMessage::new(format!(
                 "failed to list ServarrApps: {}",
                 kube_err_public_summary(&e)
-            )
+            ))
         })?;
 
     let jellyfin = match app_list
@@ -3041,9 +3166,9 @@ async fn sync_subgen_jellyfin(
         None => {
             warn!(subgen = %subgen_name,
                 "subgen-sync: no Jellyfin CR found in namespace {target_ns}, skipping");
-            return Err(anyhow::anyhow!(
+            return Err(TenantSafeMessage::new(format!(
                 "no Jellyfin CR found in namespace {target_ns}"
-            ));
+            )));
         }
     };
 
@@ -3053,8 +3178,8 @@ async fn sync_subgen_jellyfin(
         None => {
             warn!(subgen = %subgen_name,
                 "subgen-sync: Jellyfin CR has no apiKeySecret, skipping");
-            return Err(anyhow::anyhow!(
-                "Jellyfin CR has no apiKeySecret configured"
+            return Err(TenantSafeMessage::new(
+                "Jellyfin CR has no apiKeySecret configured",
             ));
         }
     };
@@ -3062,15 +3187,15 @@ async fn sync_subgen_jellyfin(
     servarr_api::read_secret_key(client, target_ns, &jf_secret_name, "api-key")
         .await
         .map_err(|e| {
-            anyhow::anyhow!(
+            TenantSafeMessage::new(format!(
                 "Jellyfin API key secret {jf_secret_name} unreadable: {}",
                 e.public_summary()
-            )
+            ))
         })?;
 
     let jf_app_name = servarr_resources::common::service_name(jellyfin);
     let jf_defaults = servarr_crds::AppDefaults::for_app(&jellyfin.spec.app)
-        .map_err(|e| anyhow::anyhow!("failed to load app defaults: {e}"))?;
+        .map_err(|e| TenantSafeMessage::new(format!("failed to load app defaults: {e}")))?;
     let jf_svc_spec = jellyfin
         .spec
         .service
@@ -3114,10 +3239,10 @@ async fn sync_subgen_jellyfin(
         .patch(&subgen_name, &pp, &Patch::Apply(patch))
         .await
         .map_err(|e| {
-            anyhow::anyhow!(
+            TenantSafeMessage::new(format!(
                 "failed to patch Subgen Deployment: {}",
                 kube_err_public_summary(&e)
-            )
+            ))
         })?;
 
     info!(subgen = %subgen_name, jellyfin = %jf_app_name, "subgen-sync: injected Jellyfin env vars");
@@ -3142,9 +3267,11 @@ async fn overseerr_sync_exists(client: &Client, namespace: &str) -> bool {
 
 /// Remove this app's registration from Overseerr when the CR is deleted.
 ///
-/// `Err` is only ever consumed by a `warn!` in `reconcile()` — never a Condition or Event — so
-/// every sanitizer call below intentionally uses the log-only variant (`log_summary()` /
-/// `kube_err_summary()`), not the stricter tenant-safe one.
+/// On failure this publishes a `Warning` Event (reason `CleanupFailed`) with a tenant-safe
+/// message (via [`TenantSafeMessage`]) and still returns the full error for the `warn!` in
+/// `reconcile()`. Sanitizer calls below keep the log-only variant (`log_summary()` /
+/// `kube_err_summary()`) for the propagated error, and route the same error through
+/// `TenantSafeMessage` for the Event.
 async fn cleanup_overseerr_registration(
     client: &Client,
     app: &ServarrApp,
@@ -3152,11 +3279,223 @@ async fn cleanup_overseerr_registration(
     recorder: &Recorder,
     obj_ref: &k8s_openapi::api::core::v1::ObjectReference,
 ) -> Result<(), anyhow::Error> {
+    match cleanup_overseerr_registration_body(client, app, namespace, recorder, obj_ref, None).await
+    {
+        Ok(()) => Ok(()),
+        Err((err, tenant_msg)) => {
+            publish_cleanup_failed(recorder, obj_ref, &tenant_msg).await;
+            Err(err)
+        }
+    }
+}
+
+/// Uniform view of the Overseerr registered-server settings the cleanup path needs, so the
+/// Sonarr/Radarr arms share one implementation.
+trait OverseerrServerSettings {
+    fn hostname(&self) -> &str;
+    fn port(&self) -> f64;
+    fn id(&self) -> i32;
+}
+
+impl OverseerrServerSettings for overseerr::models::SonarrSettings {
+    fn hostname(&self) -> &str {
+        &self.hostname
+    }
+    fn port(&self) -> f64 {
+        self.port
+    }
+    fn id(&self) -> i32 {
+        self.id.unwrap_or(0.0) as i32
+    }
+}
+
+impl OverseerrServerSettings for overseerr::models::RadarrSettings {
+    fn hostname(&self) -> &str {
+        &self.hostname
+    }
+    fn port(&self) -> f64 {
+        self.port
+    }
+    fn id(&self) -> i32 {
+        self.id.unwrap_or(0.0) as i32
+    }
+}
+
+/// Per-app Overseerr operations (Sonarr/Radarr) so the cleanup helper is generic over the
+/// registered-server settings type.
+trait OverseerrAppKind {
+    type Server: OverseerrServerSettings;
+    fn name(&self) -> &'static str;
+    fn list<'a>(
+        &'a self,
+        client: &'a servarr_api::OverseerrClient,
+    ) -> futures::future::BoxFuture<'a, Result<Vec<Self::Server>, servarr_api::ApiError>>;
+    fn delete<'a>(
+        &'a self,
+        client: &'a servarr_api::OverseerrClient,
+        id: i32,
+    ) -> futures::future::BoxFuture<'a, Result<(), servarr_api::ApiError>>;
+}
+
+struct SonarrOverseerr;
+
+impl OverseerrAppKind for SonarrOverseerr {
+    type Server = overseerr::models::SonarrSettings;
+
+    fn name(&self) -> &'static str {
+        "Sonarr"
+    }
+
+    fn list<'a>(
+        &'a self,
+        client: &'a servarr_api::OverseerrClient,
+    ) -> futures::future::BoxFuture<'a, Result<Vec<Self::Server>, servarr_api::ApiError>> {
+        Box::pin(client.list_sonarr())
+    }
+
+    fn delete<'a>(
+        &'a self,
+        client: &'a servarr_api::OverseerrClient,
+        id: i32,
+    ) -> futures::future::BoxFuture<'a, Result<(), servarr_api::ApiError>> {
+        Box::pin(client.delete_sonarr(id))
+    }
+}
+
+struct RadarrOverseerr;
+
+impl OverseerrAppKind for RadarrOverseerr {
+    type Server = overseerr::models::RadarrSettings;
+
+    fn name(&self) -> &'static str {
+        "Radarr"
+    }
+
+    fn list<'a>(
+        &'a self,
+        client: &'a servarr_api::OverseerrClient,
+    ) -> futures::future::BoxFuture<'a, Result<Vec<Self::Server>, servarr_api::ApiError>> {
+        Box::pin(client.list_radarr())
+    }
+
+    fn delete<'a>(
+        &'a self,
+        client: &'a servarr_api::OverseerrClient,
+        id: i32,
+    ) -> futures::future::BoxFuture<'a, Result<(), servarr_api::ApiError>> {
+        Box::pin(client.delete_radarr(id))
+    }
+}
+
+/// Publish the Normal event for a successful finalizer cleanup (shared by the Prowlarr and
+/// Overseerr cleanup bodies).
+async fn publish_cleanup_normal(
+    recorder: &Recorder,
+    obj_ref: &k8s_openapi::api::core::v1::ObjectReference,
+    reason: &str,
+    note: String,
+) {
+    let _ = recorder
+        .publish(
+            &Event {
+                type_: EventType::Normal,
+                reason: reason.into(),
+                note: Some(note),
+                action: "Finalize".into(),
+                secondary: None,
+            },
+            obj_ref,
+        )
+        .await;
+}
+
+/// Publish the Warning event (reason `CleanupFailed`) for a failed finalizer cleanup, shared
+/// by the Prowlarr and Overseerr cleanup wrappers. The note carries the tenant-safe message
+/// from the propagated cleanup error.
+async fn publish_cleanup_failed(
+    recorder: &Recorder,
+    obj_ref: &k8s_openapi::api::core::v1::ObjectReference,
+    msg: &TenantSafeMessage,
+) {
+    if let Err(e) = recorder
+        .publish(
+            &Event {
+                type_: EventType::Warning,
+                reason: "CleanupFailed".into(),
+                note: Some(msg.as_ref().to_string()),
+                action: "Finalize".into(),
+                secondary: None,
+            },
+            obj_ref,
+        )
+        .await
+    {
+        // A failure to publish means the tenant never learns cleanup failed; log it rather
+        // than swallowing it silently. The full error is operator-log-only (never tenant-facing).
+        warn!(
+            error = %e,
+            object = %obj_ref.name.as_deref().unwrap_or("<unknown>"),
+            "failed to publish CleanupFailed event"
+        );
+    }
+}
+
+/// Remove one registered server (Sonarr or Radarr) matching `app_hostname:port` from Overseerr.
+/// Returns `true` when a server was removed so the caller publishes the Normal event.
+async fn overseerr_remove_server<K>(
+    overseerr_client: &servarr_api::OverseerrClient,
+    app: &ServarrApp,
+    app_hostname: &str,
+    port: i32,
+    kind: K,
+) -> Result<bool, (anyhow::Error, TenantSafeMessage)>
+where
+    K: OverseerrAppKind,
+{
+    let existing = kind.list(overseerr_client).await.cleanup_map_err(
+        &format!("failed to list Overseerr {} servers", kind.name()),
+        |e| e.log_summary(),
+    )?;
+    if let Some(registered) = existing
+        .iter()
+        .find(|s| s.hostname() == app_hostname && s.port() == f64::from(port))
+    {
+        let id = registered.id();
+        info!(
+            app = %app.name_any(),
+            overseerr_server_id = id,
+            "removing {} from Overseerr on deletion",
+            kind.name()
+        );
+        kind.delete(overseerr_client, id).await.cleanup_map_err(
+            &format!("failed to delete Overseerr {} server {id}", kind.name()),
+            |e| e.log_summary(),
+        )?;
+        return Ok(true);
+    }
+    Ok(false)
+}
+
+/// Inner cleanup body shared by [`cleanup_overseerr_registration`] and the success-path tests.
+///
+/// `base_url_override` lets tests point the Overseerr client at a MockServer instead of the
+/// in-cluster `{name}.{ns}.svc` URL (which cannot resolve in tests); production passes `None`.
+///
+/// On failure returns both the full error (for the `warn!` in `reconcile()`) and the
+/// tenant-safe message (for the `CleanupFailed` Event the wrapper publishes).
+async fn cleanup_overseerr_registration_body(
+    client: &Client,
+    app: &ServarrApp,
+    namespace: &str,
+    recorder: &Recorder,
+    obj_ref: &k8s_openapi::api::core::v1::ObjectReference,
+    base_url_override: Option<&str>,
+) -> Result<(), (anyhow::Error, TenantSafeMessage)> {
     use kube::api::ListParams;
 
     let app_name_str = servarr_resources::common::service_name(app);
     let defaults_for_app = servarr_crds::AppDefaults::for_app(&app.spec.app)
-        .map_err(|e| anyhow::anyhow!("failed to load app defaults: {e}"))?;
+        .map_err(|e| cleanup_err_new(e, "failed to load app defaults"))?;
     let svc_spec = app
         .spec
         .service
@@ -3170,119 +3509,60 @@ async fn cleanup_overseerr_registration(
     let apps = sa_api
         .list(&ListParams::default())
         .await
-        .map_err(|e| anyhow::anyhow!("failed to list ServarrApps: {}", kube_err_summary(&e)))?;
+        .cleanup_map_err("failed to list ServarrApps", kube_err_summary)?;
     let overseerr = apps.iter().find(|a| {
         a.spec.app == AppType::Overseerr
             && a.spec.overseerr_sync.as_ref().is_some_and(|s| s.enabled)
     });
 
-    let overseerr = match overseerr {
-        Some(o) => o,
-        None => return Ok(()),
+    let Some(overseerr) = overseerr else {
+        return Ok(());
     };
 
-    let secret_name = match overseerr.spec.api_key_secret.as_deref() {
-        Some(s) => s,
-        None => return Ok(()),
+    let Some(secret_name) = overseerr.spec.api_key_secret.as_deref() else {
+        return Ok(());
     };
 
     let overseerr_ns = overseerr.namespace().unwrap_or_else(|| namespace.into());
     let overseerr_key = servarr_api::read_secret_key(client, &overseerr_ns, secret_name, "api-key")
         .await
-        .map_err(|e| anyhow::anyhow!("failed to read Overseerr API key: {}", e.log_summary()))?;
+        .cleanup_map_err("failed to read Overseerr API key", |e| e.log_summary())?;
 
     let overseerr_app_name = servarr_resources::common::service_name(overseerr);
     let overseerr_defaults = servarr_crds::AppDefaults::for_app(&overseerr.spec.app)
-        .map_err(|e| anyhow::anyhow!("failed to load app defaults: {e}"))?;
+        .map_err(|e| cleanup_err_new(e, "failed to load app defaults"))?;
     let overseerr_svc = overseerr
         .spec
         .service
         .as_ref()
         .unwrap_or(&overseerr_defaults.service);
     let overseerr_port = overseerr_svc.ports.first().map(|p| p.port).unwrap_or(80);
-    let overseerr_url = format!("http://{overseerr_app_name}.{overseerr_ns}.svc:{overseerr_port}");
+    let overseerr_url = base_url_override.map(str::to_owned).unwrap_or_else(|| {
+        format!("http://{overseerr_app_name}.{overseerr_ns}.svc:{overseerr_port}")
+    });
 
     let overseerr_client = servarr_api::OverseerrClient::new(&overseerr_url, &overseerr_key);
 
     // Remove matching Sonarr or Radarr server by hostname + port
-    match app.spec.app {
+    let removed = match app.spec.app {
         AppType::Sonarr => {
-            let existing = overseerr_client.list_sonarr().await.map_err(|e| {
-                anyhow::anyhow!(
-                    "failed to list Overseerr Sonarr servers: {}",
-                    e.log_summary()
-                )
-            })?;
-            if let Some(registered) = existing
-                .iter()
-                .find(|s| s.hostname == app_hostname && s.port == f64::from(port))
-            {
-                let id = registered.id.unwrap_or(0.0) as i32;
-                info!(
-                    app = %app.name_any(),
-                    overseerr_server_id = id,
-                    "removing Sonarr from Overseerr on deletion"
-                );
-                overseerr_client.delete_sonarr(id).await.map_err(|e| {
-                    anyhow::anyhow!(
-                        "failed to delete Overseerr Sonarr server {id}: {}",
-                        e.log_summary()
-                    )
-                })?;
-
-                let _ = recorder
-                    .publish(
-                        &Event {
-                            type_: EventType::Normal,
-                            reason: "OverseerrCleanup".into(),
-                            note: Some(format!("Removed {} from Overseerr", app.name_any())),
-                            action: "Finalize".into(),
-                            secondary: None,
-                        },
-                        obj_ref,
-                    )
-                    .await;
-            }
+            overseerr_remove_server(&overseerr_client, app, &app_hostname, port, SonarrOverseerr)
+                .await?
         }
         AppType::Radarr => {
-            let existing = overseerr_client.list_radarr().await.map_err(|e| {
-                anyhow::anyhow!(
-                    "failed to list Overseerr Radarr servers: {}",
-                    e.log_summary()
-                )
-            })?;
-            if let Some(registered) = existing
-                .iter()
-                .find(|s| s.hostname == app_hostname && s.port == f64::from(port))
-            {
-                let id = registered.id.unwrap_or(0.0) as i32;
-                info!(
-                    app = %app.name_any(),
-                    overseerr_server_id = id,
-                    "removing Radarr from Overseerr on deletion"
-                );
-                overseerr_client.delete_radarr(id).await.map_err(|e| {
-                    anyhow::anyhow!(
-                        "failed to delete Overseerr Radarr server {id}: {}",
-                        e.log_summary()
-                    )
-                })?;
-
-                let _ = recorder
-                    .publish(
-                        &Event {
-                            type_: EventType::Normal,
-                            reason: "OverseerrCleanup".into(),
-                            note: Some(format!("Removed {} from Overseerr", app.name_any())),
-                            action: "Finalize".into(),
-                            secondary: None,
-                        },
-                        obj_ref,
-                    )
-                    .await;
-            }
+            overseerr_remove_server(&overseerr_client, app, &app_hostname, port, RadarrOverseerr)
+                .await?
         }
-        _ => {}
+        _ => false,
+    };
+    if removed {
+        publish_cleanup_normal(
+            recorder,
+            obj_ref,
+            "OverseerrCleanup",
+            format!("Removed {} from Overseerr", app.name_any()),
+        )
+        .await;
     }
 
     Ok(())
@@ -3412,6 +3692,28 @@ mod tests {
     fn error_public_summary_non_kube_variant_passes_through_unchanged() {
         let err = Error::AppDefaults("missing entry for AppType::Radarr".to_string());
         assert_eq!(err.public_summary(), err.to_string());
+    }
+
+    // ---- result_to_condition golden tests ----
+
+    #[test]
+    fn result_to_condition_api_error_message_is_byte_identical_to_pre_sanitization() {
+        // Golden test (#443): an ApiResponse whose body would leak through the raw Display
+        // must still produce exactly the pre-existing sanitized Condition message.
+        let err = servarr_api::ApiError::ApiResponse {
+            status: 401,
+            body: "super-secret-leaky-body".to_string(),
+        };
+        let result: Result<(), TenantSafeMessage> = Err(TenantSafeMessage::from(err));
+        let spec = ConditionSpec {
+            condition_type: "Restore",
+            ok_reason: "Succeeded",
+            ok_message: "restore succeeded",
+            fail_reason: "Failed",
+            fail_log: "restore failed",
+        };
+        let condition = result_to_condition(result, spec, "my-app", "2026-07-31T00:00:00Z");
+        assert_eq!(condition.message, "HTTP API error (status: 401)");
     }
 
     // ---- json_is_subset ----
@@ -4802,5 +5104,524 @@ mod tests {
             !result.contains(SERDE_LEAK_MARKER),
             "must not pass a SecretError::Kube wrapping a non-Api kube::Error through to the tenant-visible status.backupStatus.lastBackupResult: {result}"
         );
+    }
+
+    // ---- finalizer cleanup CleanupFailed Event tests (#444) ----
+
+    /// Seed used to prove the Warning Event message is tenant-safe: it can never
+    /// appear in a sanitized summary, so its absence proves the raw message did
+    /// not reach the Event.
+    const CLEANUP_FAILED_SEED: &str = "CLEANUP-SEED-SECRET-TOKEN";
+
+    /// Collect the bodies of all Event POSTs to the kube MockServer so tests can
+    /// assert on the published Event (type, reason, note).
+    async fn event_post_bodies(mock_server: &MockServer) -> Vec<serde_json::Value> {
+        let mut bodies = Vec::new();
+        for req in mock_server.received_requests().await.unwrap_or_default() {
+            if req.method == wiremock::http::Method::POST
+                && req.url.path() == "/apis/events.k8s.io/v1/namespaces/test/events"
+                && let Ok(body) = serde_json::from_slice::<serde_json::Value>(&req.body)
+            {
+                bodies.push(body);
+            }
+        }
+        bodies
+    }
+
+    /// Answer Event POSTs with a minimal events.k8s.io/v1 Event.
+    async fn mount_event_post_mock(mock_server: &MockServer) {
+        Mock::given(method("POST"))
+            .and(path("/apis/events.k8s.io/v1/namespaces/test/events"))
+            .respond_with(ResponseTemplate::new(201).set_body_json(json!({
+                "apiVersion": "events.k8s.io/v1",
+                "kind": "Event",
+                "metadata": {
+                    "name": "test-event",
+                    "namespace": "test",
+                    "uid": "event-uid-1",
+                    "resourceVersion": "300"
+                }
+            })))
+            .mount(mock_server)
+            .await;
+    }
+
+    /// Answer a GET with a `kube::Error::Api` (a `Status` whose message carries
+    /// `seed`) so the tenant-safe summary keeps only the status code.
+    async fn mount_kube_status_error(
+        mock_server: &MockServer,
+        url_path: &str,
+        code: u16,
+        seed: &str,
+    ) {
+        Mock::given(method("GET"))
+            .and(path(url_path))
+            .respond_with(ResponseTemplate::new(code).set_body_json(json!({
+                "apiVersion": "v1",
+                "kind": "Status",
+                "code": code,
+                "message": format!("{url_path} is forbidden: {seed}"),
+                "reason": "Forbidden"
+            })))
+            .mount(mock_server)
+            .await;
+    }
+
+    /// A sync-enabled Prowlarr `ServarrApp` for a ServarrAppList, with an optional
+    /// `apiKeySecret`.
+    fn prowlarr_app_json(name: &str, api_key_secret: Option<&str>) -> serde_json::Value {
+        let mut spec = serde_json::Map::new();
+        spec.insert("app".into(), json!("Prowlarr"));
+        spec.insert("prowlarrSync".into(), json!({ "enabled": true }));
+        if let Some(secret) = api_key_secret {
+            spec.insert("apiKeySecret".into(), json!(secret));
+        }
+        json!({
+            "apiVersion": "servarr.dev/v1alpha1",
+            "kind": "ServarrApp",
+            "metadata": {
+                "name": name,
+                "namespace": "test",
+                "uid": "prowlarr-uid",
+                "resourceVersion": "1"
+            },
+            "spec": spec
+        })
+    }
+
+    /// A sync-enabled Overseerr `ServarrApp` for a ServarrAppList, with an optional
+    /// `apiKeySecret`.
+    fn overseerr_app_json(name: &str, api_key_secret: Option<&str>) -> serde_json::Value {
+        let mut spec = serde_json::Map::new();
+        spec.insert("app".into(), json!("Overseerr"));
+        spec.insert("overseerrSync".into(), json!({ "enabled": true }));
+        if let Some(secret) = api_key_secret {
+            spec.insert("apiKeySecret".into(), json!(secret));
+        }
+        json!({
+            "apiVersion": "servarr.dev/v1alpha1",
+            "kind": "ServarrApp",
+            "metadata": {
+                "name": name,
+                "namespace": "test",
+                "uid": "overseerr-uid",
+                "resourceVersion": "1"
+            },
+            "spec": spec
+        })
+    }
+
+    /// A `kube::Error::Api` from the ServarrApp list call must emit exactly one
+    /// `Warning`/`CleanupFailed` Event whose note is the tenant-safe status summary
+    /// (not the seeded API-server message).
+    #[tokio::test]
+    async fn cleanup_prowlarr_registration_list_failure_emits_cleanup_failed_event() {
+        let mock_server = MockServer::start().await;
+        let client = build_mock_client(&mock_server.uri()).await;
+        mount_event_post_mock(&mock_server).await;
+        mount_kube_status_error(
+            &mock_server,
+            "/apis/servarr.dev/v1alpha1/namespaces/test/servarrapps",
+            403,
+            CLEANUP_FAILED_SEED,
+        )
+        .await;
+
+        let recorder = Recorder::new(client.clone(), "test".into());
+        let app = make_test_app("my-sonarr", "test", AppType::Sonarr);
+        let obj_ref = app.object_ref(&());
+
+        let err = cleanup_prowlarr_registration(&client, &app, "test", &recorder, &obj_ref)
+            .await
+            .expect_err("a failed ServarrApp list must surface as an error");
+
+        assert!(
+            err.to_string().contains("failed to list ServarrApps"),
+            "keep the call-site context: {err}"
+        );
+
+        let events = event_post_bodies(&mock_server).await;
+        assert_eq!(events.len(), 1, "exactly one Event on failure: {events:?}");
+        let event = &events[0];
+        assert_eq!(event["type"], "Warning");
+        assert_eq!(event["reason"], "CleanupFailed");
+        assert_eq!(event["note"], "Kubernetes API error (status: 403)");
+        let note = event["note"].as_str().expect("note is a string");
+        assert!(
+            !note.contains(CLEANUP_FAILED_SEED),
+            "Event note must be tenant-safe, got: {note}"
+        );
+    }
+
+    /// No sync-enabled Prowlarr in the namespace is a skip: Ok and no Event.
+    #[tokio::test]
+    async fn cleanup_prowlarr_registration_no_sync_publishes_no_event() {
+        let mock_server = MockServer::start().await;
+        let client = build_mock_client(&mock_server.uri()).await;
+        mount_event_post_mock(&mock_server).await;
+        mount_servarrapps_list(&mock_server, json!([])).await;
+
+        let recorder = Recorder::new(client.clone(), "test".into());
+        let app = make_test_app("my-sonarr", "test", AppType::Sonarr);
+        let obj_ref = app.object_ref(&());
+
+        cleanup_prowlarr_registration(&client, &app, "test", &recorder, &obj_ref)
+            .await
+            .expect("no sync-enabled Prowlarr is a no-op success");
+
+        assert!(
+            event_post_bodies(&mock_server).await.is_empty(),
+            "skip path must not publish any Event"
+        );
+    }
+
+    /// A sync-enabled Prowlarr whose registered apps do not include this app's baseUrl is a
+    /// skip: Ok and no Event.
+    #[tokio::test]
+    async fn cleanup_prowlarr_registration_no_matching_server_publishes_no_event() {
+        let mock_server = MockServer::start().await;
+        let client = build_mock_client(&mock_server.uri()).await;
+        mount_event_post_mock(&mock_server).await;
+
+        let app = make_test_app("my-sonarr", "test", AppType::Sonarr);
+        mount_servarrapps_list(
+            &mock_server,
+            json!([prowlarr_app_json("my-prowlarr", Some("prowlarr-secret"))]),
+        )
+        .await;
+        mount_secret_mock(
+            &mock_server,
+            "test",
+            "prowlarr-secret",
+            json!({ "api-key": "dGVzdC1rZXk=" }),
+        )
+        .await;
+
+        let p_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/applications"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+                {
+                    "id": 1,
+                    "name": "other",
+                    "fields": [{ "name": "baseUrl", "value": "http://other.svc:80" }]
+                }
+            ])))
+            .mount(&p_server)
+            .await;
+
+        let recorder = Recorder::new(client.clone(), "test".into());
+        let obj_ref = app.object_ref(&());
+
+        cleanup_prowlarr_registration_body(
+            &client,
+            &app,
+            "test",
+            &recorder,
+            &obj_ref,
+            Some(&p_server.uri()),
+        )
+        .await
+        .expect("no matching registered application is a no-op success");
+
+        assert!(
+            event_post_bodies(&mock_server).await.is_empty(),
+            "no-match skip path must not publish any Event"
+        );
+    }
+
+    /// A `SecretError::Kube` from the Overseerr API-key read must emit exactly one
+    /// `Warning`/`CleanupFailed` Event with the tenant-safe status summary.
+    #[tokio::test]
+    async fn cleanup_overseerr_registration_secret_read_failure_emits_cleanup_failed_event() {
+        let mock_server = MockServer::start().await;
+        let client = build_mock_client(&mock_server.uri()).await;
+        mount_event_post_mock(&mock_server).await;
+        mount_servarrapps_list(
+            &mock_server,
+            json!([overseerr_app_json("my-overseerr", Some("overseerr-secret"))]),
+        )
+        .await;
+        mount_kube_status_error(
+            &mock_server,
+            "/api/v1/namespaces/test/secrets/overseerr-secret",
+            403,
+            CLEANUP_FAILED_SEED,
+        )
+        .await;
+
+        let recorder = Recorder::new(client.clone(), "test".into());
+        let app = make_test_app("my-sonarr", "test", AppType::Sonarr);
+        let obj_ref = app.object_ref(&());
+
+        let err = cleanup_overseerr_registration(&client, &app, "test", &recorder, &obj_ref)
+            .await
+            .expect_err("a failed secret read must surface as an error");
+
+        assert!(
+            err.to_string().contains("failed to read Overseerr API key"),
+            "keep the call-site context: {err}"
+        );
+
+        let events = event_post_bodies(&mock_server).await;
+        assert_eq!(events.len(), 1, "exactly one Event on failure: {events:?}");
+        let event = &events[0];
+        assert_eq!(event["type"], "Warning");
+        assert_eq!(event["reason"], "CleanupFailed");
+        assert_eq!(event["note"], "Kubernetes API error (status: 403)");
+        let note = event["note"].as_str().expect("note is a string");
+        assert!(
+            !note.contains(CLEANUP_FAILED_SEED),
+            "Event note must be tenant-safe, got: {note}"
+        );
+    }
+
+    /// A sync-enabled Overseerr with no `apiKeySecret` is a skip: Ok and no Event.
+    #[tokio::test]
+    async fn cleanup_overseerr_registration_no_api_key_secret_publishes_no_event() {
+        let mock_server = MockServer::start().await;
+        let client = build_mock_client(&mock_server.uri()).await;
+        mount_event_post_mock(&mock_server).await;
+        mount_servarrapps_list(
+            &mock_server,
+            json!([overseerr_app_json("my-overseerr", None)]),
+        )
+        .await;
+
+        let recorder = Recorder::new(client.clone(), "test".into());
+        let app = make_test_app("my-sonarr", "test", AppType::Sonarr);
+        let obj_ref = app.object_ref(&());
+
+        cleanup_overseerr_registration(&client, &app, "test", &recorder, &obj_ref)
+            .await
+            .expect("an Overseerr with no apiKeySecret is a no-op success");
+
+        assert!(
+            event_post_bodies(&mock_server).await.is_empty(),
+            "skip path must not publish any Event"
+        );
+    }
+
+    /// A sync-enabled Overseerr whose registered Sonarr servers do not include this app's
+    /// hostname+port is a skip: Ok and no Event.
+    #[tokio::test]
+    async fn cleanup_overseerr_registration_no_matching_server_publishes_no_event() {
+        let mock_server = MockServer::start().await;
+        let client = build_mock_client(&mock_server.uri()).await;
+        mount_event_post_mock(&mock_server).await;
+
+        let app = make_test_app("my-sonarr", "test", AppType::Sonarr);
+        mount_servarrapps_list(
+            &mock_server,
+            json!([overseerr_app_json("my-overseerr", Some("overseerr-secret"))]),
+        )
+        .await;
+        mount_secret_mock(
+            &mock_server,
+            "test",
+            "overseerr-secret",
+            json!({ "api-key": "dGVzdC1rZXk=" }),
+        )
+        .await;
+
+        let o_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/settings/sonarr"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!([{
+                "id": 1,
+                "name": "Other",
+                "hostname": "other.test.svc",
+                "port": 9999,
+                "apiKey": "some-key",
+                "useSsl": false,
+                "activeProfileId": 1,
+                "activeProfileName": "HD",
+                "activeDirectory": "/media",
+                "is4k": false,
+                "enableSeasonFolders": true,
+                "isDefault": true
+            }])))
+            .mount(&o_server)
+            .await;
+
+        let recorder = Recorder::new(client.clone(), "test".into());
+        let obj_ref = app.object_ref(&());
+
+        cleanup_overseerr_registration_body(
+            &client,
+            &app,
+            "test",
+            &recorder,
+            &obj_ref,
+            Some(&o_server.uri()),
+        )
+        .await
+        .expect("no matching registered Sonarr server is a no-op success");
+
+        assert!(
+            event_post_bodies(&mock_server).await.is_empty(),
+            "no-match skip path must not publish any Event"
+        );
+    }
+
+    /// Successful removal publishes the existing `Normal`/`ProwlarrCleanup` Event and
+    /// never a `CleanupFailed` one. Exercised through `_body` with a `base_url_override`
+    /// because the in-cluster Prowlarr URL cannot resolve in tests.
+    #[tokio::test]
+    async fn cleanup_prowlarr_registration_success_publishes_normal_event() {
+        let mock_server = MockServer::start().await;
+        let client = build_mock_client(&mock_server.uri()).await;
+        mount_event_post_mock(&mock_server).await;
+
+        let app = make_test_app("my-sonarr", "test", AppType::Sonarr);
+        let port = servarr_crds::AppDefaults::for_app(&AppType::Sonarr)
+            .expect("Sonarr defaults")
+            .service
+            .ports[0]
+            .port;
+        let app_url = format!("http://{}.test.svc:{port}", app.name_any());
+
+        mount_servarrapps_list(
+            &mock_server,
+            json!([prowlarr_app_json("my-prowlarr", Some("prowlarr-secret"))]),
+        )
+        .await;
+        mount_secret_mock(
+            &mock_server,
+            "test",
+            "prowlarr-secret",
+            json!({ "api-key": "dGVzdC1rZXk=" }),
+        )
+        .await;
+
+        let p_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/applications"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+                { "id": 1, "name": "sonarr", "fields": [{ "name": "baseUrl", "value": app_url }] }
+            ])))
+            .mount(&p_server)
+            .await;
+        Mock::given(method("DELETE"))
+            .and(path("/api/v1/applications/1"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&p_server)
+            .await;
+
+        let recorder = Recorder::new(client.clone(), "test".into());
+        let obj_ref = app.object_ref(&());
+
+        cleanup_prowlarr_registration_body(
+            &client,
+            &app,
+            "test",
+            &recorder,
+            &obj_ref,
+            Some(&p_server.uri()),
+        )
+        .await
+        .expect("a matching registered application is removed");
+
+        let events = event_post_bodies(&mock_server).await;
+        assert_eq!(
+            events.len(),
+            1,
+            "exactly one Normal Event on success: {events:?}"
+        );
+        assert_eq!(events[0]["type"], "Normal");
+        assert_eq!(events[0]["reason"], "ProwlarrCleanup");
+    }
+
+    /// Successful removal publishes the existing `Normal`/`OverseerrCleanup` Event and
+    /// never a `CleanupFailed` one. Exercised through `_body` with a `base_url_override`.
+    #[tokio::test]
+    async fn cleanup_overseerr_registration_success_publishes_normal_event() {
+        let mock_server = MockServer::start().await;
+        let client = build_mock_client(&mock_server.uri()).await;
+        mount_event_post_mock(&mock_server).await;
+
+        let app = make_test_app("my-sonarr", "test", AppType::Sonarr);
+        let port = servarr_crds::AppDefaults::for_app(&AppType::Sonarr)
+            .expect("Sonarr defaults")
+            .service
+            .ports[0]
+            .port;
+        let app_hostname = format!("{}.test.svc", app.name_any());
+
+        mount_servarrapps_list(
+            &mock_server,
+            json!([overseerr_app_json("my-overseerr", Some("overseerr-secret"))]),
+        )
+        .await;
+        mount_secret_mock(
+            &mock_server,
+            "test",
+            "overseerr-secret",
+            json!({ "api-key": "dGVzdC1rZXk=" }),
+        )
+        .await;
+
+        let o_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/settings/sonarr"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!([{
+                "id": 1,
+                "name": "Sonarr",
+                "hostname": app_hostname,
+                "port": port,
+                "apiKey": "some-key",
+                "useSsl": false,
+                "activeProfileId": 1,
+                "activeProfileName": "HD",
+                "activeDirectory": "/media",
+                "is4k": false,
+                "enableSeasonFolders": true,
+                "isDefault": true
+            }])))
+            .mount(&o_server)
+            .await;
+        Mock::given(method("DELETE"))
+            .and(path("/settings/sonarr/1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": 1,
+                "name": "Sonarr",
+                "hostname": app_hostname,
+                "port": port,
+                "apiKey": "some-key",
+                "useSsl": false,
+                "activeProfileId": 1,
+                "activeProfileName": "HD",
+                "activeDirectory": "/media",
+                "is4k": false,
+                "enableSeasonFolders": true,
+                "isDefault": true
+            })))
+            .expect(1)
+            .mount(&o_server)
+            .await;
+
+        let recorder = Recorder::new(client.clone(), "test".into());
+        let obj_ref = app.object_ref(&());
+
+        cleanup_overseerr_registration_body(
+            &client,
+            &app,
+            "test",
+            &recorder,
+            &obj_ref,
+            Some(&o_server.uri()),
+        )
+        .await
+        .expect("a matching registered Sonarr server is removed");
+
+        let events = event_post_bodies(&mock_server).await;
+        assert_eq!(
+            events.len(),
+            1,
+            "exactly one Normal Event on success: {events:?}"
+        );
+        assert_eq!(events[0]["type"], "Normal");
+        assert_eq!(events[0]["reason"], "OverseerrCleanup");
     }
 }

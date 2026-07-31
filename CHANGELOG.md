@@ -29,6 +29,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `status.backupStatus.lastBackupResult`, and several places interpolating an upstream API
   client error's raw text instead of its sanitized summary — same failure class as #428/#429/#430,
   found while sweeping the rest of the controller for the same pattern (#437, #438).
+- Make the tenant-safe guarantee compile-time enforced instead of convention: the
+  `result_to_condition` helper now accepts only a `TenantSafeMessage` (or a type that converts
+  into one through an explicit sanitizer), so a raw `kube::Error`, upstream API error, or
+  secret-read error cannot be passed where a tenant-visible Condition message is produced
+  without an explicit, reviewable sanitization step (#443).
 
 ### Fixed
 
@@ -54,6 +59,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Fix the Deployment, Service, NetworkPolicy, PVC, HTTPRoute, and TCPRoute builders silently
   applying an empty or invalid resource — or, for HTTPRoute/TCPRoute, panicking — instead of
   failing the reconcile loudly when an app's compiled defaults fail to load (#368).
+- Emit a Kubernetes Warning Event (reason `CleanupFailed`) when finalizer cleanup of a deleted
+  Prowlarr or Overseerr registration fails, instead of leaving the failure visible only in
+  operator logs — the Event carries a tenant-safe summary of the failure, and no Event is
+  published on success or when there is nothing to clean up (#444).
 
 ## [1.2.3] - 2026-07-07
 
