@@ -3643,6 +3643,10 @@ mod tests {
 
     // ---- maybe_run_backup ----
 
+    /// For the `Api` variant specifically, `log_summary()` and `public_summary()` collapse to the
+    /// same status-code string — this guards that equivalence, not the log-only-vs-tenant-safe
+    /// distinction (see `maybe_run_backup_secret_read_error_sanitizes_backup_status` below for
+    /// that, which uses a non-`Api` `kube::Error` to force the two methods to actually diverge).
     #[tokio::test]
     async fn maybe_run_backup_secret_read_error_sanitizes_status_message() {
         let mock_server = MockServer::start().await;
@@ -4478,16 +4482,11 @@ mod tests {
         );
     }
 
-    // ---- #437: tenant-visible kube::Error sanitization ----
+    // ---- #428-430 pattern check: kube::Error::Api still keeps its status code ----
 
-    /// A non-`Api` `kube::Error` is the only thing that tells `kube_err_summary` (log-safe) apart
-    /// from `kube_err_public_summary` (tenant-safe): for `Api` both collapse to the same
-    /// status-code string, but for every other variant the log-safe one passes `Display` through
-    /// verbatim. A 200 whose body has the wrong shape yields a deserialization error whose
-    /// `Display` embeds the offending value, so this marker reaches the caller if and only if the
-    /// call site used the log-only sanitizer.
-    const SERDE_LEAK_MARKER: &str = "leak-marker-bearer-tok-abc123";
-
+    /// For the `Api` variant specifically, `kube_err_summary` and `kube_err_public_summary`
+    /// collapse to the same status-code string — this guards that equivalence, not the
+    /// log-only-vs-tenant-safe distinction (see the `#437` tests below for that).
     #[tokio::test]
     async fn discover_namespace_apps_list_error_keeps_only_the_status_code() {
         let mock_server = MockServer::start().await;
@@ -4522,6 +4521,17 @@ mod tests {
         );
     }
 
+    // ---- #437: tenant-visible kube::Error/SecretError sanitization ----
+
+    /// A non-`Api` `kube::Error` is the only thing that tells `kube_err_summary` (log-safe) apart
+    /// from `kube_err_public_summary` (tenant-safe): for `Api` both collapse to the same
+    /// status-code string, but for every other variant the log-safe one passes `Display` through
+    /// verbatim. A 200 whose body has the wrong shape yields a deserialization error whose
+    /// `Display` embeds the offending value, so this marker reaches the caller if and only if the
+    /// call site used the log-only sanitizer. The same applies to `SecretError::Kube`, which just
+    /// delegates to the same two kube functions.
+    const SERDE_LEAK_MARKER: &str = "leak-marker-bearer-tok-abc123";
+
     #[tokio::test]
     async fn discover_namespace_apps_list_error_collapses_non_api_kube_errors() {
         let mock_server = MockServer::start().await;
@@ -4546,6 +4556,10 @@ mod tests {
             .to_string();
 
         assert!(
+            err.contains("failed to list ServarrApps"),
+            "should keep the call-site context: {err}"
+        );
+        assert!(
             !err.contains(SERDE_LEAK_MARKER),
             "must not pass a non-Api kube::Error's Display through to the tenant: {err}"
         );
@@ -4559,16 +4573,13 @@ mod tests {
         let mut prowlarr = make_test_app("my-prowlarr", "test", AppType::Prowlarr);
         prowlarr.spec.api_key_secret = Some("prowlarr-api-key".into());
 
-        Mock::given(method("GET"))
-            .and(path("/api/v1/namespaces/test/secrets/prowlarr-api-key"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "apiVersion": "v1",
-                "kind": "Secret",
-                "metadata": { "name": "prowlarr-api-key", "namespace": "test" },
-                "data": SERDE_LEAK_MARKER
-            })))
-            .mount(&mock_server)
-            .await;
+        mount_secret_mock(
+            &mock_server,
+            "test",
+            "prowlarr-api-key",
+            json!(SERDE_LEAK_MARKER),
+        )
+        .await;
 
         let recorder = Recorder::new(client.clone(), "test".into());
         let obj_ref = prowlarr.object_ref(&());
@@ -4579,8 +4590,12 @@ mod tests {
             .to_string();
 
         assert!(
+            err.contains("failed to read Prowlarr API key"),
+            "should keep the call-site context: {err}"
+        );
+        assert!(
             !err.contains(SERDE_LEAK_MARKER),
-            "must not pass a non-Api SecretError's Display through to the tenant: {err}"
+            "must not pass a SecretError::Kube wrapping a non-Api kube::Error through to the tenant: {err}"
         );
     }
 
@@ -4592,16 +4607,13 @@ mod tests {
         let mut overseerr = make_test_app("my-overseerr", "test", AppType::Overseerr);
         overseerr.spec.api_key_secret = Some("overseerr-api-key".into());
 
-        Mock::given(method("GET"))
-            .and(path("/api/v1/namespaces/test/secrets/overseerr-api-key"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "apiVersion": "v1",
-                "kind": "Secret",
-                "metadata": { "name": "overseerr-api-key", "namespace": "test" },
-                "data": SERDE_LEAK_MARKER
-            })))
-            .mount(&mock_server)
-            .await;
+        mount_secret_mock(
+            &mock_server,
+            "test",
+            "overseerr-api-key",
+            json!(SERDE_LEAK_MARKER),
+        )
+        .await;
 
         let recorder = Recorder::new(client.clone(), "test".into());
         let obj_ref = overseerr.object_ref(&());
@@ -4612,8 +4624,172 @@ mod tests {
             .to_string();
 
         assert!(
+            err.contains("failed to read Overseerr API key"),
+            "should keep the call-site context: {err}"
+        );
+        assert!(
             !err.contains(SERDE_LEAK_MARKER),
-            "must not pass a non-Api SecretError's Display through to the tenant: {err}"
+            "must not pass a SecretError::Kube wrapping a non-Api kube::Error through to the tenant: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn sync_bazarr_apps_api_key_read_error_is_tenant_sanitized() {
+        let mock_server = MockServer::start().await;
+        let client = build_mock_client(&mock_server.uri()).await;
+
+        let bazarr = make_test_app("my-bazarr", "test", AppType::Bazarr);
+        let secret_name = servarr_resources::common::child_name(&bazarr, "api-key");
+
+        mount_secret_mock(&mock_server, "test", &secret_name, json!(SERDE_LEAK_MARKER)).await;
+
+        let err = sync_bazarr_apps(&client, &bazarr, "test")
+            .await
+            .expect_err("an unreadable API-key secret must surface as an error")
+            .to_string();
+
+        assert!(
+            err.contains("failed to read Bazarr API key"),
+            "should keep the call-site context: {err}"
+        );
+        assert!(
+            !err.contains(SERDE_LEAK_MARKER),
+            "must not pass a SecretError::Kube wrapping a non-Api kube::Error through to the tenant: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn sync_maintainerr_servers_api_key_read_error_is_tenant_sanitized() {
+        let mock_server = MockServer::start().await;
+        let client = build_mock_client(&mock_server.uri()).await;
+
+        let maintainerr = make_test_app("my-maintainerr-2", "test", AppType::Maintainerr);
+        let secret_name = servarr_resources::common::child_name(&maintainerr, "api-key");
+
+        mount_secret_mock(&mock_server, "test", &secret_name, json!(SERDE_LEAK_MARKER)).await;
+
+        let err = sync_maintainerr_servers(&client, &maintainerr, "test", None)
+            .await
+            .expect_err("an unreadable API-key secret must surface as an error")
+            .to_string();
+
+        assert!(
+            err.contains("failed to read Maintainerr API key"),
+            "should keep the call-site context: {err}"
+        );
+        assert!(
+            !err.contains(SERDE_LEAK_MARKER),
+            "must not pass a SecretError::Kube wrapping a non-Api kube::Error through to the tenant: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn sync_subgen_jellyfin_list_error_collapses_non_api_kube_errors() {
+        let mock_server = MockServer::start().await;
+        let client = build_mock_client(&mock_server.uri()).await;
+
+        let subgen = make_test_app("my-subgen", "test", AppType::Subgen);
+
+        Mock::given(method("GET"))
+            .and(path(
+                "/apis/servarr.dev/v1alpha1/namespaces/test/servarrapps",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "apiVersion": "servarr.dev/v1alpha1",
+                "kind": "ServarrAppList",
+                "metadata": {},
+                "items": SERDE_LEAK_MARKER
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let err = sync_subgen_jellyfin(&client, &subgen, "test")
+            .await
+            .expect_err("a malformed list body must surface as an error")
+            .to_string();
+
+        assert!(
+            err.contains("failed to list ServarrApps"),
+            "should keep the call-site context: {err}"
+        );
+        assert!(
+            !err.contains(SERDE_LEAK_MARKER),
+            "must not pass a non-Api kube::Error's Display through to the tenant: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn try_restore_api_key_read_error_is_tenant_sanitized() {
+        let mock_server = MockServer::start().await;
+        let client = build_mock_client(&mock_server.uri()).await;
+
+        let mut app = make_test_app("my-sonarr", "test", AppType::Sonarr);
+        app.spec.api_key_secret = Some("sonarr-api-key".into());
+
+        mount_secret_mock(
+            &mock_server,
+            "test",
+            "sonarr-api-key",
+            json!(SERDE_LEAK_MARKER),
+        )
+        .await;
+
+        let recorder = Recorder::new(client.clone(), "test".into());
+        let obj_ref = app.object_ref(&());
+
+        let err = try_restore(&client, &app, 1, &recorder, &obj_ref)
+            .await
+            .expect_err("an unreadable API-key secret must surface as an error")
+            .to_string();
+
+        assert!(
+            err.contains("failed to read API key for restore"),
+            "should keep the call-site context: {err}"
+        );
+        assert!(
+            !err.contains(SERDE_LEAK_MARKER),
+            "must not pass a SecretError::Kube wrapping a non-Api kube::Error through to the tenant: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn maybe_run_backup_secret_read_error_sanitizes_backup_status() {
+        let mock_server = MockServer::start().await;
+        let client = build_mock_client(&mock_server.uri()).await;
+
+        let mut app = make_test_app("my-sonarr-backup", "test", AppType::Sonarr);
+        app.spec.api_key_secret = Some("sonarr-backup-api-key".into());
+        app.spec.backup = Some(servarr_crds::BackupSpec {
+            enabled: true,
+            schedule: "0 3 * * *".into(),
+            retention_count: 5,
+        });
+
+        mount_secret_mock(
+            &mock_server,
+            "test",
+            "sonarr-backup-api-key",
+            json!(SERDE_LEAK_MARKER),
+        )
+        .await;
+
+        let recorder = Recorder::new(client.clone(), "test".into());
+        let obj_ref = app.object_ref(&());
+
+        let status = maybe_run_backup(&client, &app, &recorder, &obj_ref)
+            .await
+            .expect("a secret-read failure still yields a BackupStatus");
+        let result = status
+            .last_backup_result
+            .expect("failure path always sets last_backup_result");
+
+        assert!(
+            result.contains("secret read error"),
+            "should keep the call-site context: {result}"
+        );
+        assert!(
+            !result.contains(SERDE_LEAK_MARKER),
+            "must not pass a SecretError::Kube wrapping a non-Api kube::Error through to the tenant-visible status.backupStatus.lastBackupResult: {result}"
         );
     }
 }
