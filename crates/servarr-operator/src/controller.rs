@@ -5301,7 +5301,11 @@ mod tests {
         Mock::given(method("GET"))
             .and(path("/api/v1/applications"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!([
-                { "id": 1, "name": "other", "fields": [{ "name": "baseUrl", "value": "http://other.svc:80" }] }
+                {
+                    "id": 1,
+                    "name": "other",
+                    "fields": [{ "name": "baseUrl", "value": "http://other.svc:80" }]
+                }
             ])))
             .mount(&p_server)
             .await;
