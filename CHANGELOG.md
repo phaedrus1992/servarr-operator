@@ -99,6 +99,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   operator logs — the Event carries a tenant-safe summary of the failure, and no Event is
   published on success or when there is nothing to clean up (#444).
 
+### Removed
+
+- Remove the half-working Lidarr YouTube Downloader sidecar (no upstream image we control, superseded by yt-dlp download support). `spec.appConfig.lidarr.youtubeDownloader` and its `LidarrYoutubeDownloaderSpec` are gone from the CRD — with structural pruning the field is silently dropped on apply, so any `ServarrApp` still setting it simply stops getting the sidecar on the next reconcile (#362).
+
 ## [1.2.3] - 2026-07-07
 
 ### Fixed
