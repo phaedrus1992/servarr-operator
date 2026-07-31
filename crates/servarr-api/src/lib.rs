@@ -11,6 +11,8 @@ pub mod sabnzbd;
 pub mod servarr_v3;
 pub mod tautulli;
 mod tenant_safe_message;
+#[cfg(test)]
+mod test_support;
 pub mod transmission;
 
 pub use bazarr::BazarrClient;
