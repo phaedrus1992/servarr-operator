@@ -100,7 +100,7 @@ defaultImages:
     tag: "3.15.2"
   jackett:
     repository: linuxserver/jackett
-    tag: "0.24.2265"
+    tag: "0.24.2267"
   bazarr:
     repository: linuxserver/bazarr
     tag: "1.6.0"
@@ -109,7 +109,7 @@ defaultImages:
     tag: "2026.07.1"
   jellyfin:
     repository: linuxserver/jellyfin
-    tag: "10.11.10"
+    tag: "10.11.11"
   plex:
     repository: linuxserver/plex
     tag: "1.43.3"
