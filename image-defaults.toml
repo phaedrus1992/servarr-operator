@@ -78,7 +78,7 @@ downloads = false
 
 [jackett]
 repository = "linuxserver/jackett"
-tag = "0.24.2265"
+tag = "0.24.2267"
 port = 9117
 security = "linuxserver"
 downloads = false
@@ -102,7 +102,7 @@ probe_path = "/status"
 
 [jellyfin]
 repository = "linuxserver/jellyfin"
-tag = "10.11.10"
+tag = "10.11.11"
 port = 8096
 security = "linuxserver"
 downloads = false
