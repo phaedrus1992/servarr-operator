@@ -98,6 +98,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   Prowlarr or Overseerr registration fails, instead of leaving the failure visible only in
   operator logs — the Event carries a tenant-safe summary of the failure, and no Event is
   published on success or when there is nothing to clean up (#444).
+- Fix Prowlarr/Overseerr finalizer cleanup silently giving up on a transient failure (e.g. a
+  Kubernetes API hiccup listing ServarrApps) instead of retrying — the finalizer was dropped and
+  the CR deleted regardless of outcome, permanently orphaning the downstream registration with no
+  way to notice. Cleanup failures are now classified as terminal (the registration is provably
+  already gone — treated as success) or transient (finalizer kept, cleanup retried) (#451).
 
 ### Removed
 
