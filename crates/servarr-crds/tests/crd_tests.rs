@@ -448,6 +448,19 @@ fn test_smoke_test_manifests_match_crd() {
     );
 }
 
+/// #456: `LidarrConfig` stays an empty braced struct (not a unit struct) so
+/// existing CRs carrying the pruned `youtubeDownloader` sidecar key (#362)
+/// keep deserializing — serde drops the unknown field rather than rejecting
+/// it. This is the regression test for that compat path.
+#[test]
+fn test_crd_legacy_lidarr_sidecar_key_deserializes() {
+    let json =
+        r#"{"app":"Lidarr","appConfig":{"lidarr":{"youtubeDownloader":{"image":"x:latest"}}}}"#;
+    let spec: ServarrAppSpec = serde_json::from_str(json).unwrap();
+    assert!(matches!(spec.app, AppType::Lidarr));
+    assert!(matches!(spec.app_config, Some(AppConfig::Lidarr(_))));
+}
+
 #[test]
 fn test_status_serde() {
     let status = ServarrAppStatus {

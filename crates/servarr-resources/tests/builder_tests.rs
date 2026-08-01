@@ -4111,3 +4111,119 @@ fn test_build_api_key_with_secret_name_returns_secret() {
         Some("deadbeef")
     );
 }
+
+// ---------------------------------------------------------------------------
+// #408: operator_reserved_mounts / build_volume_mounts drift guard
+// ---------------------------------------------------------------------------
+
+/// The fixed, non-per-user, non-persistence mount paths actually injected by
+/// `build_volume_mounts` for `app`. Per-user paths (SSH bastion's
+/// `/home/<user>/.ssh`, `restricted-rsync-<user>`) are excluded because
+/// `operator_reserved_mounts` deliberately excludes them too (see its doc
+/// comment) — they're parameterized by user name, not sensible collision
+/// targets for a persistence override.
+fn actual_fixed_mounts(app: &ServarrApp) -> std::collections::HashSet<String> {
+    let defaults = AppDefaults::try_for_app(&app.spec.app).expect("app defaults");
+    let persistence = defaults
+        .resolve_persistence(app)
+        .expect("resolve persistence");
+    let persistence_paths: std::collections::HashSet<String> = persistence
+        .volumes
+        .iter()
+        .map(|v| v.mount_path.clone())
+        .chain(persistence.nfs_mounts.iter().map(|m| m.mount_path.clone()))
+        .collect();
+
+    let deploy = build_deployment(app);
+    let container = deploy
+        .spec
+        .unwrap()
+        .template
+        .spec
+        .unwrap()
+        .containers
+        .into_iter()
+        .next()
+        .unwrap();
+    container
+        .volume_mounts
+        .unwrap_or_default()
+        .into_iter()
+        .map(|m| m.mount_path)
+        .filter(|path| {
+            !persistence_paths.contains(path)
+                && !path.contains("/home/")
+                && !path.contains("restricted-rsync-")
+        })
+        .collect()
+}
+
+fn expected_reserved_mounts(app: &ServarrApp) -> std::collections::HashSet<String> {
+    servarr_crds::operator_reserved_mounts(app)
+        .into_iter()
+        .map(|(path, _)| path.to_string())
+        .collect()
+}
+
+/// Guards against #408: `operator_reserved_mounts` (`servarr-crds`) and
+/// `build_volume_mounts` (`servarr-resources`) hand-copy the same fixed mount
+/// paths with no compile-time link between them (the dependency runs
+/// crds -> resources, not the other way), so a new mount added to one
+/// without the other previously fell out of scope silently. This test fails
+/// if the two ever drift.
+#[test]
+fn test_operator_reserved_mounts_matches_build_volume_mounts() {
+    let mut transmission_with_creds = make_app(AppType::Transmission);
+    transmission_with_creds.spec.admin_credentials = Some(AdminCredentialsSpec {
+        secret_name: "transmission-admin".into(),
+    });
+
+    let mut prowlarr_with_defs = make_app(AppType::Prowlarr);
+    prowlarr_with_defs.spec.app_config = Some(AppConfig::Prowlarr(ProwlarrConfig {
+        custom_definitions: vec![IndexerDefinition {
+            name: "my-tracker".into(),
+            content: "---".into(),
+        }],
+    }));
+
+    let mut ssh_bastion_with_keys = make_app(AppType::SshBastion);
+    ssh_bastion_with_keys.spec.app_config = Some(AppConfig::SshBastion(SshBastionConfig {
+        users: vec![
+            SshUser {
+                name: "alice".into(),
+                uid: 1000,
+                gid: 1000,
+                mode: SshMode::Shell,
+                public_keys: "ssh-ed25519 AAAA".into(),
+                ..Default::default()
+            },
+            SshUser {
+                name: "bob".into(),
+                uid: 1001,
+                gid: 1001,
+                mode: SshMode::RestrictedRsync,
+                public_keys: "ssh-ed25519 BBBB".into(),
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    }));
+
+    let scenarios = [
+        make_app(AppType::Transmission),
+        transmission_with_creds,
+        prowlarr_with_defs,
+        ssh_bastion_with_keys,
+    ];
+
+    for app in &scenarios {
+        let expected = expected_reserved_mounts(app);
+        let actual = actual_fixed_mounts(app);
+        assert_eq!(
+            actual, expected,
+            "operator_reserved_mounts (servarr-crds) drifted from build_volume_mounts's \
+             fixed mounts (servarr-resources) for {:?}",
+            app.spec.app
+        );
+    }
+}

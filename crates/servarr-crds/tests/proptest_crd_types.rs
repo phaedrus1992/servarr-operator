@@ -339,6 +339,215 @@ prop_compose! {
     }
 }
 
+// --- AppConfig (#456: whole-enum roundtrip coverage, pre-existing gap) ---
+
+fn arb_indexer_definition() -> impl Strategy<Value = IndexerDefinition> {
+    (arb_string(), arb_string()).prop_map(|(name, content)| IndexerDefinition { name, content })
+}
+
+fn arb_prowlarr_config() -> impl Strategy<Value = ProwlarrConfig> {
+    prop::collection::vec(arb_indexer_definition(), 0..3)
+        .prop_map(|custom_definitions| ProwlarrConfig { custom_definitions })
+}
+
+fn arb_sabnzbd_config() -> impl Strategy<Value = SabnzbdConfig> {
+    (prop::collection::vec(arb_string(), 0..3), any::<bool>()).prop_map(
+        |(host_whitelist, tar_unpack)| SabnzbdConfig {
+            host_whitelist,
+            tar_unpack,
+        },
+    )
+}
+
+fn arb_peer_port() -> impl Strategy<Value = PeerPortConfig> {
+    (
+        any::<i32>(),
+        any::<bool>(),
+        any::<bool>(),
+        any::<i32>(),
+        any::<i32>(),
+    )
+        .prop_map(
+            |(port, host_port, random_on_start, random_low, random_high)| PeerPortConfig {
+                port,
+                host_port,
+                random_on_start,
+                random_low,
+                random_high,
+            },
+        )
+}
+
+fn arb_transmission_auth() -> impl Strategy<Value = TransmissionAuth> {
+    arb_string().prop_map(|secret_name| TransmissionAuth { secret_name })
+}
+
+fn arb_transmission_config() -> impl Strategy<Value = TransmissionConfig> {
+    (
+        arb_json_object(),
+        prop::option::of(arb_peer_port()),
+        prop::option::of(arb_transmission_auth()),
+    )
+        .prop_map(|(settings, peer_port, auth)| TransmissionConfig {
+            settings,
+            peer_port,
+            auth,
+        })
+}
+
+fn arb_ssh_mode() -> impl Strategy<Value = SshMode> {
+    prop_oneof![
+        Just(SshMode::Shell),
+        Just(SshMode::Sftp),
+        Just(SshMode::Scp),
+        Just(SshMode::Rsync),
+        Just(SshMode::RestrictedRsync),
+    ]
+}
+
+fn arb_restricted_rsync_config() -> impl Strategy<Value = RestrictedRsyncConfig> {
+    prop::collection::vec(arb_string(), 0..3)
+        .prop_map(|allowed_paths| RestrictedRsyncConfig { allowed_paths })
+}
+
+fn arb_ssh_user() -> impl Strategy<Value = SshUser> {
+    (
+        arb_string(),
+        any::<i64>(),
+        any::<i64>(),
+        arb_ssh_mode(),
+        prop::option::of(arb_restricted_rsync_config()),
+        arb_opt_string(),
+        arb_string(),
+    )
+        .prop_map(
+            |(name, uid, gid, mode, restricted_rsync, shell, public_keys)| SshUser {
+                name,
+                uid,
+                gid,
+                mode,
+                restricted_rsync,
+                shell,
+                public_keys,
+            },
+        )
+}
+
+fn arb_ssh_bastion_config() -> impl Strategy<Value = SshBastionConfig> {
+    (
+        prop::collection::vec(arb_ssh_user(), 0..3),
+        any::<bool>(),
+        any::<bool>(),
+        any::<bool>(),
+        arb_string(),
+        any::<bool>(),
+        arb_string(),
+    )
+        .prop_map(
+            |(
+                users,
+                enable_password_auth,
+                tcp_forwarding,
+                gateway_ports,
+                motd,
+                disable_sftp,
+                sftp_chroot,
+            )| SshBastionConfig {
+                users,
+                enable_password_auth,
+                tcp_forwarding,
+                gateway_ports,
+                motd,
+                disable_sftp,
+                sftp_chroot,
+            },
+        )
+}
+
+/// Overseerr quality profile IDs are small non-negative integers in practice;
+/// unconstrained `any::<f64>()` generates extreme-magnitude floats that lose
+/// precision across a JSON string round-trip (a `serde_json` float-formatting
+/// edge case, not an `AppConfig` bug), which breaks the roundtrip property
+/// for reasons unrelated to what this test is meant to cover.
+fn arb_profile_id() -> impl Strategy<Value = f64> {
+    (0i64..1_000_000).prop_map(|n| n as f64)
+}
+
+fn arb_overseerr_server_defaults_4k() -> impl Strategy<Value = OverseerrServerDefaults4k> {
+    (
+        arb_profile_id(),
+        arb_string(),
+        arb_string(),
+        arb_opt_string(),
+        arb_opt_bool(),
+    )
+        .prop_map(
+            |(
+                profile_id,
+                profile_name,
+                root_folder,
+                minimum_availability,
+                enable_season_folders,
+            )| {
+                OverseerrServerDefaults4k {
+                    profile_id,
+                    profile_name,
+                    root_folder,
+                    minimum_availability,
+                    enable_season_folders,
+                }
+            },
+        )
+}
+
+fn arb_overseerr_server_defaults() -> impl Strategy<Value = OverseerrServerDefaults> {
+    (
+        arb_profile_id(),
+        arb_string(),
+        arb_string(),
+        arb_opt_string(),
+        arb_opt_bool(),
+        prop::option::of(arb_overseerr_server_defaults_4k()),
+    )
+        .prop_map(
+            |(
+                profile_id,
+                profile_name,
+                root_folder,
+                minimum_availability,
+                enable_season_folders,
+                four_k,
+            )| OverseerrServerDefaults {
+                profile_id,
+                profile_name,
+                root_folder,
+                minimum_availability,
+                enable_season_folders,
+                four_k,
+            },
+        )
+}
+
+fn arb_overseerr_config() -> impl Strategy<Value = OverseerrConfig> {
+    (
+        prop::option::of(arb_overseerr_server_defaults()),
+        prop::option::of(arb_overseerr_server_defaults()),
+    )
+        .prop_map(|(sonarr, radarr)| OverseerrConfig { sonarr, radarr })
+}
+
+/// All 6 `AppConfig` variants, weighted evenly.
+fn arb_app_config() -> impl Strategy<Value = AppConfig> {
+    prop_oneof![
+        arb_transmission_config().prop_map(AppConfig::Transmission),
+        arb_sabnzbd_config().prop_map(AppConfig::Sabnzbd),
+        arb_prowlarr_config().prop_map(AppConfig::Prowlarr),
+        arb_ssh_bastion_config().prop_map(AppConfig::SshBastion),
+        arb_overseerr_config().prop_map(|c| AppConfig::Overseerr(Box::new(c))),
+        Just(AppConfig::Lidarr(LidarrConfig {})),
+    ]
+}
+
 proptest! {
     #[test]
     fn prop_image_roundtrip(v in arb_image()) { assert_roundtrip(&v); }
@@ -390,6 +599,10 @@ proptest! {
 
     #[test]
     fn prop_probe_spec_roundtrip(v in arb_probe_spec()) { assert_roundtrip(&v); }
+
+    // #456: whole-enum roundtrip coverage for AppConfig (pre-existing gap).
+    #[test]
+    fn prop_app_config_roundtrip(v in arb_app_config()) { assert_roundtrip(&v); }
 
     // #38: the core merge_with contract — empty user fields inherit the
     // default, non-empty user fields are never overwritten; digest/pull_policy
