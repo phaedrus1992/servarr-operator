@@ -276,15 +276,25 @@ impl AppDefaults {
 }
 
 /// Mount paths the operator injects outside `PersistenceSpec` for certain app
-/// types — see `servarr_resources::deployment::build_volume_mounts`, the
-/// single source of truth for what actually gets mounted. A user's
-/// persistence override must not collide with these either, even though
-/// they never appear in `PersistenceSpec` (#402). Scoped to the fixed,
-/// non-per-user mounts a real override could plausibly name; per-user paths
-/// (SSH bastion's `/home/<user>/.ssh`, restricted-rsync scripts) are
-/// parameterized by user name and not sensible collision targets for a
-/// persistence override.
-fn operator_reserved_mounts(app: &super::ServarrApp) -> Vec<(&'static str, &'static str)> {
+/// types — see `servarr_resources::deployment::build_volume_mounts`, which
+/// must inject exactly these paths (plus per-user ones this function
+/// deliberately excludes, see below). A user's persistence override must not
+/// collide with these either, even though they never appear in
+/// `PersistenceSpec` (#402). Scoped to the fixed, non-per-user mounts a real
+/// override could plausibly name; per-user paths (SSH bastion's
+/// `/home/<user>/.ssh`, restricted-rsync scripts) are parameterized by user
+/// name and not sensible collision targets for a persistence override.
+///
+/// `servarr-crds` has no compile-time link to `servarr-resources` (the
+/// dependency runs the other way), so this list and `build_volume_mounts`'s
+/// literals can drift silently if one is updated without the other (#408).
+/// `servarr-resources`' `test_operator_reserved_mounts_matches_build_volume_mounts`
+/// integration test is the drift guard — it fails if the two fall out of sync.
+///
+/// `pub` (rather than `pub(crate)`) only so that cross-crate test can call it;
+/// not meant as stable public API for downstream consumers of this crate.
+#[doc(hidden)]
+pub fn operator_reserved_mounts(app: &super::ServarrApp) -> Vec<(&'static str, &'static str)> {
     let mut reserved = Vec::new();
     if matches!(app.spec.app, super::AppType::Transmission) {
         reserved.push(("/watch", "watch"));
