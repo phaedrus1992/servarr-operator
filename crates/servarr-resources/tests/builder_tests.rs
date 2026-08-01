@@ -4116,13 +4116,52 @@ fn test_build_api_key_with_secret_name_returns_secret() {
 // #408: operator_reserved_mounts / build_volume_mounts drift guard
 // ---------------------------------------------------------------------------
 
-/// The fixed, non-per-user, non-persistence mount paths actually injected by
-/// `build_volume_mounts` for `app`. Per-user paths (SSH bastion's
-/// `/home/<user>/.ssh`, `restricted-rsync-<user>`) are excluded because
-/// `operator_reserved_mounts` deliberately excludes them too (see its doc
-/// comment) — they're parameterized by user name, not sensible collision
-/// targets for a persistence override.
-fn actual_fixed_mounts(app: &ServarrApp) -> std::collections::HashSet<String> {
+/// Every `AppType` variant — kept in sync with `AppDefaults::validate_all`'s
+/// own list. Scenarios built from this cover the "ordinary app reserves
+/// nothing" direction too, not just the four app types with reserved mounts.
+const ALL_APP_TYPES: [AppType; 15] = [
+    AppType::Sonarr,
+    AppType::Radarr,
+    AppType::Lidarr,
+    AppType::Prowlarr,
+    AppType::Sabnzbd,
+    AppType::Transmission,
+    AppType::Tautulli,
+    AppType::Overseerr,
+    AppType::Maintainerr,
+    AppType::Jackett,
+    AppType::Jellyfin,
+    AppType::Plex,
+    AppType::SshBastion,
+    AppType::Bazarr,
+    AppType::Subgen,
+];
+
+/// The exact per-user mount paths `build_volume_mounts` injects for `app`'s
+/// SSH bastion users (`/home/<user>/.ssh` for shell mode,
+/// `/usr/local/bin/restricted-rsync-<user>` for restricted-rsync mode).
+/// Derived from the app spec itself, not a path-substring heuristic, so a
+/// future fixed mount that happens to contain "/home/" or "restricted-rsync-"
+/// can't be mistaken for one of these and silently excluded from the guard.
+fn per_user_mount_paths(app: &ServarrApp) -> std::collections::HashSet<String> {
+    match &app.spec.app_config {
+        Some(AppConfig::SshBastion(sc)) => sc
+            .users
+            .iter()
+            .flat_map(|u| {
+                [
+                    format!("/home/{}/.ssh", u.name),
+                    format!("/usr/local/bin/restricted-rsync-{}", u.name),
+                ]
+            })
+            .collect(),
+        _ => std::collections::HashSet::new(),
+    }
+}
+
+/// The fixed, non-per-user, non-persistence (mount_path, volume_name) pairs
+/// actually injected by `build_volume_mounts` for `app`.
+fn actual_fixed_mounts(app: &ServarrApp) -> std::collections::HashSet<(String, String)> {
     let defaults = AppDefaults::try_for_app(&app.spec.app).expect("app defaults");
     let persistence = defaults
         .resolve_persistence(app)
@@ -4133,6 +4172,7 @@ fn actual_fixed_mounts(app: &ServarrApp) -> std::collections::HashSet<String> {
         .map(|v| v.mount_path.clone())
         .chain(persistence.nfs_mounts.iter().map(|m| m.mount_path.clone()))
         .collect();
+    let per_user_paths = per_user_mount_paths(app);
 
     let deploy = build_deployment(app);
     let container = deploy
@@ -4149,28 +4189,31 @@ fn actual_fixed_mounts(app: &ServarrApp) -> std::collections::HashSet<String> {
         .volume_mounts
         .unwrap_or_default()
         .into_iter()
-        .map(|m| m.mount_path)
-        .filter(|path| {
-            !persistence_paths.contains(path)
-                && !path.contains("/home/")
-                && !path.contains("restricted-rsync-")
+        .filter(|m| {
+            !persistence_paths.contains(&m.mount_path) && !per_user_paths.contains(&m.mount_path)
         })
+        .map(|m| (m.mount_path, m.name))
         .collect()
 }
 
-fn expected_reserved_mounts(app: &ServarrApp) -> std::collections::HashSet<String> {
+/// The (mount_path, volume_name) pairs `operator_reserved_mounts` declares
+/// reserved for `app`.
+fn expected_reserved_mounts(app: &ServarrApp) -> std::collections::HashSet<(String, String)> {
     servarr_crds::operator_reserved_mounts(app)
         .into_iter()
-        .map(|(path, _)| path.to_string())
+        .map(|(path, name)| (path.to_string(), name.to_string()))
         .collect()
 }
 
 /// Guards against #408: `operator_reserved_mounts` (`servarr-crds`) and
 /// `build_volume_mounts` (`servarr-resources`) hand-copy the same fixed mount
-/// paths with no compile-time link between them (the dependency runs
-/// crds -> resources, not the other way), so a new mount added to one
-/// without the other previously fell out of scope silently. This test fails
-/// if the two ever drift.
+/// paths with no compile-time link between them — `servarr-resources`
+/// depends on `servarr-crds`, not the other way, so `servarr-crds` cannot
+/// import `build_volume_mounts` to check itself — so a new mount added to
+/// one without the other previously fell out of scope silently. This test
+/// fails if the two ever drift, comparing full (path, name) pairs (not just
+/// paths) across every `AppType`, not only the ones known today to have
+/// reserved mounts.
 #[test]
 fn test_operator_reserved_mounts_matches_build_volume_mounts() {
     let mut transmission_with_creds = make_app(AppType::Transmission);
@@ -4209,12 +4252,10 @@ fn test_operator_reserved_mounts_matches_build_volume_mounts() {
         ..Default::default()
     }));
 
-    let scenarios = [
-        make_app(AppType::Transmission),
-        transmission_with_creds,
-        prowlarr_with_defs,
-        ssh_bastion_with_keys,
-    ];
+    let mut scenarios: Vec<ServarrApp> = ALL_APP_TYPES.iter().cloned().map(make_app).collect();
+    scenarios.push(transmission_with_creds);
+    scenarios.push(prowlarr_with_defs);
+    scenarios.push(ssh_bastion_with_keys);
 
     for app in &scenarios {
         let expected = expected_reserved_mounts(app);
