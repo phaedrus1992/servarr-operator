@@ -205,33 +205,38 @@ pub async fn reconcile(app: Arc<ServarrApp>, ctx: Arc<Context>) -> Result<Action
             // which folds that case into `Ok`). A transient failure keeps its finalizer so
             // the cleanup it gates is retried on the next reconcile instead of being
             // silently dropped.
-            let sa_api = Api::<ServarrApp>::namespaced(client.clone(), &ns);
-            let finalizers: Vec<String> = app
-                .metadata
-                .finalizers
-                .as_ref()
-                .map(|f| {
-                    f.iter()
-                        .filter(|x| {
-                            !(prowlarr_result.is_ok() && *x == PROWLARR_FINALIZER
-                                || overseerr_result.is_ok() && *x == OVERSEERR_FINALIZER)
-                        })
-                        .cloned()
-                        .collect()
+            let existing_finalizers = app.metadata.finalizers.clone().unwrap_or_default();
+            let finalizers: Vec<String> = existing_finalizers
+                .iter()
+                .filter(|x| {
+                    !(prowlarr_result.is_ok() && *x == PROWLARR_FINALIZER
+                        || overseerr_result.is_ok() && *x == OVERSEERR_FINALIZER)
                 })
-                .unwrap_or_default();
-            let patch = serde_json::json!({
-                "metadata": { "finalizers": finalizers }
-            });
-            sa_api
-                .patch(&name, &PatchParams::default(), &Patch::Merge(patch))
-                .await
-                .map_err(Error::Kube)?;
+                .cloned()
+                .collect();
 
-            if prowlarr_result.is_err() || overseerr_result.is_err() {
-                // At least one cleanup is still pending — surface an error so `error_policy`
-                // requeues, instead of `Ok(Action::await_change())`, which would otherwise
-                // wait indefinitely for an unrelated watch event before retrying.
+            if finalizers != existing_finalizers {
+                let sa_api = Api::<ServarrApp>::namespaced(client.clone(), &ns);
+                let patch = serde_json::json!({
+                    "metadata": { "finalizers": finalizers }
+                });
+                sa_api
+                    .patch(&name, &PatchParams::default(), &Patch::Merge(patch))
+                    .await
+                    .map_err(Error::Kube)?;
+            }
+
+            // A cleanup finalizer still present after the filter means its cleanup is still
+            // pending (it transiently failed) — surface an error so `error_policy` requeues,
+            // instead of `Ok(Action::await_change())`, which would otherwise wait indefinitely
+            // for an unrelated watch event. A finalizer that was never present to begin with
+            // (e.g. no Prowlarr/Overseerr sync was ever configured for this namespace) never
+            // blocks progress here, even if its no-op cleanup attempt happened to hit a
+            // transient error of its own (e.g. the ServarrApps list call failing).
+            let still_pending = finalizers
+                .iter()
+                .any(|x| x == PROWLARR_FINALIZER || x == OVERSEERR_FINALIZER);
+            if still_pending {
                 return Err(Error::CleanupPending);
             }
             return Ok(Action::await_change());
@@ -2425,6 +2430,21 @@ trait CleanupMapErr<T> {
     ) -> Result<T, (anyhow::Error, TenantSafeMessage, CleanupSeverity)>
     where
         F: FnOnce(&Self::Error) -> String;
+
+    /// Like [`Self::cleanup_map_err`], but always classifies the failure as
+    /// [`CleanupSeverity::Transient`], ignoring what [`ClassifyCleanupSeverity`] would otherwise
+    /// say. Use this for LIST/collection calls (`Api::list`, `list_applications`,
+    /// `list_sonarr`/`list_radarr`): a 404 there means the *endpoint* wasn't found (wrong route,
+    /// CRD not yet served, misconfigured `urlBase`) — a real, retryable problem — not that the
+    /// specific cleanup target is gone. [`ClassifyCleanupSeverity`] can't tell GET-by-id/DELETE
+    /// apart from LIST from the error alone, so the call site must say which kind it is.
+    fn cleanup_map_err_transient<F>(
+        self,
+        prefix: &str,
+        summary: F,
+    ) -> Result<T, (anyhow::Error, TenantSafeMessage, CleanupSeverity)>
+    where
+        F: FnOnce(&Self::Error) -> String;
 }
 
 impl<T, E> CleanupMapErr<T> for Result<T, E>
@@ -2446,6 +2466,23 @@ where
                 anyhow::anyhow!("{prefix}: {}", summary(&e)),
                 e.into(),
                 severity,
+            )
+        })
+    }
+
+    fn cleanup_map_err_transient<F>(
+        self,
+        prefix: &str,
+        summary: F,
+    ) -> Result<T, (anyhow::Error, TenantSafeMessage, CleanupSeverity)>
+    where
+        F: FnOnce(&E) -> String,
+    {
+        self.map_err(|e| {
+            (
+                anyhow::anyhow!("{prefix}: {}", summary(&e)),
+                e.into(),
+                CleanupSeverity::Transient,
             )
         })
     }
@@ -2494,7 +2531,7 @@ async fn cleanup_prowlarr_registration_body(
     let apps = sa_api
         .list(&ListParams::default())
         .await
-        .cleanup_map_err("failed to list ServarrApps", kube_err_summary)?;
+        .cleanup_map_err_transient("failed to list ServarrApps", kube_err_summary)?;
     let prowlarr = apps.iter().find(|a| {
         a.spec.app == AppType::Prowlarr && a.spec.prowlarr_sync.as_ref().is_some_and(|s| s.enabled)
     });
@@ -2531,7 +2568,7 @@ async fn cleanup_prowlarr_registration_body(
     let existing = prowlarr_client
         .list_applications()
         .await
-        .cleanup_map_err("failed to list Prowlarr applications", |e| e.log_summary())?;
+        .cleanup_map_err_transient("failed to list Prowlarr applications", |e| e.log_summary())?;
     if let Some(registered) = existing.iter().find(|a| {
         a.fields
             .iter()
@@ -3561,10 +3598,13 @@ async fn overseerr_remove_server<K>(
 where
     K: OverseerrAppKind,
 {
-    let existing = kind.list(overseerr_client).await.cleanup_map_err(
-        &format!("failed to list Overseerr {} servers", kind.name()),
-        |e| e.log_summary(),
-    )?;
+    let existing = kind
+        .list(overseerr_client)
+        .await
+        .cleanup_map_err_transient(
+            &format!("failed to list Overseerr {} servers", kind.name()),
+            |e| e.log_summary(),
+        )?;
     if let Some(registered) = existing
         .iter()
         .find(|s| s.hostname() == app_hostname && s.port() == f64::from(port))
@@ -3618,7 +3658,7 @@ async fn cleanup_overseerr_registration_body(
     let apps = sa_api
         .list(&ListParams::default())
         .await
-        .cleanup_map_err("failed to list ServarrApps", kube_err_summary)?;
+        .cleanup_map_err_transient("failed to list ServarrApps", kube_err_summary)?;
     let overseerr = apps.iter().find(|a| {
         a.spec.app == AppType::Overseerr
             && a.spec.overseerr_sync.as_ref().is_some_and(|s| s.enabled)
@@ -5892,6 +5932,131 @@ mod tests {
         );
     }
 
+    // ---- CleanupSeverity::Transient LIST-endpoint tests (#451 review follow-up) ----
+    //
+    // A 404 on a GET-by-name/DELETE-by-id call proves the specific target is gone (terminal).
+    // A 404 on a LIST/collection call means the *endpoint* wasn't found (CRD not yet served,
+    // misconfigured urlBase, wrong route) — a real, retryable problem, not proof the cleanup
+    // target is absent. `cleanup_map_err_transient` must be used at every LIST call site so this
+    // never folds into the terminal/idempotent-success path.
+
+    /// A 404 from the ServarrApps LIST call itself (used to find the sync-enabled Prowlarr
+    /// instance) must stay Transient: publish `CleanupFailed` and return `Err`, not silently
+    /// succeed.
+    #[tokio::test]
+    async fn cleanup_prowlarr_registration_servarrapps_list_404_is_transient_not_terminal() {
+        let mock_server = MockServer::start().await;
+        let client = build_mock_client(&mock_server.uri()).await;
+        mount_event_post_mock(&mock_server).await;
+        mount_kube_status_error(
+            &mock_server,
+            "/apis/servarr.dev/v1alpha1/namespaces/test/servarrapps",
+            404,
+            "unused-seed",
+        )
+        .await;
+
+        let recorder = Recorder::new(client.clone(), "test".into());
+        let app = make_test_app("my-sonarr", "test", AppType::Sonarr);
+        let obj_ref = app.object_ref(&());
+
+        cleanup_prowlarr_registration(&client, &app, "test", &recorder, &obj_ref)
+            .await
+            .expect_err("a 404 on a LIST call is transient, not proof the target is gone");
+
+        let events = event_post_bodies(&mock_server).await;
+        assert_eq!(
+            events.len(),
+            1,
+            "a transient LIST failure must still publish CleanupFailed: {events:?}"
+        );
+        assert_eq!(events[0]["reason"], "CleanupFailed");
+    }
+
+    /// A 404 from Prowlarr's own `list_applications` call must stay Transient for the same
+    /// reason — it's a collection endpoint, not a lookup of a specific registration.
+    #[tokio::test]
+    async fn cleanup_prowlarr_registration_list_applications_404_is_transient_not_terminal() {
+        let mock_server = MockServer::start().await;
+        let client = build_mock_client(&mock_server.uri()).await;
+        mount_event_post_mock(&mock_server).await;
+
+        let app = make_test_app("my-sonarr", "test", AppType::Sonarr);
+        mount_servarrapps_list(
+            &mock_server,
+            json!([prowlarr_app_json("my-prowlarr", Some("prowlarr-secret"))]),
+        )
+        .await;
+        mount_secret_mock(
+            &mock_server,
+            "test",
+            "prowlarr-secret",
+            json!({ "api-key": "dGVzdC1rZXk=" }),
+        )
+        .await;
+
+        let p_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/applications"))
+            .respond_with(ResponseTemplate::new(404).set_body_json(json!({
+                "message": "not found"
+            })))
+            .mount(&p_server)
+            .await;
+
+        let recorder = Recorder::new(client.clone(), "test".into());
+        let obj_ref = app.object_ref(&());
+
+        let err = cleanup_prowlarr_registration_body(
+            &client,
+            &app,
+            "test",
+            &recorder,
+            &obj_ref,
+            Some(&p_server.uri()),
+        )
+        .await
+        .expect_err("a 404 on Prowlarr's applications LIST is transient, not proof of absence");
+
+        assert_eq!(
+            err.2,
+            CleanupSeverity::Transient,
+            "LIST-endpoint 404 must not classify as Terminal"
+        );
+    }
+
+    /// The same LIST-vs-lookup distinction applies to Overseerr's `list_sonarr`/`list_radarr`.
+    #[tokio::test]
+    async fn overseerr_remove_server_list_404_is_transient_not_terminal() {
+        let o_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/settings/sonarr"))
+            .respond_with(ResponseTemplate::new(404).set_body_json(json!({
+                "message": "not found"
+            })))
+            .mount(&o_server)
+            .await;
+
+        let overseerr_client = servarr_api::OverseerrClient::new(&o_server.uri(), "test-key");
+        let app = make_test_app("my-sonarr", "test", AppType::Sonarr);
+
+        let err = overseerr_remove_server(
+            &overseerr_client,
+            &app,
+            "my-sonarr.test.svc",
+            8989,
+            SonarrOverseerr,
+        )
+        .await
+        .expect_err("a 404 on Overseerr's Sonarr-servers LIST is transient, not proof of absence");
+
+        assert_eq!(
+            err.2,
+            CleanupSeverity::Transient,
+            "LIST-endpoint 404 must not classify as Terminal"
+        );
+    }
+
     // ---- reconcile() finalizer-retry behavior tests (#451) ----
     //
     // Before #451, `reconcile()` unconditionally stripped both finalizers after a deleting app's
@@ -5985,15 +6150,65 @@ mod tests {
              requeues, got: {result:?}"
         );
 
+        // Both cleanups failed, so the computed finalizer list is identical to the existing one
+        // — no patch is issued at all (a no-op PATCH would just churn the API server every
+        // requeue for a stuck app). The finalizers are retained simply because nothing removed
+        // them from the object in the first place.
+        let patches = servarrapp_patch_bodies(&mock_server, "my-sonarr").await;
+        assert!(
+            patches.is_empty(),
+            "an unchanged finalizer list must not trigger a no-op patch: {patches:?}"
+        );
+    }
+
+    /// When only one cleanup target is provably gone, only that finalizer must be dropped — the
+    /// other, still-pending finalizer must survive and `reconcile()` must still return
+    /// `Error::CleanupPending` for it.
+    #[tokio::test]
+    async fn reconcile_drops_only_the_finalizer_whose_cleanup_succeeded() {
+        let mock_server = MockServer::start().await;
+        let client = build_mock_client(&mock_server.uri()).await;
+        mount_event_post_mock(&mock_server).await;
+        // Both cleanup bodies share one ServarrApps LIST call. Only an Overseerr instance is
+        // present, so the Prowlarr cleanup finds nothing to do and succeeds trivially, while the
+        // Overseerr cleanup finds its target and then fails transiently reading its secret
+        // (403, not 404 — a real, retryable failure, not proof the registration is gone).
+        mount_servarrapps_list(
+            &mock_server,
+            json!([overseerr_app_json("my-overseerr", Some("overseerr-secret"))]),
+        )
+        .await;
+        mount_kube_status_error(
+            &mock_server,
+            "/api/v1/namespaces/test/secrets/overseerr-secret",
+            403,
+            "unused-seed",
+        )
+        .await;
+        mount_servarrapp_finalizer_patch_mock(&mock_server, "my-sonarr").await;
+
+        let app = make_deleting_app_with_finalizers("my-sonarr", "test");
+        let ctx = Arc::new(Context::new(client.clone()));
+        let result = reconcile(Arc::new(app), ctx).await;
+
+        assert!(
+            matches!(result, Err(Error::CleanupPending)),
+            "the Overseerr finalizer is still pending, so error_policy must requeue: {result:?}"
+        );
+
         let patches = servarrapp_patch_bodies(&mock_server, "my-sonarr").await;
         assert_eq!(patches.len(), 1, "exactly one finalizer patch: {patches:?}");
         let finalizers = patches[0]["metadata"]["finalizers"]
             .as_array()
-            .expect("finalizers is an array");
+            .expect("finalizers is an array")
+            .iter()
+            .map(|v| v.as_str().unwrap_or_default())
+            .collect::<Vec<_>>();
         assert_eq!(
-            finalizers.len(),
-            2,
-            "both finalizers must be retained on transient failure: {finalizers:?}"
+            finalizers,
+            vec![OVERSEERR_FINALIZER],
+            "the succeeded Prowlarr finalizer must be dropped and the still-pending Overseerr \
+             finalizer must survive: {finalizers:?}"
         );
     }
 
