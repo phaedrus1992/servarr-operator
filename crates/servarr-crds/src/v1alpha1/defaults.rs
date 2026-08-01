@@ -290,6 +290,10 @@ impl AppDefaults {
 /// literals can drift silently if one is updated without the other (#408).
 /// `servarr-resources`' `test_operator_reserved_mounts_matches_build_volume_mounts`
 /// integration test is the drift guard — it fails if the two fall out of sync.
+///
+/// `pub` (rather than `pub(crate)`) only so that cross-crate test can call it;
+/// not meant as stable public API for downstream consumers of this crate.
+#[doc(hidden)]
 pub fn operator_reserved_mounts(app: &super::ServarrApp) -> Vec<(&'static str, &'static str)> {
     let mut reserved = Vec::new();
     if matches!(app.spec.app, super::AppType::Transmission) {
