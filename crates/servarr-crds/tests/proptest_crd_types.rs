@@ -359,23 +359,18 @@ fn arb_sabnzbd_config() -> impl Strategy<Value = SabnzbdConfig> {
     )
 }
 
-fn arb_peer_port() -> impl Strategy<Value = PeerPortConfig> {
-    (
-        any::<i32>(),
-        any::<bool>(),
-        any::<bool>(),
-        any::<i32>(),
-        any::<i32>(),
-    )
-        .prop_map(
-            |(port, host_port, random_on_start, random_low, random_high)| PeerPortConfig {
-                port,
-                host_port,
-                random_on_start,
-                random_low,
-                random_high,
-            },
-        )
+prop_compose! {
+    // Named bindings (vs positional `i32`/`bool` tuple slots that repeat the
+    // same type back-to-back) so a field can't be silently swapped.
+    fn arb_peer_port()(
+        port in any::<i32>(),
+        host_port in any::<bool>(),
+        random_on_start in any::<bool>(),
+        random_low in any::<i32>(),
+        random_high in any::<i32>(),
+    ) -> PeerPortConfig {
+        PeerPortConfig { port, host_port, random_on_start, random_low, random_high }
+    }
 }
 
 fn arb_transmission_auth() -> impl Strategy<Value = TransmissionAuth> {
@@ -410,122 +405,90 @@ fn arb_restricted_rsync_config() -> impl Strategy<Value = RestrictedRsyncConfig>
         .prop_map(|allowed_paths| RestrictedRsyncConfig { allowed_paths })
 }
 
-fn arb_ssh_user() -> impl Strategy<Value = SshUser> {
-    (
-        arb_string(),
-        any::<i64>(),
-        any::<i64>(),
-        arb_ssh_mode(),
-        prop::option::of(arb_restricted_rsync_config()),
-        arb_opt_string(),
-        arb_string(),
-    )
-        .prop_map(
-            |(name, uid, gid, mode, restricted_rsync, shell, public_keys)| SshUser {
-                name,
-                uid,
-                gid,
-                mode,
-                restricted_rsync,
-                shell,
-                public_keys,
-            },
-        )
+prop_compose! {
+    // Named bindings so `uid`/`gid` (both `i64`) can't be silently swapped.
+    fn arb_ssh_user()(
+        name in arb_string(),
+        uid in any::<i64>(),
+        gid in any::<i64>(),
+        mode in arb_ssh_mode(),
+        restricted_rsync in prop::option::of(arb_restricted_rsync_config()),
+        shell in arb_opt_string(),
+        public_keys in arb_string(),
+    ) -> SshUser {
+        SshUser { name, uid, gid, mode, restricted_rsync, shell, public_keys }
+    }
 }
 
-fn arb_ssh_bastion_config() -> impl Strategy<Value = SshBastionConfig> {
-    (
-        prop::collection::vec(arb_ssh_user(), 0..3),
-        any::<bool>(),
-        any::<bool>(),
-        any::<bool>(),
-        arb_string(),
-        any::<bool>(),
-        arb_string(),
-    )
-        .prop_map(
-            |(
-                users,
-                enable_password_auth,
-                tcp_forwarding,
-                gateway_ports,
-                motd,
-                disable_sftp,
-                sftp_chroot,
-            )| SshBastionConfig {
-                users,
-                enable_password_auth,
-                tcp_forwarding,
-                gateway_ports,
-                motd,
-                disable_sftp,
-                sftp_chroot,
-            },
-        )
+prop_compose! {
+    // Named bindings so the three adjacent `bool` and two adjacent `String`
+    // slots can't be silently swapped.
+    fn arb_ssh_bastion_config()(
+        users in prop::collection::vec(arb_ssh_user(), 0..3),
+        enable_password_auth in any::<bool>(),
+        tcp_forwarding in any::<bool>(),
+        gateway_ports in any::<bool>(),
+        motd in arb_string(),
+        disable_sftp in any::<bool>(),
+        sftp_chroot in arb_string(),
+    ) -> SshBastionConfig {
+        SshBastionConfig {
+            users,
+            enable_password_auth,
+            tcp_forwarding,
+            gateway_ports,
+            motd,
+            disable_sftp,
+            sftp_chroot,
+        }
+    }
 }
 
 /// Overseerr quality profile IDs are small non-negative integers in practice;
 /// unconstrained `any::<f64>()` generates extreme-magnitude floats that lose
-/// precision across a JSON string round-trip (a `serde_json` float-formatting
+/// precision across a JSON string round-trip (a `serde_json` float-parsing
 /// edge case, not an `AppConfig` bug), which breaks the roundtrip property
-/// for reasons unrelated to what this test is meant to cover.
+/// for reasons unrelated to what this test is meant to cover. `u32` keeps the
+/// conversion to `f64` lossless (no `as` cast).
 fn arb_profile_id() -> impl Strategy<Value = f64> {
-    (0i64..1_000_000).prop_map(|n| n as f64)
+    (0u32..1_000_000).prop_map(f64::from)
 }
 
-fn arb_overseerr_server_defaults_4k() -> impl Strategy<Value = OverseerrServerDefaults4k> {
-    (
-        arb_profile_id(),
-        arb_string(),
-        arb_string(),
-        arb_opt_string(),
-        arb_opt_bool(),
-    )
-        .prop_map(
-            |(
-                profile_id,
-                profile_name,
-                root_folder,
-                minimum_availability,
-                enable_season_folders,
-            )| {
-                OverseerrServerDefaults4k {
-                    profile_id,
-                    profile_name,
-                    root_folder,
-                    minimum_availability,
-                    enable_season_folders,
-                }
-            },
-        )
+prop_compose! {
+    // Named bindings so the two adjacent `String` slots can't be silently swapped.
+    fn arb_overseerr_server_defaults_4k()(
+        profile_id in arb_profile_id(),
+        profile_name in arb_string(),
+        root_folder in arb_string(),
+        minimum_availability in arb_opt_string(),
+        enable_season_folders in arb_opt_bool(),
+    ) -> OverseerrServerDefaults4k {
+        OverseerrServerDefaults4k {
+            profile_id,
+            profile_name,
+            root_folder,
+            minimum_availability,
+            enable_season_folders,
+        }
+    }
 }
 
+// `OverseerrServerDefaults` is `OverseerrServerDefaults4k` plus an optional
+// nested `four_k` override (same 5 leading fields, same names/types/order) —
+// generate the 4k value once and reuse its fields instead of re-listing them.
 fn arb_overseerr_server_defaults() -> impl Strategy<Value = OverseerrServerDefaults> {
     (
-        arb_profile_id(),
-        arb_string(),
-        arb_string(),
-        arb_opt_string(),
-        arb_opt_bool(),
+        arb_overseerr_server_defaults_4k(),
         prop::option::of(arb_overseerr_server_defaults_4k()),
     )
-        .prop_map(
-            |(
-                profile_id,
-                profile_name,
-                root_folder,
-                minimum_availability,
-                enable_season_folders,
-                four_k,
-            )| OverseerrServerDefaults {
-                profile_id,
-                profile_name,
-                root_folder,
-                minimum_availability,
-                enable_season_folders,
-                four_k,
-            },
-        )
+        .prop_map(|(base, four_k)| OverseerrServerDefaults {
+            profile_id: base.profile_id,
+            profile_name: base.profile_name,
+            root_folder: base.root_folder,
+            minimum_availability: base.minimum_availability,
+            enable_season_folders: base.enable_season_folders,
+            four_k,
+        })
 }
 
 fn arb_overseerr_config() -> impl Strategy<Value = OverseerrConfig> {
@@ -536,7 +499,6 @@ fn arb_overseerr_config() -> impl Strategy<Value = OverseerrConfig> {
         .prop_map(|(sonarr, radarr)| OverseerrConfig { sonarr, radarr })
 }
 
-/// All 6 `AppConfig` variants, weighted evenly.
 fn arb_app_config() -> impl Strategy<Value = AppConfig> {
     prop_oneof![
         arb_transmission_config().prop_map(AppConfig::Transmission),
