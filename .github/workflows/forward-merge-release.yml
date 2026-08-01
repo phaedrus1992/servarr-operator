@@ -22,7 +22,6 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
-      issues: write
     steps:
       - name: Checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
@@ -56,15 +55,6 @@ jobs:
             echo "$BRANCHES"
             echo "$DELIM"
           } >> "$GITHUB_OUTPUT"
-
-      - name: Ensure label exists
-        continue-on-error: true
-        run: |
-          gh label create forward-merge-conflict \
-            --description "Conflict in forward-merge release cascade" \
-            --color "d73a4a" || true
-        env:
-          GH_TOKEN: ${{ github.token }}
 
       - name: Forward-merge cascade
         env:
@@ -100,14 +90,17 @@ jobs:
           # rather than silently leaving downstream targets unmerged.
           HALTED=""
 
-          # A real conflict needs human resolution and Actions in this repo
-          # can't open PRs (repo permission gap), so `gh pr create` on a
+          # A real conflict needs human resolution, and Actions in this repo
+          # is denied PR creation (repo permission gap — the protected-branch
+          # fallback below hits the same wall), so `gh pr create` on a
           # conflicted merge just fails. Bail with manual-resolution
           # instructions instead of attempting to open a PR.
           bail_on_conflict() {
             local src="$1" tgt="$2"
             echo "::error::Merge conflict: $src into $tgt has conflicts. Resolve manually:"
-            echo "::error::  git checkout $tgt && git merge $src"
+            echo "::error::  git fetch origin && git checkout $tgt && git reset --hard origin/$tgt"
+            echo "::error::  git merge origin/$src"
+            echo "::error::  # resolve conflicts, then: git push origin $tgt"
           }
 
           for TARGET in "${TARGETS[@]}"; do
@@ -127,7 +120,9 @@ jobs:
             MERGE_BRANCH="forward-merge/$CURRENT-to-$TARGET"
 
             if ! git merge --no-commit --no-ff "origin/$CURRENT" 2>/dev/null; then
-              git merge --abort || true
+              if ! git merge --abort; then
+                echo "::error::git merge --abort failed after conflict detection — workspace may be in an inconsistent state"
+              fi
               bail_on_conflict "$CURRENT" "$TARGET"
               echo "::error::Cascade halted: conflict merging $CURRENT into $TARGET"
               echo "::endgroup::"
@@ -154,11 +149,18 @@ jobs:
               git checkout -B "$MERGE_BRANCH"
               git push origin "$MERGE_BRANCH" --force-with-lease
 
-              gh pr create --base "$TARGET" --head "$MERGE_BRANCH" \
+              # gh pr create hits the same Actions permission gap as the
+              # conflict path above if it's ever denied — check the exit
+              # status instead of asserting success unconditionally.
+              if gh pr create --base "$TARGET" --head "$MERGE_BRANCH" \
                 --title "Forward-merge $CURRENT into $TARGET" \
-                --body "Direct push to $TARGET blocked by branch protection; opening PR." || true
-
-              echo "::error::Cascade halted: $TARGET is protected, opened PR instead"
+                --body "Direct push to $TARGET blocked by branch protection; opening PR."; then
+                echo "::error::Cascade halted: $TARGET is protected, opened PR instead"
+              else
+                echo "::error::Cascade halted: $TARGET is protected and PR creation failed. Resolve manually:"
+                echo "::error::  git fetch origin && git checkout $TARGET && git reset --hard origin/$TARGET"
+                echo "::error::  git merge origin/$MERGE_BRANCH"
+              fi
               echo "::endgroup::"
               HALTED="protected branch $TARGET"
               break
