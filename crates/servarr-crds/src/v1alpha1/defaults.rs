@@ -317,13 +317,14 @@ pub fn operator_reserved_mounts(app: &super::ServarrApp) -> Vec<(&'static str, &
     reserved
 }
 
-/// Kubernetes treats a trailing slash, a doubled slash, a `.` segment, or a
-/// `..` segment as part of the same path component sequence (`/downloads`,
-/// `/downloads/`, `/downloads//`, and `/watch/foo/../../watch` all resolve to
-/// one mount point), so paths are normalized to their resolved component
-/// sequence before compare — a flat filter that only drops empty and `.`
-/// segments leaves `..` traversal able to dodge the reserved-mount collision
-/// check it's meant to enforce (#465).
+/// Kubernetes treats a trailing slash, a doubled slash, or a `.` segment as
+/// part of the same path component sequence (`/downloads`, `/downloads/`, and
+/// `/downloads//` all resolve to one mount point) — and a `..` segment
+/// resolves the same way (`/watch/foo/../../watch` also resolves to
+/// `/watch`) — so paths are normalized to their resolved component sequence
+/// before compare. A flat filter that only drops empty and `.` segments
+/// leaves `..` traversal able to dodge the reserved-mount collision check
+/// it's meant to enforce (#465).
 fn normalize_mount_path(path: &str) -> String {
     let mut segments: Vec<&str> = Vec::new();
     for segment in path.split('/') {
@@ -335,9 +336,7 @@ fn normalize_mount_path(path: &str) -> String {
             _ => segments.push(segment),
         }
     }
-    let mut normalized = segments.join("/");
-    normalized.insert(0, '/');
-    normalized
+    format!("/{}", segments.join("/"))
 }
 
 /// Kubernetes rejects a pod spec with two `volumeMounts` at the same path —
