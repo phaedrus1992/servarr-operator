@@ -736,11 +736,13 @@ fn resolve_persistence_removed_default_volume_allows_nfs_mount_at_same_path() {
 }
 
 /// Every override-mount collision case #402 (and its follow-up) covers:
-/// trailing/doubled-slash normalization against a compiled default, and
-/// each fixed operator-injected mount `build_volume_mounts` adds outside
-/// `PersistenceSpec` (present only under the app type + config listed).
-/// One negative case confirms `/run/secrets/admin` is reserved only when
-/// `adminCredentials` is actually set.
+/// trailing/doubled-slash normalization against a compiled default, `..`
+/// traversal normalization (#465), and each fixed operator-injected mount
+/// `build_volume_mounts` adds outside `PersistenceSpec` (present only under
+/// the app type + config listed). Negative cases confirm `/run/secrets/admin`
+/// is reserved only when `adminCredentials` is actually set, and that a `..`
+/// path resolving somewhere non-reserved is accepted rather than rejected
+/// outright.
 #[test]
 fn resolve_persistence_mount_path_collisions() {
     struct Case {
@@ -748,6 +750,11 @@ fn resolve_persistence_mount_path_collisions() {
         setup: fn(&mut ServarrApp),
         mount_path: &'static str,
         expect_collision: bool,
+        // `find_mount_path_collision` names the *reserved* entry's raw path in
+        // the error, not the colliding override's — for a `..` traversal case
+        // those differ, so the assertion needle must be overridable per case
+        // instead of always deriving from `mount_path` (#465).
+        expect_err_contains: Option<&'static str>,
     }
     fn no_setup(_app: &mut ServarrApp) {}
     fn with_admin_credentials(app: &mut ServarrApp) {
@@ -782,48 +789,70 @@ fn resolve_persistence_mount_path_collisions() {
             setup: no_setup,
             mount_path: "/downloads/",
             expect_collision: true,
+            expect_err_contains: None,
         },
         Case {
             app_type: AppType::Sonarr,
             setup: no_setup,
             mount_path: "/downloads//",
             expect_collision: true,
+            expect_err_contains: None,
         },
         Case {
             app_type: AppType::Transmission,
             setup: no_setup,
             mount_path: "/watch",
             expect_collision: true,
+            expect_err_contains: None,
         },
         Case {
             app_type: AppType::Transmission,
             setup: with_admin_credentials,
             mount_path: "/run/secrets/admin",
             expect_collision: true,
+            expect_err_contains: None,
         },
         Case {
             app_type: AppType::Transmission,
             setup: no_setup,
             mount_path: "/run/secrets/admin",
             expect_collision: false,
+            expect_err_contains: None,
         },
         Case {
             app_type: AppType::Transmission,
             setup: with_admin_credentials,
             mount_path: "/custom-cont-init.d/99-transmission-auth.sh",
             expect_collision: true,
+            expect_err_contains: None,
         },
         Case {
             app_type: AppType::Prowlarr,
             setup: with_prowlarr_custom_definitions,
             mount_path: "/config/Definitions/Custom",
             expect_collision: true,
+            expect_err_contains: None,
         },
         Case {
             app_type: AppType::SshBastion,
             setup: with_ssh_bastion_authorized_key,
             mount_path: "/etc/authorized_keys",
             expect_collision: true,
+            expect_err_contains: None,
+        },
+        Case {
+            app_type: AppType::Transmission,
+            setup: no_setup,
+            mount_path: "/watch/foo/../../watch",
+            expect_collision: true,
+            expect_err_contains: Some("reserved by the operator"),
+        },
+        Case {
+            app_type: AppType::Sonarr,
+            setup: no_setup,
+            mount_path: "/downloads/../music",
+            expect_collision: false,
+            expect_err_contains: None,
         },
     ];
 
@@ -852,9 +881,12 @@ fn resolve_persistence_mount_path_collisions() {
                     case.app_type, case.mount_path
                 ),
             };
+            let needle = case
+                .expect_err_contains
+                .unwrap_or_else(|| case.mount_path.trim_end_matches('/'));
             assert!(
-                err.contains(case.mount_path.trim_end_matches('/')),
-                "error should name the colliding mount_path '{}', got: {err}",
+                err.contains(needle),
+                "error should contain '{needle}' for mount_path '{}', got: {err}",
                 case.mount_path
             );
         } else if let Err(e) = result {

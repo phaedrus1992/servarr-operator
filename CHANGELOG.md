@@ -31,6 +31,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   script, Prowlarr's custom-indexer-definitions dir, SSH bastion's `authorized-keys` mount),
   not just other persistence entries, and normalizes trailing/doubled slashes so
   `/downloads//` is caught the same as `/downloads/` (#402).
+- The mount-path collision check now also collapses `..` segments, so a persistence override
+  like `mountPath: /watch/foo/../../watch` is recognized as the same real path as the reserved
+  `/watch` instead of slipping past the check as a "different" path. A spec relying on this gap
+  to shadow an operator-reserved mount now correctly fails the reconcile instead of silently
+  producing two `volumeMounts` at the same location (#465).
 
 ### Security
 
