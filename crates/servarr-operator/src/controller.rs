@@ -2547,13 +2547,8 @@ impl ClassifyCleanupSeverity for servarr_api::ApiError {
 
 /// Remove this app's registration from Prowlarr when the CR is deleted.
 ///
-/// A [`CleanupSeverity::Terminal`] failure (downstream target provably absent) is treated as
-/// idempotent success: no `CleanupFailed` Event, `Ok(())` returned. A
-/// [`CleanupSeverity::Transient`] failure publishes a `Warning` Event (reason `CleanupFailed`)
-/// with a tenant-safe message (via [`TenantSafeMessage`]) and returns the full error so
-/// `reconcile()` keeps the finalizer and retries. Sanitizer calls below keep the log-only variant
-/// (`log_summary()` / `kube_err_summary()`) for the propagated error, and route the same error
-/// through `TenantSafeMessage` for the Event.
+/// See [`finish_cleanup`] for how the `Terminal`/`Transient` outcome of the cleanup body maps to
+/// this function's return value and Event publication.
 pub(crate) async fn cleanup_prowlarr_registration(
     client: &Client,
     app: &ServarrApp,
@@ -2562,7 +2557,7 @@ pub(crate) async fn cleanup_prowlarr_registration(
     obj_ref: &k8s_openapi::api::core::v1::ObjectReference,
     base_url_override: Option<&str>,
 ) -> Result<(), anyhow::Error> {
-    match cleanup_prowlarr_registration_body(
+    let outcome = cleanup_prowlarr_registration_body(
         client,
         app,
         namespace,
@@ -2570,38 +2565,29 @@ pub(crate) async fn cleanup_prowlarr_registration(
         obj_ref,
         base_url_override,
     )
-    .await
-    {
-        Ok(()) => Ok(()),
-        Err((err, _tenant_msg, CleanupSeverity::Terminal)) => {
-            info!(
-                app = %app.name_any(),
-                error = %err,
-                "Prowlarr cleanup target already absent, treating as complete"
-            );
-            Ok(())
-        }
-        Err((err, tenant_msg, CleanupSeverity::Transient)) => {
-            publish_cleanup_failed(recorder, obj_ref, &tenant_msg).await;
-            Err(err)
-        }
-    }
+    .await;
+    finish_cleanup(outcome, "Prowlarr", app, recorder, obj_ref).await
 }
 
-/// Turns a single error into the `(anyhow::Error, TenantSafeMessage, CleanupSeverity)` triple a
-/// cleanup failure propagates: the anyhow side carries full detail for the operator log, the
-/// `TenantSafeMessage` side is tenant-safe for the Kubernetes Event, and [`CleanupSeverity`]
-/// tells the wrapper whether to retry or treat the target as already gone.
+/// A cleanup body's failure: the `error` side carries full detail for the operator log, the
+/// `tenant_msg` side is tenant-safe for the Kubernetes Event, and `severity` tells the wrapper
+/// (via [`finish_cleanup`]) whether to retry or treat the target as already gone. Call sites keep
+/// the log-only sanitizer variant (`log_summary()` / `kube_err_summary()`) for `error`, and route
+/// the same error through `TenantSafeMessage` for `tenant_msg`.
+#[derive(Debug)]
+struct CleanupFailure {
+    error: anyhow::Error,
+    tenant_msg: TenantSafeMessage,
+    severity: CleanupSeverity,
+}
+
+/// Turns a single error into a [`CleanupFailure`].
 ///
 /// `prefix` is a short, static description of the failing operation; the sanitizer's summary
 /// of `e` is joined after it with `": "`. Callers must not include the separator in `prefix`.
 trait CleanupMapErr<T> {
     type Error;
-    fn cleanup_map_err<F>(
-        self,
-        prefix: &str,
-        summary: F,
-    ) -> Result<T, (anyhow::Error, TenantSafeMessage, CleanupSeverity)>
+    fn cleanup_map_err<F>(self, prefix: &str, summary: F) -> Result<T, CleanupFailure>
     where
         F: FnOnce(&Self::Error) -> String;
 
@@ -2612,11 +2598,7 @@ trait CleanupMapErr<T> {
     /// CRD not yet served, misconfigured `urlBase`) — a real, retryable problem — not that the
     /// specific cleanup target is gone. [`ClassifyCleanupSeverity`] can't tell GET-by-id/DELETE
     /// apart from LIST from the error alone, so the call site must say which kind it is.
-    fn cleanup_map_err_transient<F>(
-        self,
-        prefix: &str,
-        summary: F,
-    ) -> Result<T, (anyhow::Error, TenantSafeMessage, CleanupSeverity)>
+    fn cleanup_map_err_transient<F>(self, prefix: &str, summary: F) -> Result<T, CleanupFailure>
     where
         F: FnOnce(&Self::Error) -> String;
 }
@@ -2626,54 +2608,43 @@ where
     E: Into<TenantSafeMessage> + ClassifyCleanupSeverity,
 {
     type Error = E;
-    fn cleanup_map_err<F>(
-        self,
-        prefix: &str,
-        summary: F,
-    ) -> Result<T, (anyhow::Error, TenantSafeMessage, CleanupSeverity)>
+    fn cleanup_map_err<F>(self, prefix: &str, summary: F) -> Result<T, CleanupFailure>
     where
         F: FnOnce(&E) -> String,
     {
         self.map_err(|e| {
             let severity = e.cleanup_severity();
-            (
-                anyhow::anyhow!("{prefix}: {}", summary(&e)),
-                e.into(),
+            CleanupFailure {
+                error: anyhow::anyhow!("{prefix}: {}", summary(&e)),
+                tenant_msg: e.into(),
                 severity,
-            )
+            }
         })
     }
 
-    fn cleanup_map_err_transient<F>(
-        self,
-        prefix: &str,
-        summary: F,
-    ) -> Result<T, (anyhow::Error, TenantSafeMessage, CleanupSeverity)>
+    fn cleanup_map_err_transient<F>(self, prefix: &str, summary: F) -> Result<T, CleanupFailure>
     where
         F: FnOnce(&E) -> String,
     {
-        self.map_err(|e| {
-            (
-                anyhow::anyhow!("{prefix}: {}", summary(&e)),
-                e.into(),
-                CleanupSeverity::Transient,
-            )
+        self.map_err(|e| CleanupFailure {
+            error: anyhow::anyhow!("{prefix}: {}", summary(&e)),
+            tenant_msg: e.into(),
+            severity: CleanupSeverity::Transient,
         })
     }
 }
 
-/// Map a curated-string failure (e.g. `AppDefaults::for_app`) into the propagated-error +
-/// tenant-safe-message + severity triple. The anyhow message is `{ctx}: {e}`; the tenant-safe
-/// message is the curated string itself. Always [`CleanupSeverity::Transient`] — a curated-string
-/// failure here means the app type's compiled defaults didn't load, a config/programming problem
-/// unrelated to whether the downstream target exists, so it must keep retrying rather than being
-/// folded into idempotent success.
-fn cleanup_err_new(e: String, ctx: &str) -> (anyhow::Error, TenantSafeMessage, CleanupSeverity) {
-    (
-        anyhow::anyhow!("{ctx}: {e}"),
-        TenantSafeMessage::new(e),
-        CleanupSeverity::Transient,
-    )
+/// Map a curated-string failure (e.g. `AppDefaults::for_app`) into a [`CleanupFailure`]. The
+/// anyhow message is `{ctx}: {e}`; the tenant-safe message is the curated string itself. Always
+/// [`CleanupSeverity::Transient`] — a curated-string failure here means the app type's compiled
+/// defaults didn't load, a config/programming problem unrelated to whether the downstream target
+/// exists, so it must keep retrying rather than being folded into idempotent success.
+fn cleanup_err_new(e: String, ctx: &str) -> CleanupFailure {
+    CleanupFailure {
+        error: anyhow::anyhow!("{ctx}: {e}"),
+        tenant_msg: TenantSafeMessage::new(e),
+        severity: CleanupSeverity::Transient,
+    }
 }
 
 /// Inner cleanup body shared by [`cleanup_prowlarr_registration`] and the success-path tests.
@@ -2681,8 +2652,7 @@ fn cleanup_err_new(e: String, ctx: &str) -> (anyhow::Error, TenantSafeMessage, C
 /// `base_url_override` lets tests point the Prowlarr client at a MockServer instead of the
 /// in-cluster `{name}.{ns}.svc` URL (which cannot resolve in tests); production passes `None`.
 ///
-/// On failure returns the full error (for the `warn!` in `reconcile()`), the tenant-safe message
-/// (for the `CleanupFailed` Event the wrapper publishes), and the [`CleanupSeverity`].
+/// On failure returns a [`CleanupFailure`].
 async fn cleanup_prowlarr_registration_body(
     client: &Client,
     app: &ServarrApp,
@@ -2690,7 +2660,7 @@ async fn cleanup_prowlarr_registration_body(
     recorder: &Recorder,
     obj_ref: &k8s_openapi::api::core::v1::ObjectReference,
     base_url_override: Option<&str>,
-) -> Result<(), (anyhow::Error, TenantSafeMessage, CleanupSeverity)> {
+) -> Result<(), CleanupFailure> {
     use kube::api::ListParams;
 
     let app_name_str = servarr_resources::common::service_name(app);
@@ -3586,13 +3556,8 @@ async fn overseerr_sync_exists(client: &Client, namespace: &str) -> bool {
 
 /// Remove this app's registration from Overseerr when the CR is deleted.
 ///
-/// A [`CleanupSeverity::Terminal`] failure (downstream target provably absent) is treated as
-/// idempotent success: no `CleanupFailed` Event, `Ok(())` returned. A
-/// [`CleanupSeverity::Transient`] failure publishes a `Warning` Event (reason `CleanupFailed`)
-/// with a tenant-safe message (via [`TenantSafeMessage`]) and returns the full error so
-/// `reconcile()` keeps the finalizer and retries. Sanitizer calls below keep the log-only variant
-/// (`log_summary()` / `kube_err_summary()`) for the propagated error, and route the same error
-/// through `TenantSafeMessage` for the Event.
+/// See [`finish_cleanup`] for how the `Terminal`/`Transient` outcome of the cleanup body maps to
+/// this function's return value and Event publication.
 pub(crate) async fn cleanup_overseerr_registration(
     client: &Client,
     app: &ServarrApp,
@@ -3601,7 +3566,7 @@ pub(crate) async fn cleanup_overseerr_registration(
     obj_ref: &k8s_openapi::api::core::v1::ObjectReference,
     base_url_override: Option<&str>,
 ) -> Result<(), anyhow::Error> {
-    match cleanup_overseerr_registration_body(
+    let outcome = cleanup_overseerr_registration_body(
         client,
         app,
         namespace,
@@ -3609,22 +3574,8 @@ pub(crate) async fn cleanup_overseerr_registration(
         obj_ref,
         base_url_override,
     )
-    .await
-    {
-        Ok(()) => Ok(()),
-        Err((err, _tenant_msg, CleanupSeverity::Terminal)) => {
-            info!(
-                app = %app.name_any(),
-                error = %err,
-                "Overseerr cleanup target already absent, treating as complete"
-            );
-            Ok(())
-        }
-        Err((err, tenant_msg, CleanupSeverity::Transient)) => {
-            publish_cleanup_failed(recorder, obj_ref, &tenant_msg).await;
-            Err(err)
-        }
-    }
+    .await;
+    finish_cleanup(outcome, "Overseerr", app, recorder, obj_ref).await
 }
 
 /// Uniform view of the Overseerr registered-server settings the cleanup path needs, so the
@@ -3725,6 +3676,47 @@ impl OverseerrAppKind for RadarrOverseerr {
     }
 }
 
+/// Turn a cleanup body's outcome into the wrapper's `Result<(), anyhow::Error>`, shared by
+/// [`cleanup_prowlarr_registration`] and [`cleanup_overseerr_registration`] (which differ only in
+/// `cleanup_target` and which `_body` function produced `outcome`).
+///
+/// A [`CleanupSeverity::Terminal`] failure (downstream target provably absent) is treated as
+/// idempotent success: logged, no `CleanupFailed` Event, `Ok(())` returned. A
+/// [`CleanupSeverity::Transient`] failure publishes the `CleanupFailed` Event and returns the
+/// full error so `reconcile()` keeps the finalizer and retries.
+async fn finish_cleanup(
+    outcome: Result<(), CleanupFailure>,
+    cleanup_target: &str,
+    app: &ServarrApp,
+    recorder: &Recorder,
+    obj_ref: &k8s_openapi::api::core::v1::ObjectReference,
+) -> Result<(), anyhow::Error> {
+    match outcome {
+        Ok(()) => Ok(()),
+        Err(CleanupFailure {
+            error,
+            severity: CleanupSeverity::Terminal,
+            ..
+        }) => {
+            info!(
+                app = %app.name_any(),
+                cleanup_target = %cleanup_target,
+                error = %error,
+                "cleanup target already absent, treating as complete"
+            );
+            Ok(())
+        }
+        Err(CleanupFailure {
+            error,
+            tenant_msg,
+            severity: CleanupSeverity::Transient,
+        }) => {
+            publish_cleanup_failed(recorder, obj_ref, &tenant_msg).await;
+            Err(error)
+        }
+    }
+}
+
 /// Publish the Normal event for a successful finalizer cleanup (shared by the Prowlarr and
 /// Overseerr cleanup bodies).
 async fn publish_cleanup_normal(
@@ -3786,7 +3778,7 @@ async fn overseerr_remove_server<K>(
     app_hostname: &str,
     port: i32,
     kind: K,
-) -> Result<bool, (anyhow::Error, TenantSafeMessage, CleanupSeverity)>
+) -> Result<bool, CleanupFailure>
 where
     K: OverseerrAppKind,
 {
@@ -3822,8 +3814,7 @@ where
 /// `base_url_override` lets tests point the Overseerr client at a MockServer instead of the
 /// in-cluster `{name}.{ns}.svc` URL (which cannot resolve in tests); production passes `None`.
 ///
-/// On failure returns the full error (for the `warn!` in `reconcile()`), the tenant-safe message
-/// (for the `CleanupFailed` Event the wrapper publishes), and the [`CleanupSeverity`].
+/// On failure returns a [`CleanupFailure`].
 async fn cleanup_overseerr_registration_body(
     client: &Client,
     app: &ServarrApp,
@@ -3831,7 +3822,7 @@ async fn cleanup_overseerr_registration_body(
     recorder: &Recorder,
     obj_ref: &k8s_openapi::api::core::v1::ObjectReference,
     base_url_override: Option<&str>,
-) -> Result<(), (anyhow::Error, TenantSafeMessage, CleanupSeverity)> {
+) -> Result<(), CleanupFailure> {
     use kube::api::ListParams;
 
     let app_name_str = servarr_resources::common::service_name(app);
@@ -8612,34 +8603,36 @@ mod tests {
     }
 
     #[test]
-    fn kube_error_404_is_terminal() {
-        assert_eq!(
-            api_status_error(404).cleanup_severity(),
-            CleanupSeverity::Terminal
-        );
-    }
-
-    #[test]
-    fn kube_error_non_404_is_transient() {
-        for code in [400, 403, 409, 500, 503] {
+    fn kube_error_cleanup_severity_by_status_code() {
+        for (code, expected) in [
+            (404, CleanupSeverity::Terminal),
+            (400, CleanupSeverity::Transient),
+            (403, CleanupSeverity::Transient),
+            (409, CleanupSeverity::Transient),
+            (500, CleanupSeverity::Transient),
+            (503, CleanupSeverity::Transient),
+        ] {
             assert_eq!(
                 api_status_error(code).cleanup_severity(),
-                CleanupSeverity::Transient,
-                "status {code} should be transient"
+                expected,
+                "status {code} should be {expected:?}"
             );
         }
     }
 
     #[test]
-    fn secret_error_kube_404_is_terminal() {
-        let err = servarr_api::SecretError::Kube(api_status_error(404));
-        assert_eq!(err.cleanup_severity(), CleanupSeverity::Terminal);
-    }
-
-    #[test]
-    fn secret_error_kube_non_404_is_transient() {
-        let err = servarr_api::SecretError::Kube(api_status_error(403));
-        assert_eq!(err.cleanup_severity(), CleanupSeverity::Transient);
+    fn secret_error_kube_cleanup_severity_by_status_code() {
+        for (code, expected) in [
+            (404, CleanupSeverity::Terminal),
+            (403, CleanupSeverity::Transient),
+        ] {
+            let err = servarr_api::SecretError::Kube(api_status_error(code));
+            assert_eq!(
+                err.cleanup_severity(),
+                expected,
+                "status {code} should be {expected:?}"
+            );
+        }
     }
 
     #[test]
@@ -8667,98 +8660,84 @@ mod tests {
     }
 
     #[test]
-    fn api_error_404_is_terminal() {
-        let err = servarr_api::ApiError::ApiResponse {
-            status: 404,
-            body: String::new(),
-        };
-        assert_eq!(err.cleanup_severity(), CleanupSeverity::Terminal);
-    }
-
-    #[test]
-    fn api_error_non_404_is_transient() {
-        for status in [400, 401, 403, 500, 503] {
+    fn api_error_cleanup_severity_by_status_code() {
+        for (status, expected) in [
+            (404, CleanupSeverity::Terminal),
+            (400, CleanupSeverity::Transient),
+            (401, CleanupSeverity::Transient),
+            (403, CleanupSeverity::Transient),
+            (500, CleanupSeverity::Transient),
+            (503, CleanupSeverity::Transient),
+        ] {
             let err = servarr_api::ApiError::ApiResponse {
                 status,
                 body: String::new(),
             };
             assert_eq!(
                 err.cleanup_severity(),
-                CleanupSeverity::Transient,
-                "status {status} should be transient"
+                expected,
+                "status {status} should be {expected:?}"
             );
         }
     }
 
     // ---- CleanupSeverity::Terminal wrapper behavior tests (#451) ----
 
-    /// A 404 on the `api_key_secret` Secret GET (deleted out-of-band) is terminal: the wrapper
-    /// must treat it as idempotent success — `Ok(())`, no `CleanupFailed` Event — instead of a
-    /// retryable failure.
-    #[tokio::test]
-    async fn cleanup_prowlarr_registration_secret_not_found_is_terminal_no_event() {
-        let mock_server = MockServer::start().await;
-        let client = build_mock_client(&mock_server.uri()).await;
-        mount_event_post_mock(&mock_server).await;
-        mount_servarrapps_list(
-            &mock_server,
-            json!([prowlarr_app_json("my-prowlarr", Some("prowlarr-secret"))]),
-        )
-        .await;
-        mount_kube_status_error(
-            &mock_server,
-            "/api/v1/namespaces/test/secrets/prowlarr-secret",
-            404,
-            "unused-seed",
-        )
-        .await;
+    /// A 404 on the `api_key_secret` Secret GET (deleted out-of-band) is terminal for either
+    /// cleanup path: the wrapper must treat it as idempotent success — `Ok(())`, no
+    /// `CleanupFailed` Event — instead of a retryable failure. Generates one test per
+    /// (cleanup fn, app-json builder, app name, secret name) tuple; the two invocations below
+    /// differ only in those four identifiers.
+    macro_rules! secret_not_found_is_terminal_no_event_test {
+        ($test_name:ident, $cleanup_fn:ident, $app_json_fn:ident, $app_name:literal, $secret_name:literal) => {
+            #[tokio::test]
+            async fn $test_name() {
+                let mock_server = MockServer::start().await;
+                let client = build_mock_client(&mock_server.uri()).await;
+                mount_event_post_mock(&mock_server).await;
+                mount_servarrapps_list(
+                    &mock_server,
+                    json!([$app_json_fn($app_name, Some($secret_name))]),
+                )
+                .await;
+                mount_kube_status_error(
+                    &mock_server,
+                    concat!("/api/v1/namespaces/test/secrets/", $secret_name),
+                    404,
+                    "unused-seed",
+                )
+                .await;
 
-        let recorder = Recorder::new(client.clone(), "test".into());
-        let app = make_test_app("my-sonarr", "test", AppType::Sonarr);
-        let obj_ref = app.object_ref(&());
+                let recorder = Recorder::new(client.clone(), "test".into());
+                let app = make_test_app("my-sonarr", "test", AppType::Sonarr);
+                let obj_ref = app.object_ref(&());
 
-        cleanup_prowlarr_registration(&client, &app, "test", &recorder, &obj_ref, None)
-            .await
-            .expect("a secret deleted out-of-band is terminal, not a failure");
+                $cleanup_fn(&client, &app, "test", &recorder, &obj_ref, None)
+                    .await
+                    .expect("a secret deleted out-of-band is terminal, not a failure");
 
-        assert!(
-            event_post_bodies(&mock_server).await.is_empty(),
-            "terminal cleanup must not publish a CleanupFailed Event"
-        );
+                assert!(
+                    event_post_bodies(&mock_server).await.is_empty(),
+                    "terminal cleanup must not publish a CleanupFailed Event"
+                );
+            }
+        };
     }
 
-    /// Same as above for the Overseerr cleanup path.
-    #[tokio::test]
-    async fn cleanup_overseerr_registration_secret_not_found_is_terminal_no_event() {
-        let mock_server = MockServer::start().await;
-        let client = build_mock_client(&mock_server.uri()).await;
-        mount_event_post_mock(&mock_server).await;
-        mount_servarrapps_list(
-            &mock_server,
-            json!([overseerr_app_json("my-overseerr", Some("overseerr-secret"))]),
-        )
-        .await;
-        mount_kube_status_error(
-            &mock_server,
-            "/api/v1/namespaces/test/secrets/overseerr-secret",
-            404,
-            "unused-seed",
-        )
-        .await;
-
-        let recorder = Recorder::new(client.clone(), "test".into());
-        let app = make_test_app("my-sonarr", "test", AppType::Sonarr);
-        let obj_ref = app.object_ref(&());
-
-        cleanup_overseerr_registration(&client, &app, "test", &recorder, &obj_ref, None)
-            .await
-            .expect("a secret deleted out-of-band is terminal, not a failure");
-
-        assert!(
-            event_post_bodies(&mock_server).await.is_empty(),
-            "terminal cleanup must not publish a CleanupFailed Event"
-        );
-    }
+    secret_not_found_is_terminal_no_event_test!(
+        cleanup_prowlarr_registration_secret_not_found_is_terminal_no_event,
+        cleanup_prowlarr_registration,
+        prowlarr_app_json,
+        "my-prowlarr",
+        "prowlarr-secret"
+    );
+    secret_not_found_is_terminal_no_event_test!(
+        cleanup_overseerr_registration_secret_not_found_is_terminal_no_event,
+        cleanup_overseerr_registration,
+        overseerr_app_json,
+        "my-overseerr",
+        "overseerr-secret"
+    );
 
     // ---- CleanupSeverity::Transient LIST-endpoint tests (#451 review follow-up) ----
     //
@@ -8847,7 +8826,7 @@ mod tests {
         .expect_err("a 404 on Prowlarr's applications LIST is transient, not proof of absence");
 
         assert_eq!(
-            err.2,
+            err.severity,
             CleanupSeverity::Transient,
             "LIST-endpoint 404 must not classify as Terminal"
         );
@@ -8879,7 +8858,7 @@ mod tests {
         .expect_err("a 404 on Overseerr's Sonarr-servers LIST is transient, not proof of absence");
 
         assert_eq!(
-            err.2,
+            err.severity,
             CleanupSeverity::Transient,
             "LIST-endpoint 404 must not classify as Terminal"
         );
