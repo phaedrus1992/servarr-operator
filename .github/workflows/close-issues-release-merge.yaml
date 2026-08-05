@@ -36,9 +36,20 @@ jobs:
             echo "No closing keywords found in PR #$PR_NUMBER body"
             exit 0
           fi
+          FAILED=0
           while IFS= read -r ISSUE; do
+            STATE=$(gh issue view "$ISSUE" --repo "$REPO" --json state --jq .state 2>/dev/null || echo "UNKNOWN")
+            if [[ "$STATE" == "CLOSED" ]]; then
+              echo "#$ISSUE is already closed, skipping"
+              continue
+            fi
             echo "Closing #$ISSUE (referenced by PR #$PR_NUMBER)"
-            gh issue close "$ISSUE" --repo "$REPO" \
-              --comment "Closed via #$PR_NUMBER (merged into \`$PR_BASE\`, not the default branch, so GitHub's native auto-close didn't fire)." \
-              || echo "::warning::Failed to close #$ISSUE (may already be closed)"
+            if ! gh issue close "$ISSUE" --repo "$REPO" \
+              --comment "Closed via #$PR_NUMBER (merged into \`$PR_BASE\`, not the default branch, so GitHub's native auto-close didn't fire)."; then
+              echo "::error::Failed to close #$ISSUE (was open, close attempt failed)"
+              FAILED=1
+            fi
           done <<< "$ISSUES"
+          if [[ "$FAILED" -eq 1 ]]; then
+            exit 1
+          fi
