@@ -2398,7 +2398,9 @@ async fn cleanup_prowlarr_registration(
 
 /// A cleanup body's failure: the `error` side carries full detail for the operator log, the
 /// `tenant_msg` side is tenant-safe for the Kubernetes Event, and `severity` tells the wrapper
-/// (via [`finish_cleanup`]) whether to retry or treat the target as already gone.
+/// (via [`finish_cleanup`]) whether to retry or treat the target as already gone. Call sites keep
+/// the log-only sanitizer variant (`log_summary()` / `kube_err_summary()`) for `error`, and route
+/// the same error through `TenantSafeMessage` for `tenant_msg`.
 #[derive(Debug)]
 struct CleanupFailure {
     error: anyhow::Error,
@@ -2477,8 +2479,7 @@ fn cleanup_err_new(e: String, ctx: &str) -> CleanupFailure {
 /// `base_url_override` lets tests point the Prowlarr client at a MockServer instead of the
 /// in-cluster `{name}.{ns}.svc` URL (which cannot resolve in tests); production passes `None`.
 ///
-/// On failure returns the full error (for the `warn!` in `reconcile()`), the tenant-safe message
-/// (for the `CleanupFailed` Event the wrapper publishes), and the [`CleanupSeverity`].
+/// On failure returns a [`CleanupFailure`].
 async fn cleanup_prowlarr_registration_body(
     client: &Client,
     app: &ServarrApp,
@@ -3487,7 +3488,7 @@ impl OverseerrAppKind for RadarrOverseerr {
 
 /// Turn a cleanup body's outcome into the wrapper's `Result<(), anyhow::Error>`, shared by
 /// [`cleanup_prowlarr_registration`] and [`cleanup_overseerr_registration`] (which differ only in
-/// `app_name` and which `_body` function produced `outcome`).
+/// `cleanup_target` and which `_body` function produced `outcome`).
 ///
 /// A [`CleanupSeverity::Terminal`] failure (downstream target provably absent) is treated as
 /// idempotent success: logged, no `CleanupFailed` Event, `Ok(())` returned. A
@@ -3495,7 +3496,7 @@ impl OverseerrAppKind for RadarrOverseerr {
 /// full error so `reconcile()` keeps the finalizer and retries.
 async fn finish_cleanup(
     outcome: Result<(), CleanupFailure>,
-    app_name: &str,
+    cleanup_target: &str,
     app: &ServarrApp,
     recorder: &Recorder,
     obj_ref: &k8s_openapi::api::core::v1::ObjectReference,
@@ -3509,7 +3510,7 @@ async fn finish_cleanup(
         }) => {
             info!(
                 app = %app.name_any(),
-                cleanup_target = %app_name,
+                cleanup_target = %cleanup_target,
                 error = %error,
                 "cleanup target already absent, treating as complete"
             );
@@ -3623,8 +3624,7 @@ where
 /// `base_url_override` lets tests point the Overseerr client at a MockServer instead of the
 /// in-cluster `{name}.{ns}.svc` URL (which cannot resolve in tests); production passes `None`.
 ///
-/// On failure returns the full error (for the `warn!` in `reconcile()`), the tenant-safe message
-/// (for the `CleanupFailed` Event the wrapper publishes), and the [`CleanupSeverity`].
+/// On failure returns a [`CleanupFailure`].
 async fn cleanup_overseerr_registration_body(
     client: &Client,
     app: &ServarrApp,
