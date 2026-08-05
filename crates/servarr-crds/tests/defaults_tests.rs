@@ -895,3 +895,34 @@ fn resolve_persistence_collision_message_names_operator_reserved_mount() {
         "error should name the user's own entry, got: {err}"
     );
 }
+
+/// A `..` segment must collapse during normalization the same way `.` and
+/// doubled/trailing slashes already do — otherwise `/watch/foo/../../watch`
+/// resolves to the same real mount as the reserved `/watch` but sails past
+/// the collision check as a "different" path (#465).
+#[test]
+fn resolve_persistence_mount_path_traversal_collides_with_reserved() {
+    let defaults = AppDefaults::try_for_app(&AppType::Transmission).unwrap();
+    let mut app = make_app(AppType::Transmission);
+    app.spec.persistence = Some(PersistenceSpec {
+        volumes: vec![],
+        nfs_mounts: vec![NfsMount {
+            name: "watch-nfs".into(),
+            server: "nas.local".into(),
+            path: "/export/watch".into(),
+            mount_path: "/watch/foo/../../watch".into(),
+            read_only: false,
+        }],
+        removed_default_volumes: vec![],
+    });
+
+    let err = defaults.resolve_persistence(&app).unwrap_err();
+    assert!(
+        err.contains("reserved by the operator"),
+        "traversal mount_path should collide with reserved '/watch', got: {err}"
+    );
+    assert!(
+        err.contains("watch-nfs"),
+        "error should name the user's own entry, got: {err}"
+    );
+}
