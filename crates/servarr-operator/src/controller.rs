@@ -585,9 +585,30 @@ pub async fn reconcile(app: Arc<ServarrApp>, ctx: Arc<Context>) -> Result<Action
             .map_err(Error::Kube)?;
     }
 
+    // Resolve the Transmission client once per reconcile (base URL + adminCredentials secret +
+    // TransmissionClient) and share it between check_api_health and check_download_client_health
+    // -- both gate on the same apiHealthCheck.enabled flag, so building it twice means double
+    // the Secret GETs and a redundant session-ID handshake against the same app (#499).
+    let transmission_access: Option<Result<TransmissionAccess, String>> =
+        if transmission_health_check_enabled(&app) {
+            Some(
+                match resolve_service_base_url(&app, &ns, ctx.app_api_base_override.as_deref()) {
+                    Ok(base_url) => resolve_transmission_access(client, &app, &ns, &base_url).await,
+                    Err(e) => Err(e),
+                },
+            )
+        } else {
+            None
+        };
+
     // API health check and update check (non-blocking)
-    let (health_condition, update_condition) =
-        check_api_health(client, &app, ctx.app_api_base_override.as_deref()).await;
+    let (health_condition, update_condition) = check_api_health(
+        client,
+        &app,
+        ctx.app_api_base_override.as_deref(),
+        transmission_access.as_ref(),
+    )
+    .await;
 
     // Admin credential sync via live API (SABnzbd, Transmission, Jellyfin, Tautulli, Overseerr)
     let admin_creds_condition =
@@ -763,15 +784,10 @@ pub async fn reconcile(app: Arc<ServarrApp>, ctx: Arc<Context>) -> Result<Action
         None
     };
 
-    // Download-client data health (Transmission only, non-blocking)
-    let download_data_condition = check_download_client_health(
-        client,
-        &app,
-        &recorder,
-        &obj_ref,
-        ctx.app_api_base_override.as_deref(),
-    )
-    .await;
+    // Download-client data health (Transmission only, non-blocking). base_url_override is
+    // applied further up when resolving transmission_access -- not needed again here.
+    let download_data_condition =
+        check_download_client_health(&app, &recorder, &obj_ref, transmission_access.as_ref()).await;
 
     // Update status
     tracing::debug!(%name, "updating status");
@@ -1289,10 +1305,69 @@ async fn read_transmission_admin_creds(
     (u, p)
 }
 
+/// Whether `app` is a Transmission app with `apiHealthCheck.enabled` set -- the gate shared by
+/// `reconcile`'s `transmission_access` resolution and `check_download_client_health`.
+fn transmission_health_check_enabled(app: &ServarrApp) -> bool {
+    app.spec.app == AppType::Transmission
+        && app
+            .spec
+            .api_health_check
+            .as_ref()
+            .is_some_and(|hc| hc.enabled)
+}
+
+/// `reconcile` only omits `transmission_access` when `apiHealthCheck.enabled` is false, but
+/// both of its consumers below re-check that gate themselves before consulting it -- so this
+/// message should never actually surface. Shared so the two defensive branches don't drift.
+const TRANSMISSION_CLIENT_UNRESOLVED: &str =
+    "Transmission client was not resolved for this reconcile";
+
+/// Transmission client + admin-credential state resolved once per reconcile pass and shared
+/// between `check_api_health`'s Transmission arm and `check_download_client_health` — both gate
+/// on the same `apiHealthCheck.enabled` flag, so building this independently in each would mean
+/// double the Secret GETs and a redundant session-ID handshake against the same app (#499).
+#[derive(Debug)]
+pub(crate) struct TransmissionAccess {
+    client: servarr_api::TransmissionClient,
+    /// `true` when `adminCredentials` was configured but at least one of username/password
+    /// could not be read (partial or total read failure). The read-only health probe below
+    /// degrades to unauthenticated in this case; the destructive download-health path fails
+    /// closed instead (#483 hardening) — this flag lets each caller apply its own policy
+    /// against the same resolved credentials.
+    credentials_incomplete: bool,
+}
+
+/// Resolve a [`TransmissionAccess`] for `app`: read the optional adminCredentials secret and
+/// build a `TransmissionClient` against `base_url`. Called once per reconcile (see `reconcile`)
+/// so both health checks share the same client instance instead of each triggering their own
+/// session-ID handshake (#499).
+async fn resolve_transmission_access(
+    client: &Client,
+    app: &ServarrApp,
+    ns: &str,
+    base_url: &str,
+) -> Result<TransmissionAccess, String> {
+    let (tx_user, tx_pass) = read_transmission_admin_creds(client, app, ns).await;
+    // Covers both a partial read (one of username/password missing) and a total read failure
+    // (both missing, e.g. the secret was deleted or renamed) -- either way adminCredentials was
+    // configured but couldn't be fully honored, so the destructive path below must not proceed
+    // unauthenticated on the strength of an unrelated coincidence (both `None`).
+    let credentials_incomplete =
+        app.spec.admin_credentials.is_some() && !(tx_user.is_some() && tx_pass.is_some());
+    let tx_client =
+        servarr_api::TransmissionClient::new(base_url, tx_user.as_deref(), tx_pass.as_deref())
+            .map_err(|e| e.log_summary())?;
+    Ok(TransmissionAccess {
+        client: tx_client,
+        credentials_incomplete,
+    })
+}
+
 pub(crate) async fn check_api_health(
     client: &Client,
     app: &ServarrApp,
     base_url_override: Option<&str>,
+    transmission_access: Option<&Result<TransmissionAccess, String>>,
 ) -> (Option<Condition>, Option<Condition>) {
     let ns = app.namespace().unwrap_or_else(|| "default".into());
     let ns = ns.as_str();
@@ -1382,33 +1457,26 @@ pub(crate) async fn check_api_health(
                 (Err(summary), None)
             }
         },
-        AppType::Transmission => {
-            // Pass credentials to the health check client when adminCredentials is set.
-            let (tx_user, tx_pass) = read_transmission_admin_creds(client, app, ns).await;
-            match servarr_api::TransmissionClient::new(
-                &base_url,
-                tx_user.as_deref(),
-                tx_pass.as_deref(),
-            ) {
-                Ok(c) => {
-                    let h = c.is_healthy().await.map_err(|e| {
-                        let summary = e.log_summary();
-                        warn!(app = %app.name_any(), error = %summary, "health check failed");
-                        summary
-                    });
-                    (h, None)
-                }
-                Err(e) => {
+        AppType::Transmission => match transmission_access {
+            Some(Ok(access)) => {
+                let h = access.client.is_healthy().await.map_err(|e| {
                     let summary = e.log_summary();
-                    warn!(
-                        app = %app.name_any(),
-                        error = %summary,
-                        "failed to construct API client for health check"
-                    );
-                    (Err(summary), None)
-                }
+                    warn!(app = %app.name_any(), error = %summary, "health check failed");
+                    summary
+                });
+                (h, None)
             }
-        }
+            Some(Err(e)) => {
+                warn!(app = %app.name_any(), error = %e,
+                    "failed to construct API client for health check");
+                (Err(e.clone()), None)
+            }
+            None => {
+                warn!(app = %app.name_any(),
+                    "failed to construct API client for health check: {TRANSMISSION_CLIENT_UNRESOLVED}");
+                (Err(TRANSMISSION_CLIENT_UNRESOLVED.to_string()), None)
+            }
+        },
         AppType::Jellyfin => match servarr_api::JellyfinClient::new(&base_url) {
             Ok(c) => {
                 let h = c.is_healthy().await.map_err(|e| {
@@ -1520,6 +1588,14 @@ const VERIFY_POLL_INTERVAL: Duration = Duration::from_millis(200);
 /// Transmission RPC status codes meaning "still hash-checking" (queued-to-verify, verifying).
 const CHECKING_STATUSES: [i64; 2] = [1, 2];
 
+/// `torrent-get` fields needed for self-heal detection and polling. A single shared list (not
+/// duplicated per call site) so `hashString` can never silently drop from one of the two calls —
+/// a `TorrentInfo` with a missing hash defaults to `""` (#500), which would scope subsequent
+/// `torrent-verify`/`torrent-remove`/`torrent-get` calls to an empty-string id instead of failing
+/// loudly.
+const TORRENT_HEALTH_FIELDS: [&str; 6] =
+    ["id", "name", "error", "errorString", "status", "hashString"];
+
 /// Transmission's `tr_stat` error code for "the torrent has a local I/O problem" (missing or
 /// unreadable data, permissions, etc.). Codes `1`/`2` are tracker warning/error and carry
 /// `errorString` text controlled by the torrent's tracker, not the local filesystem — matching
@@ -1547,50 +1623,58 @@ fn is_missing_data_torrent(t: &servarr_api::TorrentInfo) -> bool {
             .contains(MISSING_DATA_ERROR_PATTERN)
 }
 
-/// Outcome of attempting to remediate a batch of stale torrents: which were removed as
-/// confirmed-orphaned, and which are still hash-checking (retried on the next reconcile).
+fn is_checking(t: &servarr_api::TorrentInfo) -> bool {
+    CHECKING_STATUSES.contains(&t.status)
+}
+
+/// Outcome of attempting to remediate a batch of stale torrents, addressed by their stable
+/// `hashString` (#500): which were removed as confirmed-orphaned, which were confirmed orphaned
+/// but left alone because `auto_remove` is disabled (#498), and which are still hash-checking
+/// (retried on the next reconcile).
+#[derive(Default)]
 struct RemediationOutcome {
-    removed: Vec<i64>,
-    still_pending: Vec<i64>,
+    removed: Vec<String>,
+    confirmed_orphaned: Vec<String>,
+    still_pending: Vec<String>,
 }
 
 /// Detect Transmission torrents whose on-disk data has gone missing, trigger a verify so
 /// Transmission re-checks, and remove torrents confirmed still broken once the verify
 /// settles (#483). Gated behind `apiHealthCheck.enabled` since it needs the same live RPC
-/// access as [`check_api_health`]; only applies to Transmission apps.
+/// access as [`check_api_health`]; only applies to Transmission apps. Removal additionally
+/// requires `apiHealthCheck.autoRemove` (#498).
 async fn check_download_client_health(
-    client: &Client,
     app: &ServarrApp,
     recorder: &Recorder,
     obj_ref: &k8s_openapi::api::core::v1::ObjectReference,
-    base_url_override: Option<&str>,
+    transmission_access: Option<&Result<TransmissionAccess, String>>,
 ) -> Option<Condition> {
     if app.spec.app != AppType::Transmission {
         return None;
     }
-    match app.spec.api_health_check.as_ref() {
-        Some(hc) if hc.enabled => {}
+    let auto_remove = match app.spec.api_health_check.as_ref() {
+        Some(hc) if hc.enabled => hc.auto_remove_orphaned_torrents,
         _ => return None,
-    }
-    let ns = app.namespace().unwrap_or_else(|| "default".into());
-    let ns = ns.as_str();
+    };
     let now = chrono_now();
 
-    let base_url = match resolve_service_base_url(app, ns, base_url_override) {
-        Ok(u) => u,
-        Err(e) => {
-            warn!(app = %app.name_any(), error = %e, "download-client health: failed to load app defaults");
-            return Some(download_health_unknown("DefaultsLoadError", e, &now));
+    let access = match transmission_access {
+        Some(Ok(a)) => a,
+        Some(Err(e)) => return Some(download_health_unknown("ClientBuildError", e.clone(), &now)),
+        None => {
+            return Some(download_health_unknown(
+                "ClientBuildError",
+                TRANSMISSION_CLIENT_UNRESOLVED.to_string(),
+                &now,
+            ));
         }
     };
-    let (tx_user, tx_pass) = read_transmission_admin_creds(client, app, ns).await;
-    // read_transmission_admin_creds degrades a partial credential read (one of
-    // username/password unreadable) to unauthenticated — acceptable for check_api_health's
-    // read-only probe, but this path can delete torrents, so fail closed instead of silently
-    // proceeding unauthenticated when adminCredentials was configured but only partly read.
-    if app.spec.admin_credentials.is_some() && tx_user.is_some() != tx_pass.is_some() {
+    // access.client is built from the same credential read `check_api_health`'s read-only probe
+    // uses, but this path can delete torrents, so fail closed instead of silently proceeding
+    // unauthenticated when adminCredentials was configured but couldn't be fully read (#483).
+    if access.credentials_incomplete {
         warn!(app = %app.name_any(),
-            "download-client health: adminCredentials secret is missing username or \
+            "download-client health: adminCredentials secret is missing username and/or \
              password, refusing to proceed unauthenticated on a destructive path");
         return Some(download_health_unknown(
             "CredentialReadError",
@@ -1598,25 +1682,9 @@ async fn check_download_client_health(
             &now,
         ));
     }
-    let tx_client = match servarr_api::TransmissionClient::new(
-        &base_url,
-        tx_user.as_deref(),
-        tx_pass.as_deref(),
-    ) {
-        Ok(c) => c,
-        Err(e) => {
-            warn!(app = %app.name_any(), error = %e.log_summary(),
-                    "download-client health: failed to build Transmission client");
-            return Some(download_health_unknown(
-                "ClientBuildError",
-                e.log_summary(),
-                &now,
-            ));
-        }
-    };
+    let tx_client = &access.client;
 
-    let fields = ["id", "name", "error", "errorString", "status"];
-    let torrents = match tx_client.torrent_get(&fields, None).await {
+    let torrents = match tx_client.torrent_get(&TORRENT_HEALTH_FIELDS, None).await {
         Ok(t) => t,
         Err(e) => {
             warn!(app = %app.name_any(), error = %e.log_summary(),
@@ -1632,6 +1700,20 @@ async fn check_download_client_health(
     let stale: Vec<_> = torrents
         .into_iter()
         .filter(is_missing_data_torrent)
+        .filter(|t| {
+            // hash_string defaults to "" (#[serde(default)]) if Transmission's response ever
+            // omits hashString despite it being requested. Skip rather than address an empty
+            // string via torrent-verify/torrent-remove -- an empty scope would misclassify as
+            // "settled" (vacuously true over zero results) and leave the torrent silently stuck
+            // in "still pending" forever instead of surfacing the anomaly (#500).
+            let has_hash = !t.hash_string.is_empty();
+            if !has_hash {
+                warn!(app = %app.name_any(), torrent_id = t.id,
+                    "download-client health: torrent reporting missing data has no hashString, \
+                     skipping until Transmission reports one");
+            }
+            has_hash
+        })
         .collect();
     if stale.is_empty() {
         return Some(Condition::ok(
@@ -1642,96 +1724,108 @@ async fn check_download_client_health(
         ));
     }
 
-    let outcome = remediate_stale_torrents(&tx_client, &stale).await;
+    let outcome = remediate_stale_torrents(tx_client, &stale, auto_remove).await;
     report_stale_torrents(recorder, obj_ref, &stale, &outcome).await;
 
     Some(build_download_health_condition(stale.len(), &outcome, &now))
 }
 
-/// Trigger `torrent-verify` on every stale torrent, wait for the verify to settle, then
-/// remove any that are still reporting missing data — Transmission's own re-check is the
-/// safety gate that distinguishes "transient" from "genuinely gone" (#483).
+/// Trigger `torrent-verify` on every stale torrent, wait for the verify to settle, then remove
+/// any that are still reporting missing data -- Transmission's own re-check is the safety gate
+/// that distinguishes "transient" from "genuinely gone" (#483). Torrents are addressed by their
+/// stable `hashString`, not the process-local numeric `id`, which can be reassigned to a
+/// different torrent if Transmission restarts inside the detect-to-remediate window (#500).
+/// Removal is skipped -- confirmed-orphaned torrents are reported but left alone -- unless
+/// `auto_remove` is set (#498).
 async fn remediate_stale_torrents(
     tx_client: &servarr_api::TransmissionClient,
     stale: &[servarr_api::TorrentInfo],
+    auto_remove: bool,
 ) -> RemediationOutcome {
     // Torrents Transmission is already hash-checking (e.g. verify was triggered on a
     // previous reconcile and hasn't finished) must not be re-verified — restarting the
     // hash-check on every 300s reconcile means a large torrent's verify never converges
     // and disk I/O never lets up (#483).
-    let already_checking: Vec<i64> = stale
+    let already_checking: Vec<String> = stale
         .iter()
-        .filter(|t| CHECKING_STATUSES.contains(&t.status))
-        .map(|t| t.id)
+        .filter(|t| is_checking(t))
+        .map(|t| t.hash_string.clone())
         .collect();
-    let ids: Vec<i64> = stale
+    let hashes: Vec<String> = stale
         .iter()
-        .filter(|t| !CHECKING_STATUSES.contains(&t.status))
-        .map(|t| t.id)
+        .filter(|t| !is_checking(t))
+        .map(|t| t.hash_string.clone())
         .collect();
-    if ids.is_empty() {
+    if hashes.is_empty() {
         return RemediationOutcome {
-            removed: Vec::new(),
             still_pending: already_checking,
+            ..Default::default()
         };
     }
+    let hash_refs: Vec<&str> = hashes.iter().map(String::as_str).collect();
 
-    if let Err(e) = tx_client.torrent_verify(&ids).await {
+    if let Err(e) = tx_client.torrent_verify(&hash_refs).await {
         warn!(error = %e.log_summary(), "download-client health: torrent-verify failed");
-        let mut still_pending = ids;
+        let mut still_pending = hashes;
         still_pending.extend(already_checking);
         return RemediationOutcome {
-            removed: Vec::new(),
             still_pending,
+            ..Default::default()
         };
     }
 
-    let settled = poll_until_settled(tx_client, &ids).await;
-    let still_erroring: Vec<i64> = settled
+    let settled = poll_until_settled(tx_client, &hash_refs).await;
+    let still_erroring: Vec<String> = settled
         .iter()
         .filter(|t| is_missing_data_torrent(t))
-        .map(|t| t.id)
+        .map(|t| t.hash_string.clone())
         .collect();
-    let mut still_checking: Vec<i64> = ids
-        .iter()
-        .copied()
-        .filter(|id| !settled.iter().any(|t| t.id == *id))
+    let mut still_checking: Vec<String> = hashes
+        .into_iter()
+        .filter(|h| !settled.iter().any(|t| &t.hash_string == h))
         .collect();
     still_checking.extend(already_checking);
 
-    if still_erroring.is_empty() {
+    // still_erroring.is_empty() falls through to the branches below rather than an early
+    // return: with auto_remove=false that's already `confirmed_orphaned: [] , still_pending:
+    // still_checking`, and with auto_remove=true, torrent_remove(&[]) is a documented no-op
+    // that produces the identical outcome -- both paths already agree, no need to special-case.
+    if !auto_remove {
         return RemediationOutcome {
-            removed: Vec::new(),
+            confirmed_orphaned: still_erroring,
             still_pending: still_checking,
+            ..Default::default()
         };
     }
 
+    let still_erroring_refs: Vec<&str> = still_erroring.iter().map(String::as_str).collect();
     match tx_client
-        .torrent_remove(&still_erroring, servarr_api::DeleteLocalData::No)
+        .torrent_remove(&still_erroring_refs, servarr_api::DeleteLocalData::No)
         .await
     {
         Ok(()) => RemediationOutcome {
             removed: still_erroring,
             still_pending: still_checking,
+            ..Default::default()
         },
         Err(e) => {
             warn!(error = %e.log_summary(), "download-client health: torrent-remove failed");
             let mut still_pending = still_erroring;
             still_pending.extend(still_checking);
             RemediationOutcome {
-                removed: Vec::new(),
                 still_pending,
+                ..Default::default()
             }
         }
     }
 }
 
-/// Poll `torrent-get` for `ids` until none are still hash-checking, or
+/// Poll `torrent-get` for `hashes` until none are still hash-checking, or
 /// [`VERIFY_POLL_ATTEMPTS`] is exhausted. Returns an empty `Vec` on timeout or RPC error —
 /// callers treat that as "still pending", never as grounds for removal.
 async fn poll_until_settled(
     tx_client: &servarr_api::TransmissionClient,
-    ids: &[i64],
+    hashes: &[&str],
 ) -> Vec<servarr_api::TorrentInfo> {
     // Transmission applies torrent-verify's status transition asynchronously relative to the
     // RPC response returning, so polling immediately risks reading the pre-verify snapshot —
@@ -1739,10 +1833,12 @@ async fn poll_until_settled(
     // torrent as "settled and still broken" before Transmission ever re-checked it (#483).
     // Sleep first to give the transition time to land.
     tokio::time::sleep(VERIFY_POLL_INTERVAL).await;
-    let fields = ["id", "name", "error", "errorString", "status"];
     for _ in 0..VERIFY_POLL_ATTEMPTS {
-        match tx_client.torrent_get(&fields, Some(ids)).await {
-            Ok(t) if t.iter().all(|x| !CHECKING_STATUSES.contains(&x.status)) => return t,
+        match tx_client
+            .torrent_get(&TORRENT_HEALTH_FIELDS, Some(hashes))
+            .await
+        {
+            Ok(t) if t.iter().all(|x| !is_checking(x)) => return t,
             Ok(_) => tokio::time::sleep(VERIFY_POLL_INTERVAL).await,
             Err(e) => {
                 warn!(error = %e.log_summary(), "download-client health: torrent-get (poll) failed");
@@ -1761,7 +1857,10 @@ async fn report_stale_torrents(
 ) {
     // Nothing needed remediation by the time this pass finished (e.g. every stale torrent
     // recovered during the verify poll) — no Warning worth surfacing.
-    if outcome.removed.is_empty() && outcome.still_pending.is_empty() {
+    if outcome.removed.is_empty()
+        && outcome.confirmed_orphaned.is_empty()
+        && outcome.still_pending.is_empty()
+    {
         return;
     }
 
@@ -1776,9 +1875,11 @@ async fn report_stale_torrents(
     );
     let ids: Vec<i64> = stale.iter().map(|t| t.id).collect();
     let note = format!(
-        "{} torrent(s) reporting missing data (ids: {ids:?}); {} removed as orphaned, {} pending verify",
+        "{} torrent(s) reporting missing data (ids: {ids:?}); {} removed as orphaned, \
+         {} confirmed orphaned but not removed, {} pending verify",
         stale.len(),
         outcome.removed.len(),
+        outcome.confirmed_orphaned.len(),
         outcome.still_pending.len(),
     );
     if let Err(e) = recorder
@@ -1805,6 +1906,7 @@ fn build_download_health_condition(
 ) -> Condition {
     let recovered = stale_count
         .saturating_sub(outcome.removed.len())
+        .saturating_sub(outcome.confirmed_orphaned.len())
         .saturating_sub(outcome.still_pending.len());
     if recovered == stale_count {
         return Condition::ok(
@@ -1818,8 +1920,10 @@ fn build_download_health_condition(
         condition_types::DOWNLOAD_DATA_HEALTHY,
         "MissingDataDetected",
         &format!(
-            "{stale_count} torrent(s) reporting missing data ({recovered} recovered, {} removed, {} pending verify)",
+            "{stale_count} torrent(s) reporting missing data ({recovered} recovered, {} removed, \
+             {} confirmed orphaned but not removed, {} pending verify)",
             outcome.removed.len(),
+            outcome.confirmed_orphaned.len(),
             outcome.still_pending.len(),
         ),
         now,
@@ -4411,6 +4515,7 @@ mod tests {
             error,
             error_string: error_string.to_string(),
             status: 0,
+            hash_string: format!("hash-{id}"),
         }
     }
 
@@ -4447,6 +4552,7 @@ mod tests {
     fn build_download_health_condition_all_recovered_is_ok() {
         let outcome = RemediationOutcome {
             removed: Vec::new(),
+            confirmed_orphaned: Vec::new(),
             still_pending: Vec::new(),
         };
         let cond = build_download_health_condition(2, &outcome, "2026-08-05T00:00:00Z");
@@ -4457,7 +4563,8 @@ mod tests {
     #[test]
     fn build_download_health_condition_removed_is_fail() {
         let outcome = RemediationOutcome {
-            removed: vec![1],
+            removed: vec!["hash1".to_string()],
+            confirmed_orphaned: Vec::new(),
             still_pending: Vec::new(),
         };
         let cond = build_download_health_condition(1, &outcome, "2026-08-05T00:00:00Z");
@@ -4470,11 +4577,27 @@ mod tests {
     fn build_download_health_condition_pending_is_fail() {
         let outcome = RemediationOutcome {
             removed: Vec::new(),
-            still_pending: vec![1, 2],
+            confirmed_orphaned: Vec::new(),
+            still_pending: vec!["hash1".to_string(), "hash2".to_string()],
         };
         let cond = build_download_health_condition(2, &outcome, "2026-08-05T00:00:00Z");
         assert_eq!(cond.status, "False");
         assert!(cond.message.contains("2 pending verify"));
+    }
+
+    #[test]
+    fn build_download_health_condition_confirmed_orphaned_is_fail_and_not_recovered() {
+        // Verified as still erroring but not removed because auto_remove is disabled (#498) --
+        // must not be counted as "recovered".
+        let outcome = RemediationOutcome {
+            removed: Vec::new(),
+            confirmed_orphaned: vec!["hash1".to_string()],
+            still_pending: Vec::new(),
+        };
+        let cond = build_download_health_condition(1, &outcome, "2026-08-05T00:00:00Z");
+        assert_eq!(cond.status, "False");
+        assert!(cond.message.contains("1 confirmed orphaned"));
+        assert!(cond.message.contains("0 removed"));
     }
 
     // ---- poll_until_settled (#483) ----
@@ -4487,14 +4610,14 @@ mod tests {
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "result": "success",
                 "arguments": {
-                    "torrents": [{"id": 1, "name": "x", "error": 3, "errorString": "no data found", "status": 0}]
+                    "torrents": [{"id": 1, "name": "x", "error": 3, "errorString": "no data found", "status": 0, "hashString": "hash-1"}]
                 }
             })))
             .mount(&mock_server)
             .await;
 
         let client = servarr_api::TransmissionClient::new(&mock_server.uri(), None, None).unwrap();
-        let settled = poll_until_settled(&client, &[1]).await;
+        let settled = poll_until_settled(&client, &["hash-1"]).await;
         assert_eq!(settled.len(), 1);
         assert_eq!(settled[0].status, 0);
     }
@@ -4507,14 +4630,14 @@ mod tests {
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "result": "success",
                 "arguments": {
-                    "torrents": [{"id": 1, "name": "x", "error": 3, "errorString": "no data found", "status": 2}]
+                    "torrents": [{"id": 1, "name": "x", "error": 3, "errorString": "no data found", "status": 2, "hashString": "hash-1"}]
                 }
             })))
             .mount(&mock_server)
             .await;
 
         let client = servarr_api::TransmissionClient::new(&mock_server.uri(), None, None).unwrap();
-        let settled = poll_until_settled(&client, &[1]).await;
+        let settled = poll_until_settled(&client, &["hash-1"]).await;
         assert!(
             settled.is_empty(),
             "still-checking torrents must not be treated as settled"
@@ -4546,16 +4669,17 @@ mod tests {
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "result": "success",
                 "arguments": {
-                    "torrents": [{"id": 1, "name": "x", "error": 3, "errorString": "no data found", "status": 0}]
+                    "torrents": [{"id": 1, "name": "x", "error": 3, "errorString": "no data found", "status": 0, "hashString": "hash-1"}]
                 }
             })))
             .mount(&mock_server)
             .await;
-        // torrent-remove: expect exactly one call, with delete-local-data=false
+        // torrent-remove: expect exactly one call, addressed by hash (not the numeric id) and
+        // with delete-local-data=false
         Mock::given(method("POST"))
             .and(path("/transmission/rpc"))
             .and(body_partial_json(
-                serde_json::json!({"method": "torrent-remove", "arguments": {"ids": [1], "delete-local-data": false}}),
+                serde_json::json!({"method": "torrent-remove", "arguments": {"ids": ["hash-1"], "delete-local-data": false}}),
             ))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "result": "success", "arguments": {}
@@ -4566,9 +4690,58 @@ mod tests {
 
         let client = servarr_api::TransmissionClient::new(&mock_server.uri(), None, None).unwrap();
         let stale = vec![torrent(1, 3, "no data found")];
-        let outcome = remediate_stale_torrents(&client, &stale).await;
+        let outcome = remediate_stale_torrents(&client, &stale, true).await;
 
-        assert_eq!(outcome.removed, vec![1]);
+        assert_eq!(outcome.removed, vec!["hash-1".to_string()]);
+        assert!(outcome.confirmed_orphaned.is_empty());
+        assert!(outcome.still_pending.is_empty());
+    }
+
+    #[tokio::test]
+    async fn remediate_stale_torrents_does_not_remove_when_auto_remove_disabled() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/transmission/rpc"))
+            .and(body_partial_json(
+                serde_json::json!({"method": "torrent-verify"}),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "result": "success", "arguments": {}
+            })))
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/transmission/rpc"))
+            .and(body_partial_json(serde_json::json!({"method": "torrent-get"})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "result": "success",
+                "arguments": {
+                    "torrents": [{"id": 1, "name": "x", "error": 3, "errorString": "no data found", "status": 0, "hashString": "hash-1"}]
+                }
+            })))
+            .mount(&mock_server)
+            .await;
+        // torrent-remove must never be called when auto_remove is disabled, even for a
+        // torrent confirmed still erroring after verify (#498).
+        Mock::given(method("POST"))
+            .and(path("/transmission/rpc"))
+            .and(body_partial_json(
+                serde_json::json!({"method": "torrent-remove"}),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "result": "success", "arguments": {}
+            })))
+            .expect(0)
+            .mount(&mock_server)
+            .await;
+
+        let client = servarr_api::TransmissionClient::new(&mock_server.uri(), None, None).unwrap();
+        let stale = vec![torrent(1, 3, "no data found")];
+        let outcome = remediate_stale_torrents(&client, &stale, false).await;
+
+        assert!(outcome.removed.is_empty());
+        assert_eq!(outcome.confirmed_orphaned, vec!["hash-1".to_string()]);
         assert!(outcome.still_pending.is_empty());
     }
 
@@ -4593,7 +4766,7 @@ mod tests {
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "result": "success",
                 "arguments": {
-                    "torrents": [{"id": 1, "name": "x", "error": 3, "errorString": "no data found", "status": 2}]
+                    "torrents": [{"id": 1, "name": "x", "error": 3, "errorString": "no data found", "status": 2, "hashString": "hash-1"}]
                 }
             })))
             .mount(&mock_server)
@@ -4613,10 +4786,11 @@ mod tests {
 
         let client = servarr_api::TransmissionClient::new(&mock_server.uri(), None, None).unwrap();
         let stale = vec![torrent(1, 3, "no data found")];
-        let outcome = remediate_stale_torrents(&client, &stale).await;
+        let outcome = remediate_stale_torrents(&client, &stale, true).await;
 
         assert!(outcome.removed.is_empty());
-        assert_eq!(outcome.still_pending, vec![1]);
+        assert!(outcome.confirmed_orphaned.is_empty());
+        assert_eq!(outcome.still_pending, vec!["hash-1".to_string()]);
     }
 
     #[tokio::test]
@@ -4640,10 +4814,11 @@ mod tests {
         let client = servarr_api::TransmissionClient::new(&mock_server.uri(), None, None).unwrap();
         let mut t = torrent(1, 3, "no data found");
         t.status = 2; // already verifying
-        let outcome = remediate_stale_torrents(&client, &[t]).await;
+        let outcome = remediate_stale_torrents(&client, &[t], true).await;
 
         assert!(outcome.removed.is_empty());
-        assert_eq!(outcome.still_pending, vec![1]);
+        assert!(outcome.confirmed_orphaned.is_empty());
+        assert_eq!(outcome.still_pending, vec!["hash-1".to_string()]);
     }
 
     // ---- report_stale_torrents (#483) ----
@@ -4660,7 +4835,8 @@ mod tests {
 
         let stale = vec![torrent(1, 3, "sensitive-torrent-name")];
         let outcome = RemediationOutcome {
-            removed: vec![1],
+            removed: vec!["hash-1".to_string()],
+            confirmed_orphaned: Vec::new(),
             still_pending: Vec::new(),
         };
         report_stale_torrents(&recorder, &obj_ref, &stale, &outcome).await;
@@ -4695,6 +4871,7 @@ mod tests {
         let stale = vec![torrent(1, 3, "no data found")];
         let outcome = RemediationOutcome {
             removed: Vec::new(),
+            confirmed_orphaned: Vec::new(),
             still_pending: Vec::new(),
         };
         report_stale_torrents(&recorder, &obj_ref, &stale, &outcome).await;
@@ -4727,6 +4904,7 @@ mod tests {
         app.spec.api_health_check = Some(servarr_crds::ApiHealthCheckSpec {
             enabled: true,
             interval_seconds: None,
+            auto_remove_orphaned_torrents: false,
         });
         app.spec.admin_credentials = Some(servarr_crds::AdminCredentialsSpec {
             secret_name: "tx-admin-creds".into(),
@@ -4734,7 +4912,13 @@ mod tests {
         let recorder = Recorder::new(client.clone(), "test".into());
         let obj_ref = app.object_ref(&());
 
-        let cond = check_download_client_health(&client, &app, &recorder, &obj_ref, None).await;
+        let access = resolve_transmission_access(&client, &app, "test", &mock_server.uri()).await;
+        assert!(
+            access.as_ref().is_ok_and(|a| a.credentials_incomplete),
+            "expected a resolved access with credentials_incomplete=true, got {access:?}"
+        );
+
+        let cond = check_download_client_health(&app, &recorder, &obj_ref, Some(&access)).await;
 
         let cond = cond.expect("a partial credential read must still surface a condition");
         assert_eq!(cond.condition_type, condition_types::DOWNLOAD_DATA_HEALTHY);
@@ -4746,6 +4930,143 @@ mod tests {
         assert!(
             events.is_empty(),
             "no Event should be published on a credential-read failure"
+        );
+    }
+
+    #[tokio::test]
+    async fn check_download_client_health_fails_closed_on_total_credential_read_failure() {
+        // adminCredentials is configured, but the secret doesn't exist at all (deleted,
+        // renamed, RBAC revoked) -- both username and password reads fail, landing back at
+        // (None, None). Must still fail closed, not be mistaken for "adminCredentials unset".
+        let mock_server = MockServer::start().await;
+        let client = build_mock_client(&mock_server.uri()).await;
+        mount_event_post_mock(&mock_server).await;
+        // Deliberately no mount_secret_mock call -- the GET 404s.
+
+        let mut app = make_test_app("my-transmission", "test", AppType::Transmission);
+        app.spec.api_health_check = Some(servarr_crds::ApiHealthCheckSpec {
+            enabled: true,
+            interval_seconds: None,
+            auto_remove_orphaned_torrents: false,
+        });
+        app.spec.admin_credentials = Some(servarr_crds::AdminCredentialsSpec {
+            secret_name: "tx-admin-creds".into(),
+        });
+        let recorder = Recorder::new(client.clone(), "test".into());
+        let obj_ref = app.object_ref(&());
+
+        let access = resolve_transmission_access(&client, &app, "test", &mock_server.uri()).await;
+        assert!(
+            access.as_ref().is_ok_and(|a| a.credentials_incomplete),
+            "expected credentials_incomplete=true on total read failure, got {access:?}"
+        );
+
+        let cond = check_download_client_health(&app, &recorder, &obj_ref, Some(&access)).await;
+
+        let cond = cond.expect("a total credential read failure must still surface a condition");
+        assert_eq!(cond.status, "Unknown");
+        assert_eq!(cond.reason, "CredentialReadError");
+
+        let events = event_post_bodies(&mock_server).await;
+        assert!(
+            events.is_empty(),
+            "no Event should be published on a credential-read failure"
+        );
+    }
+
+    // ---- transmission_access is shared across both health checks (#499) ----
+
+    #[tokio::test]
+    async fn transmission_access_is_shared_between_health_checks() {
+        let mock_server = MockServer::start().await;
+        let client = build_mock_client(&mock_server.uri()).await;
+        mount_event_post_mock(&mock_server).await;
+
+        // adminCredentials secret — read once by resolve_transmission_access, reused by both
+        // checks (2 Secret GETs total, not 4).
+        mount_secret_mock(
+            &mock_server,
+            "test",
+            "tx-admin-creds",
+            json!({"username": "YWRtaW4=", "password": "c2VjcmV0"}),
+        )
+        .await;
+        // apiKeySecret — only needed to pass check_api_health's generic per-app-type gate;
+        // its content is unused by the Transmission arm.
+        mount_secret_mock(
+            &mock_server,
+            "test",
+            "tx-api-key",
+            json!({"api-key": "dW51c2Vk"}),
+        )
+        .await;
+
+        // Only the first RPC call on the shared client should trigger the session-ID
+        // handshake -- if the client were rebuilt for the second check, it would handshake
+        // again, and this `.expect(1)` would fail when the mock server is checked on drop.
+        Mock::given(method("POST"))
+            .and(path("/transmission/rpc"))
+            .respond_with(
+                ResponseTemplate::new(409)
+                    .append_header("X-Transmission-Session-Id", "sess-shared"),
+            )
+            .up_to_n_times(1)
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/transmission/rpc"))
+            .and(body_partial_json(
+                serde_json::json!({"method": "session-get"}),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "result": "success",
+                "arguments": {"version": "4.0.0"}
+            })))
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/transmission/rpc"))
+            .and(body_partial_json(
+                serde_json::json!({"method": "torrent-get"}),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "result": "success",
+                "arguments": {"torrents": []}
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let mut app = make_test_app("my-transmission", "test", AppType::Transmission);
+        app.spec.api_health_check = Some(servarr_crds::ApiHealthCheckSpec {
+            enabled: true,
+            interval_seconds: None,
+            auto_remove_orphaned_torrents: false,
+        });
+        app.spec.admin_credentials = Some(servarr_crds::AdminCredentialsSpec {
+            secret_name: "tx-admin-creds".into(),
+        });
+        app.spec.api_key_secret = Some("tx-api-key".into());
+        let recorder = Recorder::new(client.clone(), "test".into());
+        let obj_ref = app.object_ref(&());
+
+        let access = resolve_transmission_access(&client, &app, "test", &mock_server.uri()).await;
+        assert!(access.is_ok(), "expected access to resolve, got {access:?}");
+
+        let (health_cond, _update_cond) =
+            check_api_health(&client, &app, None, Some(&access)).await;
+        assert_eq!(
+            health_cond.map(|c| c.status),
+            Some("True".to_string()),
+            "expected the shared client's session-get to succeed"
+        );
+
+        let download_cond =
+            check_download_client_health(&app, &recorder, &obj_ref, Some(&access)).await;
+        assert_eq!(
+            download_cond.map(|c| c.reason),
+            Some("NoStaleData".to_string()),
+            "expected the shared client's torrent-get to succeed with no stale torrents"
         );
     }
 
@@ -5591,7 +5912,7 @@ mod tests {
         let mock_server = wiremock::MockServer::start().await;
         let client = build_mock_client(&mock_server.uri()).await;
         let app = make_test_app("my-sonarr", "test", AppType::Sonarr);
-        let (h, u) = check_api_health(&client, &app, None).await;
+        let (h, u) = check_api_health(&client, &app, None, None).await;
         assert!(h.is_none());
         assert!(u.is_none());
     }
@@ -5605,9 +5926,10 @@ mod tests {
         app.spec.api_health_check = Some(ApiHealthCheckSpec {
             enabled: true,
             interval_seconds: None,
+            auto_remove_orphaned_torrents: false,
         });
         // api_key_secret still None → early return (None, None)
-        let (h, u) = check_api_health(&client, &app, None).await;
+        let (h, u) = check_api_health(&client, &app, None, None).await;
         assert!(h.is_none());
         assert!(u.is_none());
     }
@@ -5625,6 +5947,7 @@ mod tests {
         app.spec.api_health_check = Some(ApiHealthCheckSpec {
             enabled: true,
             interval_seconds: None,
+            auto_remove_orphaned_torrents: false,
         });
         app.spec.api_key_secret = Some("sonarr-apikey".to_string());
 
@@ -5652,7 +5975,7 @@ mod tests {
             .await;
 
         let mock_uri = mock_server.uri();
-        let (h, u) = check_api_health(&client, &app, Some(&mock_uri)).await;
+        let (h, u) = check_api_health(&client, &app, Some(&mock_uri), None).await;
 
         let h = h.expect("health condition must be set");
         assert_eq!(h.status, "True", "should be healthy");
@@ -5675,6 +5998,7 @@ mod tests {
         app.spec.api_health_check = Some(ApiHealthCheckSpec {
             enabled: true,
             interval_seconds: None,
+            auto_remove_orphaned_torrents: false,
         });
         app.spec.api_key_secret = Some("sonarr-apikey".to_string());
 
@@ -5698,7 +6022,7 @@ mod tests {
             .await;
 
         let mock_uri = mock_server.uri();
-        let (h, _u) = check_api_health(&client, &app, Some(&mock_uri)).await;
+        let (h, _u) = check_api_health(&client, &app, Some(&mock_uri), None).await;
 
         let h = h.expect("health condition must be set");
         assert_eq!(h.reason, "ApiError");
@@ -5795,6 +6119,7 @@ mod tests {
         app.spec.api_health_check = Some(ApiHealthCheckSpec {
             enabled: true,
             interval_seconds: None,
+            auto_remove_orphaned_torrents: false,
         });
         app.spec.api_key_secret = Some("sonarr-apikey".to_string());
 
@@ -5823,7 +6148,7 @@ mod tests {
             .await;
 
         let mock_uri = mock_server.uri();
-        let (h, _u) = check_api_health(&client, &app, Some(&mock_uri)).await;
+        let (h, _u) = check_api_health(&client, &app, Some(&mock_uri), None).await;
 
         let h = h.expect("health condition must be set");
         assert_eq!(h.status, "False", "empty version should be unhealthy");
@@ -5843,6 +6168,7 @@ mod tests {
         app.spec.api_health_check = Some(ApiHealthCheckSpec {
             enabled: true,
             interval_seconds: None,
+            auto_remove_orphaned_torrents: false,
         });
         app.spec.api_key_secret = Some("sonarr-apikey".to_string());
 
@@ -5875,7 +6201,7 @@ mod tests {
             .await;
 
         let mock_uri = mock_server.uri();
-        let (_h, u) = check_api_health(&client, &app, Some(&mock_uri)).await;
+        let (_h, u) = check_api_health(&client, &app, Some(&mock_uri), None).await;
 
         let u = u.expect("update condition must be set");
         assert_eq!(u.status, "True");
@@ -8048,6 +8374,7 @@ mod tests {
         app.spec.api_health_check = Some(servarr_crds::ApiHealthCheckSpec {
             enabled: true,
             interval_seconds: None,
+            auto_remove_orphaned_torrents: false,
         });
 
         Mock::given(method("GET"))
@@ -8059,7 +8386,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let (health_cond, update_cond) = check_api_health(&client, &app, None).await;
+        let (health_cond, update_cond) = check_api_health(&client, &app, None, None).await;
         let cond = health_cond.expect("should return Some(Condition) when secret not found");
         assert_eq!(cond.status, "Unknown");
         assert_eq!(cond.reason, "SecretReadError");
