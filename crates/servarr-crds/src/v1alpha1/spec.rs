@@ -109,9 +109,9 @@ pub struct ServarrAppSpec {
     #[serde(default)]
     pub prowlarr_sync: Option<ProwlarrSyncSpec>,
 
-    /// Overseerr cross-app synchronization. Only applies to Overseerr-type apps.
-    #[serde(default)]
-    pub overseerr_sync: Option<OverseerrSyncSpec>,
+    /// Seerr cross-app synchronization. Only applies to Seerr-type apps.
+    #[serde(default, alias = "overseerrSync")]
+    pub seerr_sync: Option<SeerrSyncSpec>,
 
     /// Bazarr cross-app synchronization. Only applies to Bazarr-type apps.
     #[serde(default)]
@@ -145,7 +145,8 @@ pub enum AppType {
     Sabnzbd,
     Transmission,
     Tautulli,
-    Overseerr,
+    #[serde(alias = "Overseerr")]
+    Seerr,
     Maintainerr,
     Jackett,
     Jellyfin,
@@ -165,7 +166,7 @@ impl AppType {
             Self::Sabnzbd => "sabnzbd",
             Self::Transmission => "transmission",
             Self::Tautulli => "tautulli",
-            Self::Overseerr => "overseerr",
+            Self::Seerr => "seerr",
             Self::Maintainerr => "maintainerr",
             Self::Jackett => "jackett",
             Self::Jellyfin => "jellyfin",
@@ -181,14 +182,14 @@ impl AppType {
     /// - Tier 0 — Infrastructure & Media Servers (Plex, Jellyfin, SshBastion)
     /// - Tier 1 — Download Clients (Sabnzbd, Transmission)
     /// - Tier 2 — Media Managers (Sonarr, Radarr, Lidarr)
-    /// - Tier 3 — Ancillary (Tautulli, Overseerr, Maintainerr, Prowlarr, Jackett, Bazarr, Subgen)
+    /// - Tier 3 — Ancillary (Tautulli, Seerr, Maintainerr, Prowlarr, Jackett, Bazarr, Subgen)
     pub fn tier(&self) -> u8 {
         match self {
             Self::Plex | Self::Jellyfin | Self::SshBastion => 0,
             Self::Sabnzbd | Self::Transmission => 1,
             Self::Sonarr | Self::Radarr | Self::Lidarr => 2,
             Self::Tautulli
-            | Self::Overseerr
+            | Self::Seerr
             | Self::Maintainerr
             | Self::Prowlarr
             | Self::Jackett

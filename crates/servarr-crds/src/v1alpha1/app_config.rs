@@ -8,7 +8,8 @@ pub enum AppConfig {
     Sabnzbd(SabnzbdConfig),
     Prowlarr(ProwlarrConfig),
     SshBastion(SshBastionConfig),
-    Overseerr(Box<OverseerrConfig>),
+    #[serde(alias = "overseerr")]
+    Seerr(Box<SeerrConfig>),
     Lidarr(LidarrConfig),
 }
 
@@ -189,28 +190,28 @@ pub struct RestrictedRsyncConfig {
     pub allowed_paths: Vec<String>,
 }
 
-// --- Overseerr ---
+// --- Seerr ---
 
-/// Overseerr integration configuration.
+/// Seerr integration configuration.
 ///
 /// Provides default Sonarr and Radarr server settings used when the operator
-/// auto-registers discovered instances in Overseerr.
+/// auto-registers discovered instances in Seerr.
 #[derive(Serialize, Deserialize, Clone, Debug, Default, JsonSchema)]
 #[serde(rename_all = "camelCase")]
-pub struct OverseerrConfig {
-    /// Default Sonarr server settings for Overseerr registration.
+pub struct SeerrConfig {
+    /// Default Sonarr server settings for Seerr registration.
     #[serde(default)]
-    pub sonarr: Option<OverseerrServerDefaults>,
-    /// Default Radarr server settings for Overseerr registration.
+    pub sonarr: Option<SeerrServerDefaults>,
+    /// Default Radarr server settings for Seerr registration.
     #[serde(default)]
-    pub radarr: Option<OverseerrServerDefaults>,
+    pub radarr: Option<SeerrServerDefaults>,
 }
 
-/// Default settings applied when registering a Sonarr or Radarr server in Overseerr.
+/// Default settings applied when registering a Sonarr or Radarr server in Seerr.
 #[derive(Serialize, Deserialize, Clone, Debug, Default, JsonSchema)]
 #[serde(rename_all = "camelCase")]
-pub struct OverseerrServerDefaults {
-    /// Quality profile ID to set as active in Overseerr.
+pub struct SeerrServerDefaults {
+    /// Quality profile ID to set as active in Seerr.
     pub profile_id: f64,
     /// Quality profile name.
     pub profile_name: String,
@@ -224,13 +225,13 @@ pub struct OverseerrServerDefaults {
     pub enable_season_folders: Option<bool>,
     /// 4K variant overrides (used when the server is a 4K instance).
     #[serde(default)]
-    pub four_k: Option<OverseerrServerDefaults4k>,
+    pub four_k: Option<SeerrServerDefaults4k>,
 }
 
-/// Override settings for 4K instances registered in Overseerr.
+/// Override settings for 4K instances registered in Seerr.
 #[derive(Serialize, Deserialize, Clone, Debug, Default, JsonSchema)]
 #[serde(rename_all = "camelCase")]
-pub struct OverseerrServerDefaults4k {
+pub struct SeerrServerDefaults4k {
     /// Quality profile ID for the 4K instance.
     pub profile_id: f64,
     /// Quality profile name for the 4K instance.

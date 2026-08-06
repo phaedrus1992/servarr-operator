@@ -126,7 +126,7 @@ fn test_crd_serde_roundtrip_all_fields() {
         )])),
         gpu: None,
         prowlarr_sync: None,
-        overseerr_sync: None,
+        seerr_sync: None,
         bazarr_sync: None,
         subgen_sync: None,
         maintainerr_sync: None,
@@ -154,7 +154,7 @@ fn test_defaults_for_all_app_types() {
         AppType::Sabnzbd,
         AppType::Transmission,
         AppType::Tautulli,
-        AppType::Overseerr,
+        AppType::Seerr,
         AppType::Maintainerr,
         AppType::Jackett,
         AppType::Jellyfin,
@@ -208,7 +208,7 @@ fn test_config_only_apps() {
     let config_only = vec![
         AppType::Prowlarr,
         AppType::Tautulli,
-        AppType::Overseerr,
+        AppType::Seerr,
         AppType::Jackett,
         AppType::Maintainerr,
         AppType::Jellyfin,
@@ -468,4 +468,38 @@ fn test_status_serde() {
     assert!(deserialized.ready);
     assert_eq!(deserialized.ready_replicas, 1);
     assert_eq!(deserialized.conditions.len(), 1);
+}
+
+#[test]
+fn app_type_deserializes_legacy_overseerr_spelling() {
+    let parsed: AppType = serde_json::from_str("\"Overseerr\"").unwrap();
+    assert_eq!(parsed, AppType::Seerr);
+}
+
+#[test]
+fn app_type_serializes_as_seerr() {
+    let json = serde_json::to_string(&AppType::Seerr).unwrap();
+    assert_eq!(json, "\"Seerr\"");
+}
+
+#[test]
+fn seerr_sync_field_deserializes_legacy_overseerr_sync_spelling() {
+    let spec = ServarrAppSpec {
+        app: AppType::Seerr,
+        seerr_sync: Some(SeerrSyncSpec {
+            enabled: true,
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let json = serde_json::to_string(&spec).unwrap();
+    // Simulate a CR persisted before the rename: same JSON, but with the old field name.
+    let legacy_json = json.replace("\"seerrSync\"", "\"overseerrSync\"");
+    assert!(
+        legacy_json.contains("overseerrSync"),
+        "test setup: legacy_json should contain the old field name"
+    );
+    let deserialized: ServarrAppSpec = serde_json::from_str(&legacy_json).unwrap();
+    assert!(deserialized.seerr_sync.is_some());
+    assert!(deserialized.seerr_sync.unwrap().enabled);
 }

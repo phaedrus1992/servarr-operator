@@ -429,7 +429,7 @@ fn security_profile_custom_has_custom_type() {
 }
 
 // ---------------------------------------------------------------------------
-// ProwlarrSyncSpec::default and OverseerrSyncSpec::default
+// ProwlarrSyncSpec::default and SeerrSyncSpec::default
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -441,8 +441,8 @@ fn prowlarr_sync_spec_default_values() {
 }
 
 #[test]
-fn overseerr_sync_spec_default_values() {
-    let spec = OverseerrSyncSpec::default();
+fn seerr_sync_spec_default_values() {
+    let spec = SeerrSyncSpec::default();
     assert!(!spec.enabled);
     assert!(spec.namespace_scope.is_none());
     assert!(spec.auto_remove);

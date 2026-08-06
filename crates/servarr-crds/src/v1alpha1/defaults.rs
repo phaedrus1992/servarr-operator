@@ -110,7 +110,7 @@ impl AppDefaults {
             AppType::Sabnzbd,
             AppType::Transmission,
             AppType::Tautulli,
-            AppType::Overseerr,
+            AppType::Seerr,
             AppType::Maintainerr,
             AppType::Jackett,
             AppType::Jellyfin,

@@ -495,7 +495,7 @@ fn app_type_serde_roundtrip_all_variants() {
         AppType::Sabnzbd,
         AppType::Transmission,
         AppType::Tautulli,
-        AppType::Overseerr,
+        AppType::Seerr,
         AppType::Maintainerr,
         AppType::Jackett,
         AppType::Jellyfin,

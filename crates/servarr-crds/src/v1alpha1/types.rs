@@ -637,26 +637,26 @@ impl Default for ProwlarrSyncSpec {
     }
 }
 
-/// Configuration for Overseerr cross-app synchronization.
+/// Configuration for Seerr cross-app synchronization.
 ///
-/// When enabled on an Overseerr-type ServarrApp, the operator discovers
+/// When enabled on a Seerr-type ServarrApp, the operator discovers
 /// Sonarr/Radarr instances in the target namespace and registers them as
-/// servers in Overseerr with correct `is4k`/`isDefault` flags.
+/// servers in Seerr with correct `is4k`/`isDefault` flags.
 #[derive(Serialize, Deserialize, Clone, Debug, JsonSchema)]
 #[serde(rename_all = "camelCase")]
-pub struct OverseerrSyncSpec {
-    /// Whether Overseerr sync is enabled.
+pub struct SeerrSyncSpec {
+    /// Whether Seerr sync is enabled.
     #[serde(default)]
     pub enabled: bool,
-    /// Namespace to discover apps in. Defaults to the Overseerr CR's namespace.
+    /// Namespace to discover apps in. Defaults to the Seerr CR's namespace.
     #[serde(default)]
     pub namespace_scope: Option<String>,
-    /// Whether to remove servers from Overseerr when their CRs are deleted.
+    /// Whether to remove servers from Seerr when their CRs are deleted.
     #[serde(default = "default_true")]
     pub auto_remove: bool,
 }
 
-impl Default for OverseerrSyncSpec {
+impl Default for SeerrSyncSpec {
     fn default() -> Self {
         Self {
             enabled: false,
@@ -711,10 +711,10 @@ pub struct SubgenSyncSpec {
     pub namespace_scope: Option<String>,
 }
 
-/// Sync spec for Maintainerr → Sonarr/Radarr/Overseerr/Tautulli/Plex integration.
+/// Sync spec for Maintainerr → Sonarr/Radarr/Seerr/Tautulli/Plex integration.
 ///
 /// When enabled on a Maintainerr-type ServarrApp, the operator discovers
-/// Sonarr, Radarr, Overseerr, Tautulli, and Plex instances in the target
+/// Sonarr, Radarr, Seerr, Tautulli, and Plex instances in the target
 /// namespace and registers them in Maintainerr for media management.
 #[derive(Serialize, Deserialize, Clone, Debug, Default, JsonSchema)]
 #[serde(rename_all = "camelCase")]
