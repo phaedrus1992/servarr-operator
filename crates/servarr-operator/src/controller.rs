@@ -325,24 +325,40 @@ pub async fn reconcile(app: Arc<ServarrApp>, ctx: Arc<Context>) -> Result<Action
     // Deployment first so the patch below recreates it fresh. PVCs are owned
     // by the ServarrApp CR, not the Deployment (see servarr_resources::pvc),
     // so deleting the Deployment never touches persisted data.
-    if let Ok(existing) = deploy_api.get(&name).await {
-        let live_selector = existing
-            .spec
-            .as_ref()
-            .and_then(|s| s.selector.match_labels.as_ref());
-        let desired_selector = deployment
-            .spec
-            .as_ref()
-            .and_then(|s| s.selector.match_labels.as_ref());
-        if live_selector != desired_selector {
-            warn!(
-                %name,
-                "Deployment selector changed (immutable field) — deleting to recreate"
-            );
-            deploy_api
-                .delete(&name, &DeleteParams::default())
-                .await
-                .map_err(Error::Kube)?;
+    match deploy_api.get(&name).await {
+        Err(kube::Error::Api(err)) if err.code == 404 => {}
+        Err(e) => return Err(Error::Kube(e)),
+        Ok(existing) => {
+            // Only ever delete a Deployment this ServarrApp owns. A foreign
+            // object with a colliding name must not be torn down by our
+            // reconcile; the SSA patch below will surface any real conflict.
+            let owned_by_app = existing
+                .metadata
+                .owner_references
+                .as_deref()
+                .unwrap_or_default()
+                .iter()
+                .any(|r| Some(r.uid.as_str()) == app.metadata.uid.as_deref());
+            if owned_by_app {
+                let live_selector = existing
+                    .spec
+                    .as_ref()
+                    .and_then(|s| s.selector.match_labels.as_ref());
+                let desired_selector = deployment
+                    .spec
+                    .as_ref()
+                    .and_then(|s| s.selector.match_labels.as_ref());
+                if live_selector != desired_selector {
+                    warn!(
+                        %name,
+                        "Deployment selector changed (immutable field) — deleting to recreate"
+                    );
+                    deploy_api
+                        .delete(&name, &DeleteParams::default())
+                        .await
+                        .map_err(Error::Kube)?;
+                }
+            }
         }
     }
 

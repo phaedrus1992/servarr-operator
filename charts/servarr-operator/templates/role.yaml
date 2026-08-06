@@ -16,10 +16,11 @@ rules:
   - apiGroups: ["servarr.dev"]
     resources: ["mediastacks", "mediastacks/status"]
     verbs: ["get", "list", "watch", "patch"]
-  # Deployments: owns() watch + get for drift/status + SSA create/patch
+  # Deployments: owns() watch + get for drift/status + SSA create/patch;
+  # delete only on immutable-selector drift (issue #44)
   - apiGroups: ["apps"]
     resources: ["deployments"]
-    verbs: ["get", "list", "watch", "create", "patch"]
+    verbs: ["get", "list", "watch", "create", "patch", "delete"]
   # StatefulSets: NFS server SSA create/patch + delete on cleanup
   - apiGroups: ["apps"]
     resources: ["statefulsets"]
