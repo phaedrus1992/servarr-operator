@@ -577,3 +577,99 @@ fn seerr_sync_field_deserializes_legacy_overseerr_sync_spelling() {
     assert!(deserialized.seerr_sync.is_some());
     assert!(deserialized.seerr_sync.unwrap().enabled);
 }
+
+// ── Property test: AppConfig::Seerr legacy "overseerr" discriminator ──
+//
+// The AppConfig enum renames the Overseerr variant to Seerr with
+// #[serde(alias = "overseerr")]. For any generated Seerr config, feeding the
+// old discriminator through deserialization must reproduce the new one.
+
+mod app_config_seerr_alias {
+    use proptest::prelude::*;
+    use servarr_crds::*;
+
+    /// Quality profile IDs are small integers, so generate an f64 from an i32:
+    /// NaN/Inf would serialize as JSON null and not round-trip, and serde_json's
+    /// float parser is off-by-one-ULP for some values above 2^52 (reproduced
+    /// with 7.37e15). i32 magnitudes round-trip exactly — keep it deterministic.
+    fn finite_f64() -> impl Strategy<Value = f64> {
+        any::<i32>().prop_map(|v| v as f64)
+    }
+
+    fn seerr_server_defaults_4k() -> impl Strategy<Value = SeerrServerDefaults4k> {
+        (
+            finite_f64(),
+            any::<String>(),
+            any::<String>(),
+            proptest::option::of(any::<String>()),
+            proptest::option::of(any::<bool>()),
+        )
+            .prop_map(
+                |(
+                    profile_id,
+                    profile_name,
+                    root_folder,
+                    minimum_availability,
+                    enable_season_folders,
+                )| SeerrServerDefaults4k {
+                    profile_id,
+                    profile_name,
+                    root_folder,
+                    minimum_availability,
+                    enable_season_folders,
+                },
+            )
+    }
+
+    fn seerr_server_defaults() -> impl Strategy<Value = SeerrServerDefaults> {
+        (
+            finite_f64(),
+            any::<String>(),
+            any::<String>(),
+            proptest::option::of(any::<String>()),
+            proptest::option::of(any::<bool>()),
+            proptest::option::of(seerr_server_defaults_4k()),
+        )
+            .prop_map(
+                |(
+                    profile_id,
+                    profile_name,
+                    root_folder,
+                    minimum_availability,
+                    enable_season_folders,
+                    four_k,
+                )| SeerrServerDefaults {
+                    profile_id,
+                    profile_name,
+                    root_folder,
+                    minimum_availability,
+                    enable_season_folders,
+                    four_k,
+                },
+            )
+    }
+
+    fn seerr_config() -> impl Strategy<Value = SeerrConfig> {
+        (
+            proptest::option::of(seerr_server_defaults()),
+            proptest::option::of(seerr_server_defaults()),
+        )
+            .prop_map(|(sonarr, radarr)| SeerrConfig { sonarr, radarr })
+    }
+
+    proptest! {
+        #[test]
+        fn seerr_app_config_deserializes_legacy_overseerr_discriminator(config in seerr_config()) {
+            let canonical = AppConfig::Seerr(Box::new(config));
+            let json = serde_json::to_string(&canonical).unwrap();
+            // Simulate a CR persisted before the rename: the old "overseerr" discriminator.
+            let legacy_json = json.replace("\"Seerr\"", "\"overseerr\"");
+            let parsed: AppConfig = serde_json::from_str(&legacy_json).unwrap();
+            let reserialized = serde_json::to_string(&parsed).unwrap();
+            prop_assert_eq!(
+                reserialized, json,
+                "deserializing the legacy overseerr discriminator must reproduce the Seerr form"
+            );
+        }
+    }
+}
