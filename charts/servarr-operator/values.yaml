@@ -106,7 +106,7 @@ defaultImages:
     tag: "1.6.0"
   subgen:
     repository: mccloud/subgen
-    tag: "2026.07.2"
+    tag: "2026.07.3"
   jellyfin:
     repository: linuxserver/jellyfin
     tag: "10.11.11"
