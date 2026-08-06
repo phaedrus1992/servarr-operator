@@ -6,7 +6,7 @@ use futures::StreamExt;
 use k8s_openapi::api::apps::v1::Deployment;
 use k8s_openapi::api::core::v1::{ConfigMap, PersistentVolumeClaim, Secret, Service};
 use k8s_openapi::api::networking::v1::NetworkPolicy;
-use kube::api::{Api, Patch, PatchParams, PostParams};
+use kube::api::{Api, DeleteParams, Patch, PatchParams, PostParams};
 use kube::runtime::controller::{Action, Controller};
 use kube::runtime::events::{Event, EventType, Recorder};
 use kube::runtime::reflector::{self, ObjectRef};
@@ -315,6 +315,37 @@ pub async fn reconcile(app: Arc<ServarrApp>, ctx: Arc<Context>) -> Result<Action
     let deployment = servarr_resources::deployment::build(&app, &ctx.image_overrides)
         .map_err(Error::AppDefaults)?;
     let deploy_api = Api::<Deployment>::namespaced(client.clone(), &ns);
+
+    // Issue #44: an AppType rename (e.g. Overseerr -> Seerr) changes the
+    // `app.kubernetes.io/name` selector label baked into
+    // Deployment.spec.selector.matchLabels. That field is immutable on
+    // apps/v1, so SSA-patching an existing Deployment whose live selector no
+    // longer matches the desired one is rejected by the API server, wedging
+    // reconciliation forever. Detect that drift and delete the stale
+    // Deployment first so the patch below recreates it fresh. PVCs are owned
+    // by the ServarrApp CR, not the Deployment (see servarr_resources::pvc),
+    // so deleting the Deployment never touches persisted data.
+    if let Ok(existing) = deploy_api.get(&name).await {
+        let live_selector = existing
+            .spec
+            .as_ref()
+            .and_then(|s| s.selector.match_labels.as_ref());
+        let desired_selector = deployment
+            .spec
+            .as_ref()
+            .and_then(|s| s.selector.match_labels.as_ref());
+        if live_selector != desired_selector {
+            warn!(
+                %name,
+                "Deployment selector changed (immutable field) — deleting to recreate"
+            );
+            deploy_api
+                .delete(&name, &DeleteParams::default())
+                .await
+                .map_err(Error::Kube)?;
+        }
+    }
+
     tracing::debug!(%name, "SSA: applying Deployment");
     deploy_api
         .patch(&name, &pp, &Patch::Apply(&deployment))
