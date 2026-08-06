@@ -720,7 +720,7 @@ Enables API-level health checking that hits the application's API endpoint (rath
 |---|---|---|
 | `enabled` | `bool` | `false` |
 | `intervalSeconds` | `uint32` | `60` (when omitted) |
-| `autoRemove` | `bool` | `false` |
+| `autoRemoveOrphanedTorrents` | `bool` | `false` |
 
 ```yaml
 spec:
@@ -732,7 +732,7 @@ spec:
 
 **Transmission download-client self-heal.** For `Transmission`-type apps, `apiHealthCheck.enabled: true` also turns on detection of torrents whose on-disk data has gone missing -- e.g. an external cleanup job deleted files a torrent still references in its session, and it starts reporting `"No data found!"`. Unlike the general health check above, this does **not** require `apiKeySecret` (Transmission auth uses `adminCredentials` instead, if configured).
 
-Each reconcile, the operator: detects torrents reporting a local data error, and triggers Transmission's own `torrent-verify` to re-check the files. Detection alone -- the `DownloadDataMissing` Warning Event and the `DownloadDataHealthy` status condition -- only needs `apiHealthCheck.enabled`. Actually **removing** a torrent confirmed still missing its data after the verify additionally requires `apiHealthCheck.autoRemove: true` -- a separate, destructive opt-in, so upgrading to a version with self-heal (or copying `enabled: true` from these docs) never starts deleting torrent entries without explicit consent. With `autoRemove` left at its default `false`, a confirmed-orphaned torrent is reported (as `MissingDataDetected`, "confirmed orphaned") but left alone. When `autoRemove: true`, the operator removes it (never the same pass it was detected, and never while Transmission is still hash-checking it).
+Each reconcile, the operator: detects torrents reporting a local data error, and triggers Transmission's own `torrent-verify` to re-check the files. Detection alone -- the `DownloadDataMissing` Warning Event and the `DownloadDataHealthy` status condition -- only needs `apiHealthCheck.enabled`. Actually **removing** a torrent confirmed still missing its data after the verify additionally requires `apiHealthCheck.autoRemoveOrphanedTorrents: true` -- a separate, destructive opt-in (deliberately not named `autoRemove`, unlike this CRD's sync-block `autoRemove` fields below, which default to `true` and mean the much milder "deregister on CR delete"), so upgrading to a version with self-heal (or copying `enabled: true` from these docs) never starts deleting torrent entries without explicit consent. With `autoRemoveOrphanedTorrents` left at its default `false`, a confirmed-orphaned torrent is reported (as `MissingDataDetected`, "confirmed orphaned") but left alone. When `autoRemoveOrphanedTorrents: true`, the operator removes it (never the same pass it was detected, and never while Transmission is still hash-checking it) -- only Transmission's bookkeeping entry is removed, on-disk data is never deleted.
 
 ```yaml
 spec:
@@ -741,7 +741,7 @@ spec:
     secretName: transmission-admin
   apiHealthCheck:
     enabled: true
-    autoRemove: true
+    autoRemoveOrphanedTorrents: true
 ```
 
 ---

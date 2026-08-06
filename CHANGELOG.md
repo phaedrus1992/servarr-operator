@@ -27,6 +27,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Security
 
+- Mark the Transmission, Sonarr/Radarr/Lidarr/Prowlarr, and Maintainerr API clients' credential
+  headers (`Authorization: Basic ...`, `X-Api-Key`) as sensitive on the underlying HTTP client,
+  so they're redacted rather than printed in full if a client is ever `Debug`-formatted (e.g. an
+  errant `tracing::debug!(?client, ...)`) — closes the gap before any such call site exists.
+- Fix the Transmission self-heal credential fail-closed gate only catching a *partial*
+  adminCredentials read failure (one of username/password unreadable), not a *total* one (both
+  unreadable — e.g. the secret was deleted or renamed) — a total failure could proceed
+  unauthenticated on the destructive torrent-remove path instead of failing closed like the
+  partial case already did.
 - Fix admin credentials and API keys leaking into `status.conditions[]` and Kubernetes Events
   when Sabnzbd or Tautulli returned a transport error (connection refused, timeout, etc.)
   during credential setup — both apps send credentials as URL query parameters, and the
@@ -88,9 +97,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   whenever `apiHealthCheck.enabled` was set, with no separate consent for the destructive
   removal step — an app that already had the flag enabled before self-heal shipped would start
   deleting torrent entries on its next reconcile after upgrading. Removal now additionally
-  requires `apiHealthCheck.autoRemove: true`, which defaults to `false`; detection, the
-  `DownloadDataMissing` Event, and the `DownloadDataHealthy` condition still fire under
-  `enabled` alone (#498).
+  requires `apiHealthCheck.autoRemoveOrphanedTorrents: true`, which defaults to `false`;
+  detection, the `DownloadDataMissing` Event, and the `DownloadDataHealthy` condition still
+  fire under `enabled` alone (#498).
 - Fix Transmission self-heal addressing torrents by their process-local numeric id, which
   Transmission reassigns from a per-process counter that resets on daemon restart. A restart
   landing inside the ~1s detect-to-remediate window could make `torrent-verify`/`torrent-remove`

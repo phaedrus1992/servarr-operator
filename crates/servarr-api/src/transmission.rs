@@ -138,11 +138,13 @@ impl TransmissionClient {
             builder = builder.default_headers({
                 let mut headers = reqwest::header::HeaderMap::new();
                 let credentials = base64_encode(&format!("{user}:{pass}"));
-                headers.insert(
-                    reqwest::header::AUTHORIZATION,
-                    HeaderValue::from_str(&format!("Basic {credentials}"))
-                        .map_err(|_| ApiError::InvalidApiKey)?,
-                );
+                let mut auth_value = HeaderValue::from_str(&format!("Basic {credentials}"))
+                    .map_err(|_| ApiError::InvalidApiKey)?;
+                // Prevents the credential from appearing in reqwest::Client's Debug output
+                // (which prints default_headers unconditionally) if this client is ever
+                // logged or debug-formatted by a caller.
+                auth_value.set_sensitive(true);
+                headers.insert(reqwest::header::AUTHORIZATION, auth_value);
                 headers
             });
         }
@@ -472,6 +474,40 @@ mod tests {
         assert!(torrents[0].error_string.contains("No data found"));
         assert_eq!(torrents[1].id, 2);
         assert_eq!(torrents[1].error, 0);
+    }
+
+    #[tokio::test]
+    async fn torrent_get_parses_hash_string_from_the_wire_field_name() {
+        // Fixed-payload test asserting the actual wire mapping (#500) -- distinct from the
+        // roundtrip proptest below, which only proves serialize/deserialize are inverses of
+        // each other and would pass even if both sides used the wrong wire name.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/transmission/rpc"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(rpc_ok(serde_json::json!({
+                    "torrents": [
+                        {"id": 1, "name": "x", "error": 0, "errorString": "", "status": 0,
+                         "hashString": "0123456789abcdef0123456789abcdef01234567"}
+                    ]
+                }))),
+            )
+            .mount(&server)
+            .await;
+
+        let client = TransmissionClient::new(&server.uri(), None, None).unwrap();
+        let torrents = client
+            .torrent_get(
+                &["id", "name", "error", "errorString", "status", "hashString"],
+                None,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            torrents[0].hash_string,
+            "0123456789abcdef0123456789abcdef01234567"
+        );
     }
 
     #[tokio::test]
