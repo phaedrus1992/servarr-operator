@@ -106,10 +106,12 @@ impl MaintainerrClient {
         let base_url = base_url.trim_end_matches('/').to_string();
 
         let mut headers = reqwest::header::HeaderMap::new();
-        headers.insert(
-            reqwest::header::HeaderName::from_static("x-api-key"),
-            reqwest::header::HeaderValue::from_str(api_key).map_err(|_| ApiError::InvalidApiKey)?,
-        );
+        let mut value =
+            reqwest::header::HeaderValue::from_str(api_key).map_err(|_| ApiError::InvalidApiKey)?;
+        // Prevents the key from appearing in reqwest::Client's Debug output (which prints
+        // default_headers unconditionally) if this client is ever logged.
+        value.set_sensitive(true);
+        headers.insert(reqwest::header::HeaderName::from_static("x-api-key"), value);
 
         let client = reqwest::Client::builder()
             .default_headers(headers)
