@@ -544,6 +544,21 @@ pub struct ApiHealthCheckSpec {
     /// How often (in seconds) to poll the app API for health. Defaults to 60.
     #[serde(default)]
     pub interval_seconds: Option<u32>,
+    /// Whether the Transmission download-client health check may delete torrent entries
+    /// confirmed to still be missing their on-disk data after a Transmission-side re-verify.
+    /// On-disk data is never deleted by this flag -- only Transmission's bookkeeping entry
+    /// for the torrent is removed.
+    ///
+    /// This is a separate, destructive opt-in from `enabled`, deliberately not named
+    /// `autoRemove` (unlike this CRD's other `autoRemove` sync fields, which default to
+    /// `true` and mean "deregister on CR delete" -- a materially different, reversible
+    /// operation): an app that already had `apiHealthCheck.enabled: true` set before this flag
+    /// existed must not start deleting torrent entries on its next reconcile without explicit
+    /// consent. Detection, the `DownloadDataHealthy` condition, and the `DownloadDataMissing`
+    /// Event still fire under `enabled` alone; only the `torrent-remove` call requires this
+    /// flag too. Defaults to `false`. No effect on non-Transmission apps.
+    #[serde(default)]
+    pub auto_remove_orphaned_torrents: bool,
 }
 
 /// Backup configuration for the app.

@@ -79,10 +79,11 @@ impl HttpClient {
 
         let mut headers = HeaderMap::new();
         if let Some(key) = api_key {
-            headers.insert(
-                "X-Api-Key",
-                HeaderValue::from_str(key).map_err(|_| ApiError::InvalidApiKey)?,
-            );
+            let mut value = HeaderValue::from_str(key).map_err(|_| ApiError::InvalidApiKey)?;
+            // Prevents the key from appearing in reqwest::Client's Debug output (which
+            // prints default_headers unconditionally) if this client is ever logged.
+            value.set_sensitive(true);
+            headers.insert("X-Api-Key", value);
         }
 
         let inner = reqwest::Client::builder()
