@@ -636,3 +636,19 @@ fn subgen_has_higher_memory_for_whisper_inference() {
         "Subgen should request 512Mi"
     );
 }
+
+#[test]
+fn seerr_defaults_use_fixed_uid_gid_and_app_config_mount_path() {
+    let defaults = AppDefaults::for_app(&AppType::Seerr).unwrap();
+    assert_eq!(defaults.uid, 1000);
+    assert_eq!(defaults.gid, 1000);
+    assert_eq!(defaults.security.user, 1000);
+    assert_eq!(defaults.security.group, 1000);
+    let config_vol = defaults
+        .persistence
+        .volumes
+        .iter()
+        .find(|v| v.name == "config")
+        .expect("seerr defaults must have a config volume");
+    assert_eq!(config_vol.mount_path, "/app/config");
+}
