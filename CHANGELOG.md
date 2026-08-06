@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased] - ReleaseDate
 
+### Added
+
+- Add detection and self-healing for Transmission torrents whose on-disk data has gone missing
+  (e.g. an external cleanup job deleted files a torrent still references). When
+  `apiHealthCheck.enabled` is set on a `Transmission` app, the operator now detects affected
+  torrents, triggers Transmission's own re-verify, and removes torrents confirmed still broken
+  once that verify settles — reported via a `DownloadDataMissing` Event and a new
+  `DownloadDataHealthy` status condition (#483).
+
 ### Security
 
 - Fix admin credentials and API keys leaking into `status.conditions[]` and Kubernetes Events
