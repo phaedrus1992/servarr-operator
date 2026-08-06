@@ -38,10 +38,14 @@ fn app_type_to_kind(app_type: &AppType) -> Option<AppKind> {
 
 const FIELD_MANAGER: &str = "servarr-operator";
 
-// Prowlarr/Overseerr cleanup finalizers for Servarr v3 apps (Sonarr/Radarr/Lidarr). Module-level
+// Prowlarr/Seerr cleanup finalizers for Servarr v3 apps (Sonarr/Radarr/Lidarr). Module-level
 // so both `reconcile()` and its tests reference the same source of truth.
 const PROWLARR_FINALIZER: &str = "servarr.dev/prowlarr-sync";
-const OVERSEERR_FINALIZER: &str = "servarr.dev/overseerr-sync";
+// Issue #44: value intentionally unchanged from "servarr.dev/overseerr-sync" — this string is
+// already attached to existing ServarrApp objects' metadata.finalizers. Changing it would orphan
+// the finalizer on any CR that has it: nothing would ever match the old string to remove it, and
+// the object would hang in Terminating forever on delete.
+const SEERR_FINALIZER: &str = "servarr.dev/overseerr-sync";
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -192,16 +196,16 @@ pub async fn reconcile(app: Arc<ServarrApp>, ctx: Arc<Context>) -> Result<Action
             if let Err(ref e) = prowlarr_result {
                 warn!(%name, error = %e, "failed to clean up Prowlarr registration");
             }
-            // App is being deleted — clean up Overseerr registration
-            let overseerr_result =
-                cleanup_overseerr_registration(client, &app, &ns, &recorder, &obj_ref).await;
-            if let Err(ref e) = overseerr_result {
-                warn!(%name, error = %e, "failed to clean up Overseerr registration");
+            // App is being deleted — clean up Seerr registration
+            let seerr_result =
+                cleanup_seerr_registration(client, &app, &ns, &recorder, &obj_ref).await;
+            if let Err(ref e) = seerr_result {
+                warn!(%name, error = %e, "failed to clean up Seerr registration");
             }
 
             // Drop a finalizer only once its cleanup has actually completed — succeeded
             // outright, or proved the downstream target already gone (see the terminal
-            // handling in `cleanup_prowlarr_registration`/`cleanup_overseerr_registration`,
+            // handling in `cleanup_prowlarr_registration`/`cleanup_seerr_registration`,
             // which folds that case into `Ok`). A transient failure keeps its finalizer so
             // the cleanup it gates is retried on the next reconcile instead of being
             // silently dropped.
@@ -210,7 +214,7 @@ pub async fn reconcile(app: Arc<ServarrApp>, ctx: Arc<Context>) -> Result<Action
                 .iter()
                 .filter(|x| {
                     !(prowlarr_result.is_ok() && *x == PROWLARR_FINALIZER
-                        || overseerr_result.is_ok() && *x == OVERSEERR_FINALIZER)
+                        || seerr_result.is_ok() && *x == SEERR_FINALIZER)
                 })
                 .cloned()
                 .collect();
@@ -230,12 +234,12 @@ pub async fn reconcile(app: Arc<ServarrApp>, ctx: Arc<Context>) -> Result<Action
             // pending (it transiently failed) — surface an error so `error_policy` requeues,
             // instead of `Ok(Action::await_change())`, which would otherwise wait indefinitely
             // for an unrelated watch event. A finalizer that was never present to begin with
-            // (e.g. no Prowlarr/Overseerr sync was ever configured for this namespace) never
+            // (e.g. no Prowlarr/Seerr sync was ever configured for this namespace) never
             // blocks progress here, even if its no-op cleanup attempt happened to hit a
             // transient error of its own (e.g. the ServarrApps list call failing).
             let still_pending = finalizers
                 .iter()
-                .any(|x| x == PROWLARR_FINALIZER || x == OVERSEERR_FINALIZER);
+                .any(|x| x == PROWLARR_FINALIZER || x == SEERR_FINALIZER);
             if still_pending {
                 return Err(Error::CleanupPending);
             }
@@ -261,16 +265,16 @@ pub async fn reconcile(app: Arc<ServarrApp>, ctx: Arc<Context>) -> Result<Action
                 .map_err(Error::Kube)?;
         }
 
-        // Ensure Overseerr finalizer is present if an Overseerr with sync enabled exists
-        let has_overseerr_finalizer = app
+        // Ensure Seerr finalizer is present if an Seerr with sync enabled exists
+        let has_seerr_finalizer = app
             .metadata
             .finalizers
             .as_ref()
-            .is_some_and(|f| f.contains(&OVERSEERR_FINALIZER.to_string()));
-        if !has_overseerr_finalizer && overseerr_sync_exists(client, &ns).await {
+            .is_some_and(|f| f.contains(&SEERR_FINALIZER.to_string()));
+        if !has_seerr_finalizer && seerr_sync_exists(client, &ns).await {
             let sa_api = Api::<ServarrApp>::namespaced(client.clone(), &ns);
             let mut finalizers = app.metadata.finalizers.clone().unwrap_or_default();
-            finalizers.push(OVERSEERR_FINALIZER.to_string());
+            finalizers.push(SEERR_FINALIZER.to_string());
             let patch = serde_json::json!({
                 "metadata": { "finalizers": finalizers }
             });
@@ -581,7 +585,7 @@ pub async fn reconcile(app: Arc<ServarrApp>, ctx: Arc<Context>) -> Result<Action
     let (health_condition, update_condition) =
         check_api_health(client, &app, transmission_access.as_ref()).await;
 
-    // Admin credential sync via live API (SABnzbd, Transmission, Jellyfin, Tautulli, Overseerr)
+    // Admin credential sync via live API (SABnzbd, Transmission, Jellyfin, Tautulli, Seerr)
     let admin_creds_condition = sync_admin_credentials(client, &app).await;
     // If sync failed (app not ready yet), requeue sooner than the default 300s so
     // credentials are applied once the app becomes healthy.
@@ -617,22 +621,22 @@ pub async fn reconcile(app: Arc<ServarrApp>, ctx: Arc<Context>) -> Result<Action
         None
     };
 
-    // Overseerr cross-app sync (only for Overseerr-type apps with sync enabled)
-    let overseerr_sync_condition = if app.spec.app == AppType::Overseerr
-        && let Some(ref sync_spec) = app.spec.overseerr_sync
+    // Seerr cross-app sync (only for Seerr-type apps with sync enabled)
+    let seerr_sync_condition = if app.spec.app == AppType::Seerr
+        && let Some(ref sync_spec) = app.spec.seerr_sync
         && sync_spec.enabled
     {
         let target_ns = sync_spec.namespace_scope.as_deref().unwrap_or(&ns);
         let now = chrono_now();
-        let result = sync_overseerr_servers(client, &app, target_ns, &recorder, &obj_ref).await;
+        let result = sync_seerr_servers(client, &app, target_ns, &recorder, &obj_ref).await;
         Some(result_to_condition(
             result,
             ConditionSpec {
-                condition_type: condition_types::OVERSEERR_SYNC_READY,
+                condition_type: condition_types::SEERR_SYNC_READY,
                 ok_reason: "SyncComplete",
-                ok_message: "Sonarr and Radarr servers synced into Overseerr",
+                ok_message: "Sonarr and Radarr servers synced into Seerr",
                 fail_reason: "SyncFailed",
-                fail_log: "Overseerr sync failed",
+                fail_log: "Seerr sync failed",
             },
             &name,
             &now,
@@ -702,7 +706,7 @@ pub async fn reconcile(app: Arc<ServarrApp>, ctx: Arc<Context>) -> Result<Action
             ConditionSpec {
                 condition_type: condition_types::MAINTAINERR_SYNC_READY,
                 ok_reason: "SyncComplete",
-                ok_message: "Sonarr, Radarr, Overseerr, Tautulli, and Plex synced into Maintainerr",
+                ok_message: "Sonarr, Radarr, Seerr, Tautulli, and Plex synced into Maintainerr",
                 fail_reason: "SyncFailed",
                 fail_log: "Maintainerr sync failed",
             },
@@ -729,7 +733,7 @@ pub async fn reconcile(app: Arc<ServarrApp>, ctx: Arc<Context>) -> Result<Action
             bazarr_sync: bazarr_sync_condition,
             subgen_sync: subgen_sync_condition,
             prowlarr_sync: prowlarr_sync_condition,
-            overseerr_sync: overseerr_sync_condition,
+            seerr_sync: seerr_sync_condition,
             maintainerr_sync: maintainerr_sync_condition,
             restore: restore_condition,
             download_data: download_data_condition,
@@ -1065,7 +1069,7 @@ async fn sync_admin_credentials(client: &Client, app: &ServarrApp) -> Option<Con
                 .map_err(|e| e.log_summary()),
             Err(e) => Err(e.log_summary()),
         },
-        AppType::Overseerr => {
+        AppType::Seerr => {
             let api_key = match app.spec.api_key_secret.as_deref() {
                 Some(s) => match servarr_api::read_secret_key(client, ns, s, "api-key").await {
                     Ok(k) => k,
@@ -1084,12 +1088,12 @@ async fn sync_admin_credentials(client: &Client, app: &ServarrApp) -> Option<Con
                     return Some(Condition::fail(
                         condition_types::ADMIN_CREDENTIALS_CONFIGURED,
                         "NoApiKey",
-                        "Overseerr credential sync requires apiKeySecret to be set",
+                        "Seerr credential sync requires apiKeySecret to be set",
                         &now,
                     ));
                 }
             };
-            let c = servarr_api::OverseerrClient::new(&base_url, &api_key);
+            let c = servarr_api::SeerrClient::new(&base_url, &api_key);
             c.setup_local_auth(&username, &password)
                 .await
                 .map_err(|e| e.log_summary())
@@ -1796,8 +1800,8 @@ pub(crate) struct StatusConditions {
     pub subgen_sync: Option<Condition>,
     /// Prowlarr cross-app sync result (only set for Prowlarr apps with sync enabled).
     pub prowlarr_sync: Option<Condition>,
-    /// Overseerr cross-app sync result (only set for Overseerr apps with sync enabled).
-    pub overseerr_sync: Option<Condition>,
+    /// Seerr cross-app sync result (only set for Seerr apps with sync enabled).
+    pub seerr_sync: Option<Condition>,
     /// Maintainerr cross-app sync result (only set for Maintainerr apps with sync enabled).
     pub maintainerr_sync: Option<Condition>,
     /// Backup restore result (only set when a restore was attempted this reconcile).
@@ -1857,7 +1861,7 @@ pub(crate) async fn update_status(
         bazarr_sync: bazarr_sync_condition,
         subgen_sync: subgen_sync_condition,
         prowlarr_sync: prowlarr_sync_condition,
-        overseerr_sync: overseerr_sync_condition,
+        seerr_sync: seerr_sync_condition,
         maintainerr_sync: maintainerr_sync_condition,
         restore: restore_condition,
         download_data: download_data_condition,
@@ -1965,7 +1969,7 @@ pub(crate) async fn update_status(
         bazarr_sync_condition,
         subgen_sync_condition,
         prowlarr_sync_condition,
-        overseerr_sync_condition,
+        seerr_sync_condition,
         maintainerr_sync_condition,
         restore_condition,
         download_data_condition,
@@ -2546,7 +2550,7 @@ pub(crate) async fn discover_namespace_apps(
             AppType::Sonarr
                 | AppType::Radarr
                 | AppType::Lidarr
-                | AppType::Overseerr
+                | AppType::Seerr
                 | AppType::Tautulli
         ) {
             continue;
@@ -3018,67 +3022,67 @@ async fn cleanup_prowlarr_registration_body(
     Ok(())
 }
 
-/// Sync discovered Sonarr/Radarr apps into Overseerr as registered servers.
-async fn sync_overseerr_servers(
+/// Sync discovered Sonarr/Radarr apps into Seerr as registered servers.
+async fn sync_seerr_servers(
     client: &Client,
-    overseerr: &ServarrApp,
+    seerr: &ServarrApp,
     target_ns: &str,
     recorder: &Recorder,
     obj_ref: &k8s_openapi::api::core::v1::ObjectReference,
 ) -> Result<(), TenantSafeMessage> {
-    let overseerr_name = overseerr.name_any();
-    let ns = overseerr.namespace().unwrap_or_else(|| "default".into());
+    let seerr_name = seerr.name_any();
+    let ns = seerr.namespace().unwrap_or_else(|| "default".into());
 
-    // Build Overseerr client
-    let secret_name = overseerr
+    // Build Seerr client
+    let secret_name = seerr
         .spec
         .api_key_secret
         .as_deref()
-        .ok_or_else(|| TenantSafeMessage::new("Overseerr sync requires api_key_secret"))?;
-    let overseerr_key = servarr_api::read_secret_key(client, &ns, secret_name, "api-key")
+        .ok_or_else(|| TenantSafeMessage::new("Seerr sync requires api_key_secret"))?;
+    let seerr_key = servarr_api::read_secret_key(client, &ns, secret_name, "api-key")
         .await
         .map_err(|e| {
             TenantSafeMessage::new(format!(
-                "failed to read Overseerr API key: {}",
+                "failed to read Seerr API key: {}",
                 e.public_summary()
             ))
         })?;
 
-    let overseerr_app_name = servarr_resources::common::service_name(overseerr);
-    let defaults = servarr_crds::AppDefaults::for_app(&overseerr.spec.app)
+    let seerr_app_name = servarr_resources::common::service_name(seerr);
+    let defaults = servarr_crds::AppDefaults::for_app(&seerr.spec.app)
         .map_err(|e| TenantSafeMessage::new(format!("failed to load app defaults: {e}")))?;
-    let svc_spec = overseerr.spec.service.as_ref().unwrap_or(&defaults.service);
+    let svc_spec = seerr.spec.service.as_ref().unwrap_or(&defaults.service);
     let port = svc_spec.ports.first().map(|p| p.port).unwrap_or(80);
-    let overseerr_url = format!("http://{overseerr_app_name}.{ns}.svc:{port}");
+    let seerr_url = format!("http://{seerr_app_name}.{ns}.svc:{port}");
 
-    let overseerr_client = servarr_api::OverseerrClient::new(&overseerr_url, &overseerr_key);
+    let seerr_client = servarr_api::SeerrClient::new(&seerr_url, &seerr_key);
 
     // Discover Sonarr/Radarr apps in target namespace
     let discovered = discover_namespace_apps(client, target_ns).await?;
 
     // Get existing server registrations
-    let existing_sonarr = overseerr_client.list_sonarr().await.map_err(|e| {
+    let existing_sonarr = seerr_client.list_sonarr().await.map_err(|e| {
         TenantSafeMessage::new(format!(
-            "failed to list Overseerr Sonarr servers: {}",
+            "failed to list Seerr Sonarr servers: {}",
             e.log_summary()
         ))
     })?;
-    let existing_radarr = overseerr_client.list_radarr().await.map_err(|e| {
+    let existing_radarr = seerr_client.list_radarr().await.map_err(|e| {
         TenantSafeMessage::new(format!(
-            "failed to list Overseerr Radarr servers: {}",
+            "failed to list Seerr Radarr servers: {}",
             e.log_summary()
         ))
     })?;
 
-    // Get Overseerr config for default profile/directory settings
-    let overseerr_config = match &overseerr.spec.app_config {
-        Some(servarr_crds::AppConfig::Overseerr(c)) => Some(c.as_ref()),
+    // Get Seerr config for default profile/directory settings
+    let seerr_config = match &seerr.spec.app_config {
+        Some(servarr_crds::AppConfig::Seerr(c)) => Some(c.as_ref()),
         _ => None,
     };
 
-    let auto_remove = overseerr
+    let auto_remove = seerr
         .spec
-        .overseerr_sync
+        .seerr_sync
         .as_ref()
         .map(|s| s.auto_remove)
         .unwrap_or(true);
@@ -3091,7 +3095,7 @@ async fn sync_overseerr_servers(
 
     for app in &discovered {
         let hostname = app.host.clone();
-        let port = f64::from(app.port); // Overseerr API uses f64 for port numbers
+        let port = f64::from(app.port); // Seerr API uses f64 for port numbers
         let is4k = app.instance.as_deref() == Some("4k");
 
         match app.app_type {
@@ -3099,7 +3103,7 @@ async fn sync_overseerr_servers(
                 let key = (hostname.clone(), app.port);
                 synced_sonarr_keys.insert(key);
 
-                let sonarr_defaults = overseerr_config.and_then(|c| c.sonarr.as_ref());
+                let sonarr_defaults = seerr_config.and_then(|c| c.sonarr.as_ref());
                 let (profile_id, profile_name, root_folder, enable_season_folders) = if is4k {
                     let four_k = sonarr_defaults.and_then(|d| d.four_k.as_ref());
                     (
@@ -3145,13 +3149,13 @@ async fn sync_overseerr_servers(
                     let id = existing.id.unwrap_or(0.0) as i32;
                     let mut updated = settings;
                     updated.id = existing.id;
-                    if let Err(e) = overseerr_client.update_sonarr(id, updated).await {
-                        warn!(app = %app.name, error = %e.log_summary(), "failed to update Sonarr in Overseerr");
+                    if let Err(e) = seerr_client.update_sonarr(id, updated).await {
+                        warn!(app = %app.name, error = %e.log_summary(), "failed to update Sonarr in Seerr");
                     }
                 } else {
-                    info!(overseerr = %overseerr_name, app = %app.name, "adding Sonarr server to Overseerr");
-                    if let Err(e) = overseerr_client.create_sonarr(settings).await {
-                        warn!(app = %app.name, error = %e.log_summary(), "failed to add Sonarr to Overseerr");
+                    info!(seerr = %seerr_name, app = %app.name, "adding Sonarr server to Seerr");
+                    if let Err(e) = seerr_client.create_sonarr(settings).await {
+                        warn!(app = %app.name, error = %e.log_summary(), "failed to add Sonarr to Seerr");
                     }
                 }
             }
@@ -3159,7 +3163,7 @@ async fn sync_overseerr_servers(
                 let key = (hostname.clone(), app.port);
                 synced_radarr_keys.insert(key);
 
-                let radarr_defaults = overseerr_config.and_then(|c| c.radarr.as_ref());
+                let radarr_defaults = seerr_config.and_then(|c| c.radarr.as_ref());
                 let (profile_id, profile_name, root_folder, minimum_availability) = if is4k {
                     let four_k = radarr_defaults.and_then(|d| d.four_k.as_ref());
                     (
@@ -3207,13 +3211,13 @@ async fn sync_overseerr_servers(
                     let id = existing.id.unwrap_or(0.0) as i32;
                     let mut updated = settings;
                     updated.id = existing.id;
-                    if let Err(e) = overseerr_client.update_radarr(id, updated).await {
-                        warn!(app = %app.name, error = %e.log_summary(), "failed to update Radarr in Overseerr");
+                    if let Err(e) = seerr_client.update_radarr(id, updated).await {
+                        warn!(app = %app.name, error = %e.log_summary(), "failed to update Radarr in Seerr");
                     }
                 } else {
-                    info!(overseerr = %overseerr_name, app = %app.name, "adding Radarr server to Overseerr");
-                    if let Err(e) = overseerr_client.create_radarr(settings).await {
-                        warn!(app = %app.name, error = %e.log_summary(), "failed to add Radarr to Overseerr");
+                    info!(seerr = %seerr_name, app = %app.name, "adding Radarr server to Seerr");
+                    if let Err(e) = seerr_client.create_radarr(settings).await {
+                        warn!(app = %app.name, error = %e.log_summary(), "failed to add Radarr to Seerr");
                     }
                 }
             }
@@ -3227,9 +3231,9 @@ async fn sync_overseerr_servers(
             let key = (existing.hostname.clone(), existing.port as i32);
             if !synced_sonarr_keys.contains(&key) {
                 let id = existing.id.unwrap_or(0.0) as i32;
-                info!(overseerr = %overseerr_name, server = %existing.name, "removing stale Sonarr server from Overseerr");
-                if let Err(e) = overseerr_client.delete_sonarr(id).await {
-                    warn!(server = %existing.name, error = %e.log_summary(), "failed to remove stale Sonarr from Overseerr");
+                info!(seerr = %seerr_name, server = %existing.name, "removing stale Sonarr server from Seerr");
+                if let Err(e) = seerr_client.delete_sonarr(id).await {
+                    warn!(server = %existing.name, error = %e.log_summary(), "failed to remove stale Sonarr from Seerr");
                 }
             }
         }
@@ -3237,9 +3241,9 @@ async fn sync_overseerr_servers(
             let key = (existing.hostname.clone(), existing.port as i32);
             if !synced_radarr_keys.contains(&key) {
                 let id = existing.id.unwrap_or(0.0) as i32;
-                info!(overseerr = %overseerr_name, server = %existing.name, "removing stale Radarr server from Overseerr");
-                if let Err(e) = overseerr_client.delete_radarr(id).await {
-                    warn!(server = %existing.name, error = %e.log_summary(), "failed to remove stale Radarr from Overseerr");
+                info!(seerr = %seerr_name, server = %existing.name, "removing stale Radarr server from Seerr");
+                if let Err(e) = seerr_client.delete_radarr(id).await {
+                    warn!(server = %existing.name, error = %e.log_summary(), "failed to remove stale Radarr from Seerr");
                 }
             }
         }
@@ -3257,11 +3261,11 @@ async fn sync_overseerr_servers(
         .publish(
             &Event {
                 type_: EventType::Normal,
-                reason: "OverseerrSyncComplete".into(),
+                reason: "SeerrSyncComplete".into(),
                 note: Some(format!(
-                    "Synced {sonarr_count} Sonarr + {radarr_count} Radarr servers to Overseerr"
+                    "Synced {sonarr_count} Sonarr + {radarr_count} Radarr servers to Seerr"
                 )),
-                action: "OverseerrSync".into(),
+                action: "SeerrSync".into(),
                 secondary: None,
             },
             obj_ref,
@@ -3386,10 +3390,10 @@ async fn sync_bazarr_apps(
     Ok(())
 }
 
-/// Sync Sonarr, Radarr, Overseerr, Tautulli, and Plex into Maintainerr.
+/// Sync Sonarr, Radarr, Seerr, Tautulli, and Plex into Maintainerr.
 ///
 /// Called on every reconcile when `maintainerr_sync.enabled` is true. Discovers
-/// Sonarr, Radarr, Overseerr, and Tautulli instances in the target namespace and
+/// Sonarr, Radarr, Seerr, and Tautulli instances in the target namespace and
 /// registers them with Maintainerr. split4k Sonarr/Radarr instances are discovered
 /// as separate `ServarrApp`s, so each is registered independently. Plex is looked up
 /// separately (it has no `api_key_secret` so `discover_namespace_apps` excludes it)
@@ -3501,7 +3505,7 @@ async fn sync_maintainerr_servers(
 
     let mut sonarr_count = 0;
     let mut radarr_count = 0;
-    let mut overseerr_configured = false;
+    let mut seerr_configured = false;
     let mut tautulli_configured = false;
     let mut plex_configured = false;
 
@@ -3590,17 +3594,17 @@ async fn sync_maintainerr_servers(
                     radarr_count += 1;
                 }
             }
-            AppType::Overseerr if !overseerr_configured => {
-                info!(maintainerr = %maintainerr_name, overseerr = %app.name, "syncing Overseerr into Maintainerr");
+            AppType::Seerr if !seerr_configured => {
+                info!(maintainerr = %maintainerr_name, seerr = %app.name, "syncing Seerr into Maintainerr");
                 match maintainerr_client
-                    .set_overseerr(&app.base_url(), &app.api_key)
+                    .set_seerr(&app.base_url(), &app.api_key)
                     .await
                 {
-                    Ok(()) => overseerr_configured = true,
+                    Ok(()) => seerr_configured = true,
                     Err(e) => {
                         let error_summary = e.log_summary();
-                        warn!(maintainerr = %maintainerr_name, overseerr = %app.name, error = %error_summary,
-                            "failed to sync Overseerr to Maintainerr");
+                        warn!(maintainerr = %maintainerr_name, seerr = %app.name, error = %error_summary,
+                            "failed to sync Seerr to Maintainerr");
                         failures += 1;
                     }
                 }
@@ -3621,9 +3625,9 @@ async fn sync_maintainerr_servers(
                 }
             }
             _ => {
-                // Unhandled app type: duplicate Overseerr/Tautulli, future variants, or unsupported types.
+                // Unhandled app type: duplicate Seerr/Tautulli, future variants, or unsupported types.
                 // Log at debug level so the operator can see what was skipped (important for troubleshooting
-                // missing Overseerr/Tautulli instances beyond the first).
+                // missing Seerr/Tautulli instances beyond the first).
                 debug!(maintainerr = %maintainerr_name, app = %app.name, app_type = ?app.app_type,
                     "skipping app type in Maintainerr sync");
             }
@@ -3677,7 +3681,7 @@ async fn sync_maintainerr_servers(
     }
 
     info!(maintainerr = %maintainerr_name, sonarr_count, radarr_count,
-        overseerr_configured, tautulli_configured, plex_configured, failures,
+        seerr_configured, tautulli_configured, plex_configured, failures,
         "Maintainerr sync complete");
 
     if failures > 0 {
@@ -3804,27 +3808,26 @@ async fn sync_subgen_jellyfin(
     Ok(())
 }
 
-/// Check if any Overseerr instance with overseerr_sync.enabled exists in the namespace.
-async fn overseerr_sync_exists(client: &Client, namespace: &str) -> bool {
+/// Check if any Seerr instance with seerr_sync.enabled exists in the namespace.
+async fn seerr_sync_exists(client: &Client, namespace: &str) -> bool {
     use kube::api::ListParams;
     let api = Api::<ServarrApp>::namespaced(client.clone(), namespace);
     match api.list(&ListParams::default()).await {
         Ok(list) => list.iter().any(|a| {
-            a.spec.app == AppType::Overseerr
-                && a.spec.overseerr_sync.as_ref().is_some_and(|s| s.enabled)
+            a.spec.app == AppType::Seerr && a.spec.seerr_sync.as_ref().is_some_and(|s| s.enabled)
         }),
         Err(e) => {
-            warn!(error = %kube_err_summary(&e), %namespace, "failed to list ServarrApps for overseerr-sync check, assuming no sync exists");
+            warn!(error = %kube_err_summary(&e), %namespace, "failed to list ServarrApps for seerr-sync check, assuming no sync exists");
             false
         }
     }
 }
 
-/// Remove this app's registration from Overseerr when the CR is deleted.
+/// Remove this app's registration from Seerr when the CR is deleted.
 ///
 /// See [`finish_cleanup`] for how the `Terminal`/`Transient` outcome of the cleanup body maps to
 /// this function's return value and Event publication.
-async fn cleanup_overseerr_registration(
+async fn cleanup_seerr_registration(
     client: &Client,
     app: &ServarrApp,
     namespace: &str,
@@ -3832,19 +3835,19 @@ async fn cleanup_overseerr_registration(
     obj_ref: &k8s_openapi::api::core::v1::ObjectReference,
 ) -> Result<(), anyhow::Error> {
     let outcome =
-        cleanup_overseerr_registration_body(client, app, namespace, recorder, obj_ref, None).await;
-    finish_cleanup(outcome, "Overseerr", app, recorder, obj_ref).await
+        cleanup_seerr_registration_body(client, app, namespace, recorder, obj_ref, None).await;
+    finish_cleanup(outcome, "Seerr", app, recorder, obj_ref).await
 }
 
-/// Uniform view of the Overseerr registered-server settings the cleanup path needs, so the
+/// Uniform view of the Seerr registered-server settings the cleanup path needs, so the
 /// Sonarr/Radarr arms share one implementation.
-trait OverseerrServerSettings {
+trait SeerrServerSettings {
     fn hostname(&self) -> &str;
     fn port(&self) -> f64;
     fn id(&self) -> i32;
 }
 
-impl OverseerrServerSettings for overseerr::models::SonarrSettings {
+impl SeerrServerSettings for overseerr::models::SonarrSettings {
     fn hostname(&self) -> &str {
         &self.hostname
     }
@@ -3856,7 +3859,7 @@ impl OverseerrServerSettings for overseerr::models::SonarrSettings {
     }
 }
 
-impl OverseerrServerSettings for overseerr::models::RadarrSettings {
+impl SeerrServerSettings for overseerr::models::RadarrSettings {
     fn hostname(&self) -> &str {
         &self.hostname
     }
@@ -3868,25 +3871,25 @@ impl OverseerrServerSettings for overseerr::models::RadarrSettings {
     }
 }
 
-/// Per-app Overseerr operations (Sonarr/Radarr) so the cleanup helper is generic over the
+/// Per-app Seerr operations (Sonarr/Radarr) so the cleanup helper is generic over the
 /// registered-server settings type.
-trait OverseerrAppKind {
-    type Server: OverseerrServerSettings;
+trait SeerrAppKind {
+    type Server: SeerrServerSettings;
     fn name(&self) -> &'static str;
     fn list<'a>(
         &'a self,
-        client: &'a servarr_api::OverseerrClient,
+        client: &'a servarr_api::SeerrClient,
     ) -> futures::future::BoxFuture<'a, Result<Vec<Self::Server>, servarr_api::ApiError>>;
     fn delete<'a>(
         &'a self,
-        client: &'a servarr_api::OverseerrClient,
+        client: &'a servarr_api::SeerrClient,
         id: i32,
     ) -> futures::future::BoxFuture<'a, Result<(), servarr_api::ApiError>>;
 }
 
-struct SonarrOverseerr;
+struct SonarrSeerr;
 
-impl OverseerrAppKind for SonarrOverseerr {
+impl SeerrAppKind for SonarrSeerr {
     type Server = overseerr::models::SonarrSettings;
 
     fn name(&self) -> &'static str {
@@ -3895,23 +3898,23 @@ impl OverseerrAppKind for SonarrOverseerr {
 
     fn list<'a>(
         &'a self,
-        client: &'a servarr_api::OverseerrClient,
+        client: &'a servarr_api::SeerrClient,
     ) -> futures::future::BoxFuture<'a, Result<Vec<Self::Server>, servarr_api::ApiError>> {
         Box::pin(client.list_sonarr())
     }
 
     fn delete<'a>(
         &'a self,
-        client: &'a servarr_api::OverseerrClient,
+        client: &'a servarr_api::SeerrClient,
         id: i32,
     ) -> futures::future::BoxFuture<'a, Result<(), servarr_api::ApiError>> {
         Box::pin(client.delete_sonarr(id))
     }
 }
 
-struct RadarrOverseerr;
+struct RadarrSeerr;
 
-impl OverseerrAppKind for RadarrOverseerr {
+impl SeerrAppKind for RadarrSeerr {
     type Server = overseerr::models::RadarrSettings;
 
     fn name(&self) -> &'static str {
@@ -3920,14 +3923,14 @@ impl OverseerrAppKind for RadarrOverseerr {
 
     fn list<'a>(
         &'a self,
-        client: &'a servarr_api::OverseerrClient,
+        client: &'a servarr_api::SeerrClient,
     ) -> futures::future::BoxFuture<'a, Result<Vec<Self::Server>, servarr_api::ApiError>> {
         Box::pin(client.list_radarr())
     }
 
     fn delete<'a>(
         &'a self,
-        client: &'a servarr_api::OverseerrClient,
+        client: &'a servarr_api::SeerrClient,
         id: i32,
     ) -> futures::future::BoxFuture<'a, Result<(), servarr_api::ApiError>> {
         Box::pin(client.delete_radarr(id))
@@ -3935,7 +3938,7 @@ impl OverseerrAppKind for RadarrOverseerr {
 }
 
 /// Turn a cleanup body's outcome into the wrapper's `Result<(), anyhow::Error>`, shared by
-/// [`cleanup_prowlarr_registration`] and [`cleanup_overseerr_registration`] (which differ only in
+/// [`cleanup_prowlarr_registration`] and [`cleanup_seerr_registration`] (which differ only in
 /// `cleanup_target` and which `_body` function produced `outcome`).
 ///
 /// A [`CleanupSeverity::Terminal`] failure (downstream target provably absent) is treated as
@@ -3976,7 +3979,7 @@ async fn finish_cleanup(
 }
 
 /// Publish the Normal event for a successful finalizer cleanup (shared by the Prowlarr and
-/// Overseerr cleanup bodies).
+/// Seerr cleanup bodies).
 async fn publish_cleanup_normal(
     recorder: &Recorder,
     obj_ref: &k8s_openapi::api::core::v1::ObjectReference,
@@ -3998,7 +4001,7 @@ async fn publish_cleanup_normal(
 }
 
 /// Publish the Warning event (reason `CleanupFailed`) for a failed finalizer cleanup, shared
-/// by the Prowlarr and Overseerr cleanup wrappers. The note carries the tenant-safe message
+/// by the Prowlarr and Seerr cleanup wrappers. The note carries the tenant-safe message
 /// from the propagated cleanup error.
 async fn publish_cleanup_failed(
     recorder: &Recorder,
@@ -4028,25 +4031,22 @@ async fn publish_cleanup_failed(
     }
 }
 
-/// Remove one registered server (Sonarr or Radarr) matching `app_hostname:port` from Overseerr.
+/// Remove one registered server (Sonarr or Radarr) matching `app_hostname:port` from Seerr.
 /// Returns `true` when a server was removed so the caller publishes the Normal event.
-async fn overseerr_remove_server<K>(
-    overseerr_client: &servarr_api::OverseerrClient,
+async fn seerr_remove_server<K>(
+    seerr_client: &servarr_api::SeerrClient,
     app: &ServarrApp,
     app_hostname: &str,
     port: i32,
     kind: K,
 ) -> Result<bool, CleanupFailure>
 where
-    K: OverseerrAppKind,
+    K: SeerrAppKind,
 {
-    let existing = kind
-        .list(overseerr_client)
-        .await
-        .cleanup_map_err_transient(
-            &format!("failed to list Overseerr {} servers", kind.name()),
-            |e| e.log_summary(),
-        )?;
+    let existing = kind.list(seerr_client).await.cleanup_map_err_transient(
+        &format!("failed to list Seerr {} servers", kind.name()),
+        |e| e.log_summary(),
+    )?;
     if let Some(registered) = existing
         .iter()
         .find(|s| s.hostname() == app_hostname && s.port() == f64::from(port))
@@ -4054,12 +4054,12 @@ where
         let id = registered.id();
         info!(
             app = %app.name_any(),
-            overseerr_server_id = id,
-            "removing {} from Overseerr on deletion",
+            seerr_server_id = id,
+            "removing {} from Seerr on deletion",
             kind.name()
         );
-        kind.delete(overseerr_client, id).await.cleanup_map_err(
-            &format!("failed to delete Overseerr {} server {id}", kind.name()),
+        kind.delete(seerr_client, id).await.cleanup_map_err(
+            &format!("failed to delete Seerr {} server {id}", kind.name()),
             |e| e.log_summary(),
         )?;
         return Ok(true);
@@ -4067,13 +4067,13 @@ where
     Ok(false)
 }
 
-/// Inner cleanup body shared by [`cleanup_overseerr_registration`] and the success-path tests.
+/// Inner cleanup body shared by [`cleanup_seerr_registration`] and the success-path tests.
 ///
-/// `base_url_override` lets tests point the Overseerr client at a MockServer instead of the
+/// `base_url_override` lets tests point the Seerr client at a MockServer instead of the
 /// in-cluster `{name}.{ns}.svc` URL (which cannot resolve in tests); production passes `None`.
 ///
 /// On failure returns a [`CleanupFailure`].
-async fn cleanup_overseerr_registration_body(
+async fn cleanup_seerr_registration_body(
     client: &Client,
     app: &ServarrApp,
     namespace: &str,
@@ -4094,54 +4094,51 @@ async fn cleanup_overseerr_registration_body(
     let port = svc_spec.ports.first().map(|p| p.port).unwrap_or(80);
     let app_hostname = format!("{app_name_str}.{namespace}.svc");
 
-    // Find the Overseerr instance
+    // Find the Seerr instance
     let sa_api = Api::<ServarrApp>::namespaced(client.clone(), namespace);
     let apps = sa_api
         .list(&ListParams::default())
         .await
         .cleanup_map_err_transient("failed to list ServarrApps", kube_err_summary)?;
-    let overseerr = apps.iter().find(|a| {
-        a.spec.app == AppType::Overseerr
-            && a.spec.overseerr_sync.as_ref().is_some_and(|s| s.enabled)
+    let seerr = apps.iter().find(|a| {
+        a.spec.app == AppType::Seerr && a.spec.seerr_sync.as_ref().is_some_and(|s| s.enabled)
     });
 
-    let Some(overseerr) = overseerr else {
+    let Some(seerr) = seerr else {
         return Ok(());
     };
 
-    let Some(secret_name) = overseerr.spec.api_key_secret.as_deref() else {
+    let Some(secret_name) = seerr.spec.api_key_secret.as_deref() else {
         return Ok(());
     };
 
-    let overseerr_ns = overseerr.namespace().unwrap_or_else(|| namespace.into());
-    let overseerr_key = servarr_api::read_secret_key(client, &overseerr_ns, secret_name, "api-key")
+    let seerr_ns = seerr.namespace().unwrap_or_else(|| namespace.into());
+    let seerr_key = servarr_api::read_secret_key(client, &seerr_ns, secret_name, "api-key")
         .await
-        .cleanup_map_err("failed to read Overseerr API key", |e| e.log_summary())?;
+        .cleanup_map_err("failed to read Seerr API key", |e| e.log_summary())?;
 
-    let overseerr_app_name = servarr_resources::common::service_name(overseerr);
-    let overseerr_defaults = servarr_crds::AppDefaults::for_app(&overseerr.spec.app)
+    let seerr_app_name = servarr_resources::common::service_name(seerr);
+    let seerr_defaults = servarr_crds::AppDefaults::for_app(&seerr.spec.app)
         .map_err(|e| cleanup_err_new(e, "failed to load app defaults"))?;
-    let overseerr_svc = overseerr
+    let seerr_svc = seerr
         .spec
         .service
         .as_ref()
-        .unwrap_or(&overseerr_defaults.service);
-    let overseerr_port = overseerr_svc.ports.first().map(|p| p.port).unwrap_or(80);
-    let overseerr_url = base_url_override.map(str::to_owned).unwrap_or_else(|| {
-        format!("http://{overseerr_app_name}.{overseerr_ns}.svc:{overseerr_port}")
-    });
+        .unwrap_or(&seerr_defaults.service);
+    let seerr_port = seerr_svc.ports.first().map(|p| p.port).unwrap_or(80);
+    let seerr_url = base_url_override
+        .map(str::to_owned)
+        .unwrap_or_else(|| format!("http://{seerr_app_name}.{seerr_ns}.svc:{seerr_port}"));
 
-    let overseerr_client = servarr_api::OverseerrClient::new(&overseerr_url, &overseerr_key);
+    let seerr_client = servarr_api::SeerrClient::new(&seerr_url, &seerr_key);
 
     // Remove matching Sonarr or Radarr server by hostname + port
     let removed = match app.spec.app {
         AppType::Sonarr => {
-            overseerr_remove_server(&overseerr_client, app, &app_hostname, port, SonarrOverseerr)
-                .await?
+            seerr_remove_server(&seerr_client, app, &app_hostname, port, SonarrSeerr).await?
         }
         AppType::Radarr => {
-            overseerr_remove_server(&overseerr_client, app, &app_hostname, port, RadarrOverseerr)
-                .await?
+            seerr_remove_server(&seerr_client, app, &app_hostname, port, RadarrSeerr).await?
         }
         _ => false,
     };
@@ -4149,8 +4146,8 @@ async fn cleanup_overseerr_registration_body(
         publish_cleanup_normal(
             recorder,
             obj_ref,
-            "OverseerrCleanup",
-            format!("Removed {} from Overseerr", app.name_any()),
+            "SeerrCleanup",
+            format!("Removed {} from Seerr", app.name_any()),
         )
         .await;
     }
@@ -5451,7 +5448,7 @@ mod tests {
                 bazarr_sync: None,
                 subgen_sync: None,
                 prowlarr_sync: None,
-                overseerr_sync: None,
+                seerr_sync: None,
                 maintainerr_sync: None,
                 restore: None,
                 download_data: None,
@@ -5530,7 +5527,7 @@ mod tests {
                 bazarr_sync: None,
                 subgen_sync: None,
                 prowlarr_sync: None,
-                overseerr_sync: None,
+                seerr_sync: None,
                 maintainerr_sync: None,
                 restore: None,
                 download_data: None,
@@ -6068,31 +6065,31 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn sync_overseerr_servers_api_key_read_error_is_tenant_sanitized() {
+    async fn sync_seerr_servers_api_key_read_error_is_tenant_sanitized() {
         let mock_server = MockServer::start().await;
         let client = build_mock_client(&mock_server.uri()).await;
 
-        let mut overseerr = make_test_app("my-overseerr", "test", AppType::Overseerr);
-        overseerr.spec.api_key_secret = Some("overseerr-api-key".into());
+        let mut seerr = make_test_app("my-seerr", "test", AppType::Seerr);
+        seerr.spec.api_key_secret = Some("seerr-api-key".into());
 
         mount_secret_mock(
             &mock_server,
             "test",
-            "overseerr-api-key",
+            "seerr-api-key",
             json!(SERDE_LEAK_MARKER),
         )
         .await;
 
         let recorder = Recorder::new(client.clone(), "test".into());
-        let obj_ref = overseerr.object_ref(&());
+        let obj_ref = seerr.object_ref(&());
 
-        let err = sync_overseerr_servers(&client, &overseerr, "test", &recorder, &obj_ref)
+        let err = sync_seerr_servers(&client, &seerr, "test", &recorder, &obj_ref)
             .await
             .expect_err("an unreadable API-key secret must surface as an error")
             .to_string();
 
         assert!(
-            err.contains("failed to read Overseerr API key"),
+            err.contains("failed to read Seerr API key"),
             "should keep the call-site context: {err}"
         );
         assert!(
@@ -6344,12 +6341,12 @@ mod tests {
         })
     }
 
-    /// A sync-enabled Overseerr `ServarrApp` for a ServarrAppList, with an optional
+    /// A sync-enabled Seerr `ServarrApp` for a ServarrAppList, with an optional
     /// `apiKeySecret`.
-    fn overseerr_app_json(name: &str, api_key_secret: Option<&str>) -> serde_json::Value {
+    fn seerr_app_json(name: &str, api_key_secret: Option<&str>) -> serde_json::Value {
         let mut spec = serde_json::Map::new();
-        spec.insert("app".into(), json!("Overseerr"));
-        spec.insert("overseerrSync".into(), json!({ "enabled": true }));
+        spec.insert("app".into(), json!("Seerr"));
+        spec.insert("seerrSync".into(), json!({ "enabled": true }));
         if let Some(secret) = api_key_secret {
             spec.insert("apiKeySecret".into(), json!(secret));
         }
@@ -6359,7 +6356,7 @@ mod tests {
             "metadata": {
                 "name": name,
                 "namespace": "test",
-                "uid": "overseerr-uid",
+                "uid": "seerr-uid",
                 "resourceVersion": "1"
             },
             "spec": spec
@@ -6485,21 +6482,21 @@ mod tests {
         );
     }
 
-    /// A `SecretError::Kube` from the Overseerr API-key read must emit exactly one
+    /// A `SecretError::Kube` from the Seerr API-key read must emit exactly one
     /// `Warning`/`CleanupFailed` Event with the tenant-safe status summary.
     #[tokio::test]
-    async fn cleanup_overseerr_registration_secret_read_failure_emits_cleanup_failed_event() {
+    async fn cleanup_seerr_registration_secret_read_failure_emits_cleanup_failed_event() {
         let mock_server = MockServer::start().await;
         let client = build_mock_client(&mock_server.uri()).await;
         mount_event_post_mock(&mock_server).await;
         mount_servarrapps_list(
             &mock_server,
-            json!([overseerr_app_json("my-overseerr", Some("overseerr-secret"))]),
+            json!([seerr_app_json("my-seerr", Some("seerr-secret"))]),
         )
         .await;
         mount_kube_status_error(
             &mock_server,
-            "/api/v1/namespaces/test/secrets/overseerr-secret",
+            "/api/v1/namespaces/test/secrets/seerr-secret",
             403,
             CLEANUP_FAILED_SEED,
         )
@@ -6509,12 +6506,12 @@ mod tests {
         let app = make_test_app("my-sonarr", "test", AppType::Sonarr);
         let obj_ref = app.object_ref(&());
 
-        let err = cleanup_overseerr_registration(&client, &app, "test", &recorder, &obj_ref)
+        let err = cleanup_seerr_registration(&client, &app, "test", &recorder, &obj_ref)
             .await
             .expect_err("a failed secret read must surface as an error");
 
         assert!(
-            err.to_string().contains("failed to read Overseerr API key"),
+            err.to_string().contains("failed to read Seerr API key"),
             "keep the call-site context: {err}"
         );
 
@@ -6531,25 +6528,21 @@ mod tests {
         );
     }
 
-    /// A sync-enabled Overseerr with no `apiKeySecret` is a skip: Ok and no Event.
+    /// A sync-enabled Seerr with no `apiKeySecret` is a skip: Ok and no Event.
     #[tokio::test]
-    async fn cleanup_overseerr_registration_no_api_key_secret_publishes_no_event() {
+    async fn cleanup_seerr_registration_no_api_key_secret_publishes_no_event() {
         let mock_server = MockServer::start().await;
         let client = build_mock_client(&mock_server.uri()).await;
         mount_event_post_mock(&mock_server).await;
-        mount_servarrapps_list(
-            &mock_server,
-            json!([overseerr_app_json("my-overseerr", None)]),
-        )
-        .await;
+        mount_servarrapps_list(&mock_server, json!([seerr_app_json("my-seerr", None)])).await;
 
         let recorder = Recorder::new(client.clone(), "test".into());
         let app = make_test_app("my-sonarr", "test", AppType::Sonarr);
         let obj_ref = app.object_ref(&());
 
-        cleanup_overseerr_registration(&client, &app, "test", &recorder, &obj_ref)
+        cleanup_seerr_registration(&client, &app, "test", &recorder, &obj_ref)
             .await
-            .expect("an Overseerr with no apiKeySecret is a no-op success");
+            .expect("an Seerr with no apiKeySecret is a no-op success");
 
         assert!(
             event_post_bodies(&mock_server).await.is_empty(),
@@ -6557,10 +6550,10 @@ mod tests {
         );
     }
 
-    /// A sync-enabled Overseerr whose registered Sonarr servers do not include this app's
+    /// A sync-enabled Seerr whose registered Sonarr servers do not include this app's
     /// hostname+port is a skip: Ok and no Event.
     #[tokio::test]
-    async fn cleanup_overseerr_registration_no_matching_server_publishes_no_event() {
+    async fn cleanup_seerr_registration_no_matching_server_publishes_no_event() {
         let mock_server = MockServer::start().await;
         let client = build_mock_client(&mock_server.uri()).await;
         mount_event_post_mock(&mock_server).await;
@@ -6568,13 +6561,13 @@ mod tests {
         let app = make_test_app("my-sonarr", "test", AppType::Sonarr);
         mount_servarrapps_list(
             &mock_server,
-            json!([overseerr_app_json("my-overseerr", Some("overseerr-secret"))]),
+            json!([seerr_app_json("my-seerr", Some("seerr-secret"))]),
         )
         .await;
         mount_secret_mock(
             &mock_server,
             "test",
-            "overseerr-secret",
+            "seerr-secret",
             json!({ "api-key": "dGVzdC1rZXk=" }),
         )
         .await;
@@ -6602,7 +6595,7 @@ mod tests {
         let recorder = Recorder::new(client.clone(), "test".into());
         let obj_ref = app.object_ref(&());
 
-        cleanup_overseerr_registration_body(
+        cleanup_seerr_registration_body(
             &client,
             &app,
             "test",
@@ -6688,10 +6681,10 @@ mod tests {
         assert_eq!(events[0]["reason"], "ProwlarrCleanup");
     }
 
-    /// Successful removal publishes the existing `Normal`/`OverseerrCleanup` Event and
+    /// Successful removal publishes the existing `Normal`/`SeerrCleanup` Event and
     /// never a `CleanupFailed` one. Exercised through `_body` with a `base_url_override`.
     #[tokio::test]
-    async fn cleanup_overseerr_registration_success_publishes_normal_event() {
+    async fn cleanup_seerr_registration_success_publishes_normal_event() {
         let mock_server = MockServer::start().await;
         let client = build_mock_client(&mock_server.uri()).await;
         mount_event_post_mock(&mock_server).await;
@@ -6706,13 +6699,13 @@ mod tests {
 
         mount_servarrapps_list(
             &mock_server,
-            json!([overseerr_app_json("my-overseerr", Some("overseerr-secret"))]),
+            json!([seerr_app_json("my-seerr", Some("seerr-secret"))]),
         )
         .await;
         mount_secret_mock(
             &mock_server,
             "test",
-            "overseerr-secret",
+            "seerr-secret",
             json!({ "api-key": "dGVzdC1rZXk=" }),
         )
         .await;
@@ -6759,7 +6752,7 @@ mod tests {
         let recorder = Recorder::new(client.clone(), "test".into());
         let obj_ref = app.object_ref(&());
 
-        cleanup_overseerr_registration_body(
+        cleanup_seerr_registration_body(
             &client,
             &app,
             "test",
@@ -6777,7 +6770,7 @@ mod tests {
             "exactly one Normal Event on success: {events:?}"
         );
         assert_eq!(events[0]["type"], "Normal");
-        assert_eq!(events[0]["reason"], "OverseerrCleanup");
+        assert_eq!(events[0]["reason"], "SeerrCleanup");
     }
 
     // ---- CleanupSeverity classification tests (#451) ----
@@ -6919,11 +6912,11 @@ mod tests {
         "prowlarr-secret"
     );
     secret_not_found_is_terminal_no_event_test!(
-        cleanup_overseerr_registration_secret_not_found_is_terminal_no_event,
-        cleanup_overseerr_registration,
-        overseerr_app_json,
-        "my-overseerr",
-        "overseerr-secret"
+        cleanup_seerr_registration_secret_not_found_is_terminal_no_event,
+        cleanup_seerr_registration,
+        seerr_app_json,
+        "my-seerr",
+        "seerr-secret"
     );
 
     // ---- CleanupSeverity::Transient LIST-endpoint tests (#451 review follow-up) ----
@@ -7019,9 +7012,9 @@ mod tests {
         );
     }
 
-    /// The same LIST-vs-lookup distinction applies to Overseerr's `list_sonarr`/`list_radarr`.
+    /// The same LIST-vs-lookup distinction applies to Seerr's `list_sonarr`/`list_radarr`.
     #[tokio::test]
-    async fn overseerr_remove_server_list_404_is_transient_not_terminal() {
+    async fn seerr_remove_server_list_404_is_transient_not_terminal() {
         let o_server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/settings/sonarr"))
@@ -7031,18 +7024,12 @@ mod tests {
             .mount(&o_server)
             .await;
 
-        let overseerr_client = servarr_api::OverseerrClient::new(&o_server.uri(), "test-key");
+        let seerr_client = servarr_api::SeerrClient::new(&o_server.uri(), "test-key");
         let app = make_test_app("my-sonarr", "test", AppType::Sonarr);
 
-        let err = overseerr_remove_server(
-            &overseerr_client,
-            &app,
-            "my-sonarr.test.svc",
-            8989,
-            SonarrOverseerr,
-        )
-        .await
-        .expect_err("a 404 on Overseerr's Sonarr-servers LIST is transient, not proof of absence");
+        let err = seerr_remove_server(&seerr_client, &app, "my-sonarr.test.svc", 8989, SonarrSeerr)
+            .await
+            .expect_err("a 404 on Seerr's Sonarr-servers LIST is transient, not proof of absence");
 
         assert_eq!(
             err.severity,
@@ -7070,7 +7057,7 @@ mod tests {
             ));
         app.metadata.finalizers = Some(vec![
             PROWLARR_FINALIZER.to_string(),
-            OVERSEERR_FINALIZER.to_string(),
+            SEERR_FINALIZER.to_string(),
         ]);
         app
     }
@@ -7116,7 +7103,7 @@ mod tests {
     }
 
     /// A transient cleanup failure (a 500 from the ServarrApps list call, hit by both the
-    /// Prowlarr and Overseerr cleanup paths) must keep both finalizers and return an error, so
+    /// Prowlarr and Seerr cleanup paths) must keep both finalizers and return an error, so
     /// `error_policy` requeues instead of the app being silently unstuck with the registrations
     /// never actually cleaned up.
     #[tokio::test]
@@ -7163,18 +7150,18 @@ mod tests {
         let mock_server = MockServer::start().await;
         let client = build_mock_client(&mock_server.uri()).await;
         mount_event_post_mock(&mock_server).await;
-        // Both cleanup bodies share one ServarrApps LIST call. Only an Overseerr instance is
+        // Both cleanup bodies share one ServarrApps LIST call. Only an Seerr instance is
         // present, so the Prowlarr cleanup finds nothing to do and succeeds trivially, while the
-        // Overseerr cleanup finds its target and then fails transiently reading its secret
+        // Seerr cleanup finds its target and then fails transiently reading its secret
         // (403, not 404 — a real, retryable failure, not proof the registration is gone).
         mount_servarrapps_list(
             &mock_server,
-            json!([overseerr_app_json("my-overseerr", Some("overseerr-secret"))]),
+            json!([seerr_app_json("my-seerr", Some("seerr-secret"))]),
         )
         .await;
         mount_kube_status_error(
             &mock_server,
-            "/api/v1/namespaces/test/secrets/overseerr-secret",
+            "/api/v1/namespaces/test/secrets/seerr-secret",
             403,
             "unused-seed",
         )
@@ -7187,7 +7174,7 @@ mod tests {
 
         assert!(
             matches!(result, Err(Error::CleanupPending)),
-            "the Overseerr finalizer is still pending, so error_policy must requeue: {result:?}"
+            "the Seerr finalizer is still pending, so error_policy must requeue: {result:?}"
         );
 
         let patches = servarrapp_patch_bodies(&mock_server, "my-sonarr").await;
@@ -7200,8 +7187,8 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(
             finalizers,
-            vec![OVERSEERR_FINALIZER],
-            "the succeeded Prowlarr finalizer must be dropped and the still-pending Overseerr \
+            vec![SEERR_FINALIZER],
+            "the succeeded Prowlarr finalizer must be dropped and the still-pending Seerr \
              finalizer must survive: {finalizers:?}"
         );
     }
@@ -7218,7 +7205,7 @@ mod tests {
             &mock_server,
             json!([
                 prowlarr_app_json("my-prowlarr", Some("shared-secret")),
-                overseerr_app_json("my-overseerr", Some("shared-secret")),
+                seerr_app_json("my-seerr", Some("shared-secret")),
             ]),
         )
         .await;

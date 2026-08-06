@@ -118,7 +118,7 @@ fn make_media_stack(name: &str, ns: &str) -> MediaStack {
             pod_annotations: None,
             gpu: None,
             prowlarr_sync: None,
-            overseerr_sync: None,
+            seerr_sync: None,
             bazarr_sync: None,
             subgen_sync: None,
             maintainerr_sync: None,
@@ -379,7 +379,7 @@ async fn test_sonarr_reconcile_basic() {
         .mount(&mock_server)
         .await;
 
-    // GET ServarrApps list (for gauge update + prowlarr/overseerr sync checks)
+    // GET ServarrApps list (for gauge update + prowlarr/seerr sync checks)
     Mock::given(method("GET"))
         .and(path(
             "/apis/servarr.dev/v1alpha1/namespaces/test/servarrapps",
@@ -824,7 +824,7 @@ fn make_multi_app_stack(name: &str, ns: &str) -> MediaStack {
                 pod_annotations: None,
                 gpu: None,
                 prowlarr_sync: None,
-                overseerr_sync: None,
+                seerr_sync: None,
                 bazarr_sync: None,
                 subgen_sync: None,
                 maintainerr_sync: None,
@@ -858,7 +858,7 @@ fn make_multi_app_stack(name: &str, ns: &str) -> MediaStack {
                 pod_annotations: None,
                 gpu: None,
                 prowlarr_sync: None,
-                overseerr_sync: None,
+                seerr_sync: None,
                 bazarr_sync: None,
                 subgen_sync: None,
                 maintainerr_sync: None,
@@ -892,7 +892,7 @@ fn make_multi_app_stack(name: &str, ns: &str) -> MediaStack {
                 pod_annotations: None,
                 gpu: None,
                 prowlarr_sync: None,
-                overseerr_sync: None,
+                seerr_sync: None,
                 bazarr_sync: None,
                 subgen_sync: None,
                 maintainerr_sync: None,
@@ -1050,7 +1050,7 @@ async fn test_media_stack_reconcile_disabled_app() {
                 pod_annotations: None,
                 gpu: None,
                 prowlarr_sync: None,
-                overseerr_sync: None,
+                seerr_sync: None,
                 bazarr_sync: None,
                 subgen_sync: None,
                 maintainerr_sync: None,
@@ -1084,7 +1084,7 @@ async fn test_media_stack_reconcile_disabled_app() {
                 pod_annotations: None,
                 gpu: None,
                 prowlarr_sync: None,
-                overseerr_sync: None,
+                seerr_sync: None,
                 bazarr_sync: None,
                 subgen_sync: None,
                 maintainerr_sync: None,
@@ -2289,7 +2289,7 @@ fn make_nfs_stack(name: &str, ns: &str, nfs: Option<NfsServerSpec>) -> MediaStac
             pod_annotations: None,
             gpu: None,
             prowlarr_sync: None,
-            overseerr_sync: None,
+            seerr_sync: None,
             bazarr_sync: None,
             subgen_sync: None,
             maintainerr_sync: None,

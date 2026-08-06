@@ -82,7 +82,7 @@ fn load_image_overrides() -> HashMap<String, ImageSpec> {
         "sabnzbd",
         "transmission",
         "tautulli",
-        "overseerr",
+        "seerr",
         "maintainerr",
         "jackett",
     ];
