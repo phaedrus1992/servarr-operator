@@ -460,3 +460,13 @@ A recommended schedule:
 | Application DB | Operator `spec.backup` | Every 6-12 hours | 7-14 copies |
 | Config PVCs | Velero nightly schedule | Daily | 7 days |
 | Full namespace | Velero weekly schedule | Weekly | 30 days |
+
+## Migrating an existing Overseerr app to Seerr
+
+Overseerr is unmaintained; its successor is Seerr. To migrate an existing `ServarrApp`, change its
+`spec.app` from `Overseerr` to `Seerr` (the operator's default image, config mount path, and
+security profile update automatically on the next reconcile). Seerr detects the inherited Overseerr
+database on first boot and migrates it in place — no manual data export/import is needed. As with
+any operator-managed change that replaces a running deployment, take a PVC snapshot of the app's
+`config` volume first (see [Volume-Level Backups with Velero](#volume-level-backups-with-velero)
+above).
