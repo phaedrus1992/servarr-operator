@@ -108,6 +108,32 @@ fn load_image_overrides() -> HashMap<String, ImageSpec> {
         }
     }
 
+    // Issue #44: fall back to the pre-rename DEFAULT_IMAGE_OVERSEERR_* env vars if the new
+    // DEFAULT_IMAGE_SEERR_* ones aren't set. Without this, a Helm release with a lingering
+    // `defaultImages.overseerr` value override renders DEFAULT_IMAGE_OVERSEERR_REPO/TAG (the
+    // chart template emits one env var pair per key in the user's values, regardless of
+    // whether the operator still recognizes that key) — and that override would silently stop
+    // applying after upgrade, falling back to the new default image with no warning.
+    if !overrides.contains_key("seerr")
+        && let Ok(repo) = std::env::var("DEFAULT_IMAGE_OVERSEERR_REPO")
+    {
+        let tag = std::env::var("DEFAULT_IMAGE_OVERSEERR_TAG").unwrap_or_default();
+        warn!(
+            %repo, %tag,
+            "loaded image override from deprecated DEFAULT_IMAGE_OVERSEERR_* env vars — \
+             rename defaultImages.overseerr to defaultImages.seerr in your Helm values"
+        );
+        overrides.insert(
+            "seerr".to_string(),
+            ImageSpec {
+                repository: repo,
+                tag,
+                digest: String::new(),
+                pull_policy: "IfNotPresent".into(),
+            },
+        );
+    }
+
     overrides
 }
 
@@ -180,6 +206,48 @@ mod tests {
                 assert!(overrides.contains_key("sabnzbd"));
                 assert_eq!(overrides.get("prowlarr").unwrap().tag, "latest");
                 assert_eq!(overrides.get("sabnzbd").unwrap().tag, "3.7");
+            },
+        );
+    }
+
+    #[test]
+    fn load_image_overrides_falls_back_to_legacy_overseerr_env_vars() {
+        temp_env::with_vars(
+            [
+                ("DEFAULT_IMAGE_SEERR_REPO", None::<&str>),
+                ("DEFAULT_IMAGE_SEERR_TAG", None::<&str>),
+                (
+                    "DEFAULT_IMAGE_OVERSEERR_REPO",
+                    Some("registry.internal/mirror/overseerr"),
+                ),
+                ("DEFAULT_IMAGE_OVERSEERR_TAG", Some("1.35.0")),
+            ],
+            || {
+                let overrides = load_image_overrides();
+                let spec = overrides.get("seerr").expect("seerr override missing");
+                assert_eq!(spec.repository, "registry.internal/mirror/overseerr");
+                assert_eq!(spec.tag, "1.35.0");
+            },
+        );
+    }
+
+    #[test]
+    fn load_image_overrides_prefers_seerr_env_vars_over_legacy_overseerr_ones() {
+        temp_env::with_vars(
+            [
+                ("DEFAULT_IMAGE_SEERR_REPO", Some("ghcr.io/seerr-team/seerr")),
+                ("DEFAULT_IMAGE_SEERR_TAG", Some("v3.4.1")),
+                (
+                    "DEFAULT_IMAGE_OVERSEERR_REPO",
+                    Some("registry.internal/mirror/overseerr"),
+                ),
+                ("DEFAULT_IMAGE_OVERSEERR_TAG", Some("1.35.0")),
+            ],
+            || {
+                let overrides = load_image_overrides();
+                let spec = overrides.get("seerr").expect("seerr override missing");
+                assert_eq!(spec.repository, "ghcr.io/seerr-team/seerr");
+                assert_eq!(spec.tag, "v3.4.1");
             },
         );
     }
