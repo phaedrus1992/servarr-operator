@@ -1373,8 +1373,28 @@ const VERIFY_POLL_INTERVAL: Duration = Duration::from_millis(200);
 /// Transmission RPC status codes meaning "still hash-checking" (queued-to-verify, verifying).
 const CHECKING_STATUSES: [i64; 2] = [1, 2];
 
+/// Transmission's `tr_stat` error code for "the torrent has a local I/O problem" (missing or
+/// unreadable data, permissions, etc.). Codes `1`/`2` are tracker warning/error and carry
+/// `errorString` text controlled by the torrent's tracker, not the local filesystem — matching
+/// on those would let a hostile tracker trigger removal of a perfectly healthy torrent by
+/// returning "no data found" in a `failure reason`/`warning message` (#483).
+const TR_STAT_LOCAL_ERROR: i64 = 3;
+
+/// Build an `Unknown` `DownloadDataHealthy` condition — used for every non-destructive
+/// failure path in [`check_download_client_health`] so a swallowed error still surfaces on
+/// the ServarrApp status instead of the condition silently disappearing (#483).
+fn download_health_unknown(reason: &str, message: String, now: &str) -> Condition {
+    Condition {
+        condition_type: condition_types::DOWNLOAD_DATA_HEALTHY.to_string(),
+        status: "Unknown".to_string(),
+        reason: reason.to_string(),
+        message,
+        last_transition_time: now.to_string(),
+    }
+}
+
 fn is_missing_data_torrent(t: &servarr_api::TorrentInfo) -> bool {
-    t.error != 0
+    t.error == TR_STAT_LOCAL_ERROR
         && t.error_string
             .to_lowercase()
             .contains(MISSING_DATA_ERROR_PATTERN)
@@ -1408,11 +1428,44 @@ async fn check_download_client_health(
     let ns = ns.as_str();
     let now = chrono_now();
 
-    let base_url = resolve_service_base_url(app, ns).ok()?;
+    let base_url = match resolve_service_base_url(app, ns) {
+        Ok(u) => u,
+        Err(e) => {
+            warn!(app = %app.name_any(), error = %e, "download-client health: failed to load app defaults");
+            return Some(download_health_unknown("DefaultsLoadError", e, &now));
+        }
+    };
     let (tx_user, tx_pass) = read_transmission_admin_creds(client, app, ns).await;
-    let tx_client =
-        servarr_api::TransmissionClient::new(&base_url, tx_user.as_deref(), tx_pass.as_deref())
-            .ok()?;
+    // read_transmission_admin_creds degrades a partial credential read (one of
+    // username/password unreadable) to unauthenticated — acceptable for check_api_health's
+    // read-only probe, but this path can delete torrents, so fail closed instead of silently
+    // proceeding unauthenticated when adminCredentials was configured but only partly read.
+    if app.spec.admin_credentials.is_some() && tx_user.is_some() != tx_pass.is_some() {
+        warn!(app = %app.name_any(),
+            "download-client health: adminCredentials secret is missing username or \
+             password, refusing to proceed unauthenticated on a destructive path");
+        return Some(download_health_unknown(
+            "CredentialReadError",
+            "adminCredentials secret is missing username or password".to_string(),
+            &now,
+        ));
+    }
+    let tx_client = match servarr_api::TransmissionClient::new(
+        &base_url,
+        tx_user.as_deref(),
+        tx_pass.as_deref(),
+    ) {
+        Ok(c) => c,
+        Err(e) => {
+            warn!(app = %app.name_any(), error = %e.log_summary(),
+                    "download-client health: failed to build Transmission client");
+            return Some(download_health_unknown(
+                "ClientBuildError",
+                e.log_summary(),
+                &now,
+            ));
+        }
+    };
 
     let fields = ["id", "name", "error", "errorString", "status"];
     let torrents = match tx_client.torrent_get(&fields, None).await {
@@ -1420,13 +1473,11 @@ async fn check_download_client_health(
         Err(e) => {
             warn!(app = %app.name_any(), error = %e.log_summary(),
                     "download-client health: torrent-get failed");
-            return Some(Condition {
-                condition_type: condition_types::DOWNLOAD_DATA_HEALTHY.to_string(),
-                status: "Unknown".to_string(),
-                reason: "TorrentGetError".to_string(),
-                message: e.log_summary(),
-                last_transition_time: now,
-            });
+            return Some(download_health_unknown(
+                "TorrentGetError",
+                e.log_summary(),
+                &now,
+            ));
         }
     };
 
@@ -1456,12 +1507,34 @@ async fn remediate_stale_torrents(
     tx_client: &servarr_api::TransmissionClient,
     stale: &[servarr_api::TorrentInfo],
 ) -> RemediationOutcome {
-    let ids: Vec<i64> = stale.iter().map(|t| t.id).collect();
-    if let Err(e) = tx_client.torrent_verify(&ids).await {
-        warn!(error = %e.log_summary(), "download-client health: torrent-verify failed");
+    // Torrents Transmission is already hash-checking (e.g. verify was triggered on a
+    // previous reconcile and hasn't finished) must not be re-verified — restarting the
+    // hash-check on every 300s reconcile means a large torrent's verify never converges
+    // and disk I/O never lets up (#483).
+    let already_checking: Vec<i64> = stale
+        .iter()
+        .filter(|t| CHECKING_STATUSES.contains(&t.status))
+        .map(|t| t.id)
+        .collect();
+    let ids: Vec<i64> = stale
+        .iter()
+        .filter(|t| !CHECKING_STATUSES.contains(&t.status))
+        .map(|t| t.id)
+        .collect();
+    if ids.is_empty() {
         return RemediationOutcome {
             removed: Vec::new(),
-            still_pending: ids,
+            still_pending: already_checking,
+        };
+    }
+
+    if let Err(e) = tx_client.torrent_verify(&ids).await {
+        warn!(error = %e.log_summary(), "download-client health: torrent-verify failed");
+        let mut still_pending = ids;
+        still_pending.extend(already_checking);
+        return RemediationOutcome {
+            removed: Vec::new(),
+            still_pending,
         };
     }
 
@@ -1471,11 +1544,12 @@ async fn remediate_stale_torrents(
         .filter(|t| is_missing_data_torrent(t))
         .map(|t| t.id)
         .collect();
-    let still_checking: Vec<i64> = ids
+    let mut still_checking: Vec<i64> = ids
         .iter()
         .copied()
         .filter(|id| !settled.iter().any(|t| t.id == *id))
         .collect();
+    still_checking.extend(already_checking);
 
     if still_erroring.is_empty() {
         return RemediationOutcome {
@@ -1484,7 +1558,10 @@ async fn remediate_stale_torrents(
         };
     }
 
-    match tx_client.torrent_remove(&still_erroring, false).await {
+    match tx_client
+        .torrent_remove(&still_erroring, servarr_api::DeleteLocalData::No)
+        .await
+    {
         Ok(()) => RemediationOutcome {
             removed: still_erroring,
             still_pending: still_checking,
@@ -1508,12 +1585,21 @@ async fn poll_until_settled(
     tx_client: &servarr_api::TransmissionClient,
     ids: &[i64],
 ) -> Vec<servarr_api::TorrentInfo> {
+    // Transmission applies torrent-verify's status transition asynchronously relative to the
+    // RPC response returning, so polling immediately risks reading the pre-verify snapshot —
+    // still showing the old error with status 0 (not checking) — and wrongly treating the
+    // torrent as "settled and still broken" before Transmission ever re-checked it (#483).
+    // Sleep first to give the transition time to land.
+    tokio::time::sleep(VERIFY_POLL_INTERVAL).await;
     let fields = ["id", "name", "error", "errorString", "status"];
     for _ in 0..VERIFY_POLL_ATTEMPTS {
         match tx_client.torrent_get(&fields, Some(ids)).await {
             Ok(t) if t.iter().all(|x| !CHECKING_STATUSES.contains(&x.status)) => return t,
             Ok(_) => tokio::time::sleep(VERIFY_POLL_INTERVAL).await,
-            Err(_) => return Vec::new(),
+            Err(e) => {
+                warn!(error = %e.log_summary(), "download-client health: torrent-get (poll) failed");
+                return Vec::new();
+            }
         }
     }
     Vec::new()
@@ -1525,11 +1611,25 @@ async fn report_stale_torrents(
     stale: &[servarr_api::TorrentInfo],
     outcome: &RemediationOutcome,
 ) {
-    let names: Vec<&str> = stale.iter().map(|t| t.name.as_str()).collect();
+    // Nothing needed remediation by the time this pass finished (e.g. every stale torrent
+    // recovered during the verify poll) — no Warning worth surfacing.
+    if outcome.removed.is_empty() && outcome.still_pending.is_empty() {
+        return;
+    }
+
+    // Torrent names come from tracker/`.torrent` metadata outside the operator's trust
+    // boundary, so they must not reach a tenant-visible Event unsanitized (control
+    // characters, unbounded length — `events.k8s.io/v1` rejects a note over 1024 chars).
+    // Report the operator-assigned ids instead; names are available in the operator's own
+    // debug log for troubleshooting (#483).
+    debug!(
+        names = ?stale.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(),
+        "download-client health: stale torrent names"
+    );
+    let ids: Vec<i64> = stale.iter().map(|t| t.id).collect();
     let note = format!(
-        "{} torrent(s) reporting missing data ({}); {} removed as orphaned, {} pending verify",
+        "{} torrent(s) reporting missing data (ids: {ids:?}); {} removed as orphaned, {} pending verify",
         stale.len(),
-        names.join(", "),
         outcome.removed.len(),
         outcome.still_pending.len(),
     );
@@ -4126,7 +4226,16 @@ mod tests {
 
     #[test]
     fn is_missing_data_torrent_ignores_unrelated_errors() {
-        let t = torrent(1, 2, "tracker gave a warning");
+        let t = torrent(1, 1, "tracker gave a warning");
+        assert!(!is_missing_data_torrent(&t));
+    }
+
+    #[test]
+    fn is_missing_data_torrent_ignores_tracker_error_even_with_matching_text() {
+        // error == 2 (TR_STAT_TRACKER_ERROR) carries an errorString supplied by the
+        // torrent's tracker, not the local filesystem. A hostile tracker returning
+        // "no data found" in its failure reason must not trigger removal (#483).
+        let t = torrent(1, 2, "no data found! (tracker failure reason)");
         assert!(!is_missing_data_torrent(&t));
     }
 
@@ -4306,6 +4415,33 @@ mod tests {
         assert_eq!(outcome.still_pending, vec![1]);
     }
 
+    #[tokio::test]
+    async fn remediate_stale_torrents_skips_verify_for_torrent_already_checking() {
+        let mock_server = MockServer::start().await;
+
+        // torrent-verify must never be called for a torrent that's already checking —
+        // restarting the hash on every reconcile would mean it never converges.
+        Mock::given(method("POST"))
+            .and(path("/transmission/rpc"))
+            .and(body_partial_json(
+                serde_json::json!({"method": "torrent-verify"}),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "result": "success", "arguments": {}
+            })))
+            .expect(0)
+            .mount(&mock_server)
+            .await;
+
+        let client = servarr_api::TransmissionClient::new(&mock_server.uri(), None, None).unwrap();
+        let mut t = torrent(1, 3, "no data found");
+        t.status = 2; // already verifying
+        let outcome = remediate_stale_torrents(&client, &[t]).await;
+
+        assert!(outcome.removed.is_empty());
+        assert_eq!(outcome.still_pending, vec![1]);
+    }
+
     // ---- report_stale_torrents (#483) ----
 
     #[tokio::test]
@@ -4318,7 +4454,7 @@ mod tests {
         let recorder = Recorder::new(client.clone(), "test".into());
         let obj_ref = app.object_ref(&());
 
-        let stale = vec![torrent(1, 3, "no data found")];
+        let stale = vec![torrent(1, 3, "sensitive-torrent-name")];
         let outcome = RemediationOutcome {
             removed: vec![1],
             still_pending: Vec::new(),
@@ -4331,6 +4467,82 @@ mod tests {
         assert_eq!(bodies[0]["type"], "Warning");
         let note = bodies[0]["note"].as_str().unwrap();
         assert!(note.contains("1 removed as orphaned"));
+        assert!(
+            note.contains('1'),
+            "note should carry the torrent id: {note}"
+        );
+        assert!(
+            !note.contains("sensitive-torrent-name"),
+            "torrent names (tracker-controlled content) must not reach the tenant-visible \
+             Event note: {note}"
+        );
+    }
+
+    #[tokio::test]
+    async fn report_stale_torrents_publishes_nothing_when_fully_recovered() {
+        let mock_server = MockServer::start().await;
+        let client = build_mock_client(&mock_server.uri()).await;
+        mount_event_post_mock(&mock_server).await;
+
+        let app = make_test_app("my-transmission", "test", AppType::Transmission);
+        let recorder = Recorder::new(client.clone(), "test".into());
+        let obj_ref = app.object_ref(&());
+
+        let stale = vec![torrent(1, 3, "no data found")];
+        let outcome = RemediationOutcome {
+            removed: Vec::new(),
+            still_pending: Vec::new(),
+        };
+        report_stale_torrents(&recorder, &obj_ref, &stale, &outcome).await;
+
+        let bodies = event_post_bodies(&mock_server).await;
+        assert!(
+            bodies.is_empty(),
+            "a fully-recovered outcome should not publish a Warning Event"
+        );
+    }
+
+    // ---- check_download_client_health credential fail-closed (#483) ----
+
+    #[tokio::test]
+    async fn check_download_client_health_fails_closed_on_partial_credentials() {
+        let mock_server = MockServer::start().await;
+        let client = build_mock_client(&mock_server.uri()).await;
+        mount_event_post_mock(&mock_server).await;
+
+        // Secret has "username" but not "password" — a partial read.
+        mount_secret_mock(
+            &mock_server,
+            "test",
+            "tx-admin-creds",
+            json!({"username": "YWRtaW4="}),
+        )
+        .await;
+
+        let mut app = make_test_app("my-transmission", "test", AppType::Transmission);
+        app.spec.api_health_check = Some(servarr_crds::ApiHealthCheckSpec {
+            enabled: true,
+            interval_seconds: None,
+        });
+        app.spec.admin_credentials = Some(servarr_crds::AdminCredentialsSpec {
+            secret_name: "tx-admin-creds".into(),
+        });
+        let recorder = Recorder::new(client.clone(), "test".into());
+        let obj_ref = app.object_ref(&());
+
+        let cond = check_download_client_health(&client, &app, &recorder, &obj_ref).await;
+
+        let cond = cond.expect("a partial credential read must still surface a condition");
+        assert_eq!(cond.condition_type, condition_types::DOWNLOAD_DATA_HEALTHY);
+        assert_eq!(cond.status, "Unknown");
+        assert_eq!(cond.reason, "CredentialReadError");
+
+        // No RPC call to Transmission should ever have been attempted.
+        let events = event_post_bodies(&mock_server).await;
+        assert!(
+            events.is_empty(),
+            "no Event should be published on a credential-read failure"
+        );
     }
 
     // ---- json_is_subset ----
