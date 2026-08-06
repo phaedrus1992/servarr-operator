@@ -720,6 +720,7 @@ Enables API-level health checking that hits the application's API endpoint (rath
 |---|---|---|
 | `enabled` | `bool` | `false` |
 | `intervalSeconds` | `uint32` | `60` (when omitted) |
+| `autoRemove` | `bool` | `false` |
 
 ```yaml
 spec:
@@ -729,9 +730,9 @@ spec:
     intervalSeconds: 30
 ```
 
-**Transmission download-client self-heal.** For `Transmission`-type apps, `apiHealthCheck.enabled: true` also turns on detection and self-healing of torrents whose on-disk data has gone missing -- e.g. an external cleanup job deleted files a torrent still references in its session, and it starts reporting `"No data found!"`. Unlike the general health check above, this does **not** require `apiKeySecret` (Transmission auth uses `adminCredentials` instead, if configured).
+**Transmission download-client self-heal.** For `Transmission`-type apps, `apiHealthCheck.enabled: true` also turns on detection of torrents whose on-disk data has gone missing -- e.g. an external cleanup job deleted files a torrent still references in its session, and it starts reporting `"No data found!"`. Unlike the general health check above, this does **not** require `apiKeySecret` (Transmission auth uses `adminCredentials` instead, if configured).
 
-Each reconcile, the operator: detects torrents reporting a local data error, triggers Transmission's own `torrent-verify` to re-check the files, and -- only once that verify confirms the data is still missing -- removes the orphaned torrent entry (never the same pass it was detected, and never while Transmission is still hash-checking it). Results are reported via a `DownloadDataMissing` Warning Event and the `DownloadDataHealthy` status condition.
+Each reconcile, the operator: detects torrents reporting a local data error, and triggers Transmission's own `torrent-verify` to re-check the files. Detection alone -- the `DownloadDataMissing` Warning Event and the `DownloadDataHealthy` status condition -- only needs `apiHealthCheck.enabled`. Actually **removing** a torrent confirmed still missing its data after the verify additionally requires `apiHealthCheck.autoRemove: true` -- a separate, destructive opt-in, so upgrading to a version with self-heal (or copying `enabled: true` from these docs) never starts deleting torrent entries without explicit consent. With `autoRemove` left at its default `false`, a confirmed-orphaned torrent is reported (as `MissingDataDetected`, "confirmed orphaned") but left alone. When `autoRemove: true`, the operator removes it (never the same pass it was detected, and never while Transmission is still hash-checking it).
 
 ```yaml
 spec:
@@ -740,6 +741,7 @@ spec:
     secretName: transmission-admin
   apiHealthCheck:
     enabled: true
+    autoRemove: true
 ```
 
 ---

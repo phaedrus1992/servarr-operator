@@ -75,7 +75,12 @@ pub struct SessionStats {
 /// `2` = verifying. `error`/`error_string` are non-empty when Transmission
 /// hit a problem with this torrent — e.g. `error_string` containing
 /// "No data found!" when the on-disk data has gone missing (#483).
-#[derive(Debug, Clone, Deserialize)]
+///
+/// `hash_string` is the torrent's content-addressed SHA-1 hash — stable across a Transmission
+/// daemon restart, unlike `id`, which is assigned from a per-process counter that resets on
+/// restart. Callers that act on a torrent some time after observing it (verify, then remove)
+/// must address it by `hash_string`, not `id` (#500).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TorrentInfo {
     pub id: i64,
@@ -87,6 +92,8 @@ pub struct TorrentInfo {
     pub error_string: String,
     #[serde(default)]
     pub status: i64,
+    #[serde(default)]
+    pub hash_string: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -162,42 +169,45 @@ impl TransmissionClient {
     }
 
     /// Fetch torrents via `torrent-get`. `fields` selects which attributes Transmission
-    /// returns; pass `ids` to scope the request to specific torrents, or `None` for all.
+    /// returns; pass `hashes` to scope the request to specific torrents by their stable
+    /// `hashString` (not the process-local numeric `id`, which is unstable across a
+    /// Transmission restart — #500), or `None` for all.
     pub async fn torrent_get(
         &self,
         fields: &[&str],
-        ids: Option<&[i64]>,
+        hashes: Option<&[&str]>,
     ) -> Result<Vec<TorrentInfo>, ApiError> {
         let mut args = serde_json::json!({ "fields": fields });
-        if let Some(ids) = ids {
-            args["ids"] = serde_json::json!(ids);
+        if let Some(hashes) = hashes {
+            args["ids"] = serde_json::json!(hashes);
         }
         let result: TorrentGetResult = self.rpc_call("torrent-get", Some(args)).await?;
         Ok(result.torrents)
     }
 
-    /// Trigger a hash-check via `torrent-verify`. Never destructive — Transmission only
+    /// Trigger a hash-check via `torrent-verify`, addressing torrents by their stable
+    /// `hashString` rather than numeric `id` (#500). Never destructive — Transmission only
     /// re-reads on-disk data, it never deletes anything.
-    pub async fn torrent_verify(&self, ids: &[i64]) -> Result<(), ApiError> {
-        let args = serde_json::json!({ "ids": ids });
+    pub async fn torrent_verify(&self, hashes: &[&str]) -> Result<(), ApiError> {
+        let args = serde_json::json!({ "ids": hashes });
         let _: serde_json::Value = self.rpc_call("torrent-verify", Some(args)).await?;
         Ok(())
     }
 
-    /// Remove torrents via `torrent-remove`. Returns `Ok(())` immediately, without an RPC
-    /// call, when `ids` is empty — Transmission's RPC spec treats an *absent* `ids` key as
-    /// "all torrents", so an empty removal set must never silently degrade into an
-    /// unscoped one.
+    /// Remove torrents via `torrent-remove`, addressing them by their stable `hashString`
+    /// rather than numeric `id` (#500). Returns `Ok(())` immediately, without an RPC call,
+    /// when `hashes` is empty — Transmission's RPC spec treats an *absent* `ids` key as "all
+    /// torrents", so an empty removal set must never silently degrade into an unscoped one.
     pub async fn torrent_remove(
         &self,
-        ids: &[i64],
+        hashes: &[&str],
         delete_local_data: DeleteLocalData,
     ) -> Result<(), ApiError> {
-        if ids.is_empty() {
+        if hashes.is_empty() {
             return Ok(());
         }
         let args = serde_json::json!({
-            "ids": ids,
+            "ids": hashes,
             "delete-local-data": delete_local_data.as_bool(),
         });
         let _: serde_json::Value = self.rpc_call("torrent-remove", Some(args)).await?;
@@ -384,7 +394,7 @@ mod tests {
             .await;
 
         let client = TransmissionClient::new(&server.uri(), None, None).unwrap();
-        let result = client.torrent_verify(&[1]).await;
+        let result = client.torrent_verify(&["hash1"]).await;
         assert!(
             matches!(result, Err(ApiError::OperationFailed { .. })),
             "expected OperationFailed, got {result:?}"
@@ -477,7 +487,7 @@ mod tests {
 
         let client = TransmissionClient::new(&server.uri(), None, None).unwrap();
         let torrents = client
-            .torrent_get(&["id", "name"], Some(&[7]))
+            .torrent_get(&["id", "name"], Some(&["hash7"]))
             .await
             .unwrap();
 
@@ -495,7 +505,7 @@ mod tests {
             .await;
 
         let client = TransmissionClient::new(&server.uri(), None, None).unwrap();
-        client.torrent_verify(&[1, 2]).await.unwrap();
+        client.torrent_verify(&["hash1", "hash2"]).await.unwrap();
     }
 
     #[tokio::test]
@@ -509,7 +519,7 @@ mod tests {
 
         let client = TransmissionClient::new(&server.uri(), None, None).unwrap();
         client
-            .torrent_remove(&[1], DeleteLocalData::No)
+            .torrent_remove(&["hash1"], DeleteLocalData::No)
             .await
             .unwrap();
     }
@@ -562,5 +572,24 @@ mod tests {
     fn base64_credentials() {
         // "user:pass" -> "dXNlcjpwYXNz"
         assert_eq!(base64_encode("user:pass"), "dXNlcjpwYXNz");
+    }
+
+    // ---- TorrentInfo roundtrip (#501) ----
+
+    proptest::proptest! {
+        #[test]
+        fn torrent_info_roundtrips_through_json(
+            id in proptest::num::i64::ANY,
+            name in ".{0,200}",
+            error in proptest::num::i64::ANY,
+            error_string in ".{0,200}",
+            status in proptest::num::i64::ANY,
+            hash_string in "[0-9a-f]{0,40}",
+        ) {
+            let original = TorrentInfo { id, name, error, error_string, status, hash_string };
+            let json = serde_json::to_value(&original).unwrap();
+            let roundtripped: TorrentInfo = serde_json::from_value(json).unwrap();
+            proptest::prop_assert_eq!(original, roundtripped);
+        }
     }
 }

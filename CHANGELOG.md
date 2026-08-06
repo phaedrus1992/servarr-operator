@@ -18,6 +18,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   once that verify settles — reported via a `DownloadDataMissing` Event and a new
   `DownloadDataHealthy` status condition (#483).
 
+### Changed
+
+- Reduce Transmission health-check overhead: the operator now resolves the adminCredentials
+  secret and builds the Transmission RPC client once per reconcile instead of once per health
+  check, halving Secret reads and session-ID handshakes for Transmission apps with both the
+  general API health check and the download-client self-heal check enabled (#499).
+
 ### Security
 
 - Fix admin credentials and API keys leaking into `status.conditions[]` and Kubernetes Events
@@ -77,6 +84,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   the CR deleted regardless of outcome, permanently orphaning the downstream registration with no
   way to notice. Cleanup failures are now classified as terminal (the registration is provably
   already gone — treated as success) or transient (finalizer kept, cleanup retried) (#451).
+- Fix Transmission self-heal removing a torrent confirmed to have missing on-disk data
+  whenever `apiHealthCheck.enabled` was set, with no separate consent for the destructive
+  removal step — an app that already had the flag enabled before self-heal shipped would start
+  deleting torrent entries on its next reconcile after upgrading. Removal now additionally
+  requires `apiHealthCheck.autoRemove: true`, which defaults to `false`; detection, the
+  `DownloadDataMissing` Event, and the `DownloadDataHealthy` condition still fire under
+  `enabled` alone (#498).
+- Fix Transmission self-heal addressing torrents by their process-local numeric id, which
+  Transmission reassigns from a per-process counter that resets on daemon restart. A restart
+  landing inside the ~1s detect-to-remediate window could make `torrent-verify`/`torrent-remove`
+  act on a different torrent than the one detected. The operator now addresses torrents by
+  their stable content hash instead (#500).
 
 ### Removed
 
