@@ -36,7 +36,7 @@ in a MediaStack).
 | App | File | Notes |
 |-----|------|-------|
 | Tautulli | [`tautulli.yaml`](examples/tautulli.yaml) | Plex monitoring |
-| Overseerr | [`overseerr.yaml`](examples/overseerr.yaml) | Media requests |
+| Seerr | [`seerr.yaml`](examples/seerr.yaml) | Media requests |
 | Maintainerr | [`maintainerr.yaml`](examples/maintainerr.yaml) | Nonroot security profile |
 | Prowlarr | [`prowlarr.yaml`](examples/prowlarr.yaml) | Cross-app sync, custom indexers |
 | Jackett | [`jackett.yaml`](examples/jackett.yaml) | |

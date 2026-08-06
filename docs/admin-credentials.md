@@ -140,7 +140,7 @@ healthy, and re-applied on every reconcile.
 | Transmission | `session-set` RPC (`rpc-username`, `rpc-password`, `rpc-authentication-required`) |
 | Jellyfin | Startup wizard (`POST /Startup/User`) on first run; `POST /Users/{id}/Password` thereafter |
 | Tautulli | `POST /api/v2?cmd=set_credentials` |
-| Overseerr | `PUT /api/v1/auth/local` |
+| Seerr | `PUT /api/v1/auth/local` |
 | Bazarr | Direct API call; password is MD5-hashed before submission (Bazarr API contract) |
 
 ### Unsupported apps

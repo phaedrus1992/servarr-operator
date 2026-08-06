@@ -276,7 +276,7 @@ The app will restart automatically as part of its internal restore process.
   - Transmission
   - SABnzbd
   - Tautulli
-  - Overseerr
+  - Seerr
   - Maintainerr
   - Jackett
   - Jellyfin

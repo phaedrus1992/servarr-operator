@@ -1,3 +1,4 @@
+use serde::Deserialize;
 use servarr_crds::*;
 
 #[test]
@@ -444,6 +445,79 @@ fn test_smoke_test_manifests_match_crd() {
     assert!(
         count >= 14,
         "expected at least 14 smoke-test manifests, found {count}"
+    );
+}
+
+/// Same intent as [`test_smoke_test_manifests_match_crd`], for `docs/examples/*.yaml`.
+///
+/// These docs examples had no schema validation at all before this test: issue #44's rename
+/// caught `docs/examples/overseerr.yaml`'s `appConfig` key spelled `Overseerr` (capitalized),
+/// which never actually matched the `#[serde(rename_all = "camelCase")]` wire form (lowercase
+/// `overseerr`) and would have failed to apply. Multi-document files (`---`-separated) are
+/// supported since several examples show more than one variant in one file.
+#[test]
+fn test_docs_examples_match_crd() {
+    let examples_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent() // crates/
+        .unwrap()
+        .parent() // repo root
+        .unwrap()
+        .join("docs/examples");
+
+    assert!(
+        examples_dir.is_dir(),
+        "docs examples dir missing: {}",
+        examples_dir.display()
+    );
+
+    let mut count = 0;
+    for entry in std::fs::read_dir(&examples_dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().and_then(|e| e.to_str()) != Some("yaml") {
+            continue;
+        }
+        let contents = std::fs::read_to_string(&path).unwrap();
+        for doc in serde_yaml::Deserializer::from_str(&contents) {
+            let doc = serde_yaml::Value::deserialize(doc).unwrap_or_else(|e| {
+                panic!("{}: invalid YAML document: {e}", path.display());
+            });
+            let kind = doc
+                .get("kind")
+                .and_then(|k| k.as_str())
+                .unwrap_or("ServarrApp");
+            if matches!(kind, "Secret" | "ConfigMap" | "ServiceAccount") {
+                continue;
+            }
+            let Some(spec) = doc.get("spec") else {
+                continue;
+            };
+            let spec_json = serde_json::to_value(spec).unwrap();
+            match kind {
+                "MediaStack" => {
+                    let result: Result<MediaStackSpec, _> = serde_json::from_value(spec_json);
+                    assert!(
+                        result.is_ok(),
+                        "{}: spec does not match MediaStackSpec: {}",
+                        path.display(),
+                        result.unwrap_err()
+                    );
+                }
+                _ => {
+                    let result: Result<ServarrAppSpec, _> = serde_json::from_value(spec_json);
+                    assert!(
+                        result.is_ok(),
+                        "{}: spec does not match ServarrAppSpec: {}",
+                        path.display(),
+                        result.unwrap_err()
+                    );
+                }
+            }
+            count += 1;
+        }
+    }
+    assert!(
+        count >= 16,
+        "expected at least 16 docs example documents, found {count}"
     );
 }
 
