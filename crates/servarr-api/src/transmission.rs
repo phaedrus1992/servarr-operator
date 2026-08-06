@@ -34,7 +34,6 @@ struct RpcRequest<'a> {
 
 #[derive(Deserialize)]
 struct RpcResponse<T> {
-    #[allow(dead_code)]
     result: String,
     arguments: T,
 }
@@ -68,6 +67,50 @@ pub struct SessionStats {
     pub download_speed: i64,
     #[serde(default, rename = "uploadSpeed")]
     pub upload_speed: i64,
+}
+
+/// A single torrent as returned by `torrent-get`.
+///
+/// `status` values follow the Transmission RPC spec: `1` = queued to verify,
+/// `2` = verifying. `error`/`error_string` are non-empty when Transmission
+/// hit a problem with this torrent — e.g. `error_string` containing
+/// "No data found!" when the on-disk data has gone missing (#483).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TorrentInfo {
+    pub id: i64,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub error: i64,
+    #[serde(default)]
+    pub error_string: String,
+    #[serde(default)]
+    pub status: i64,
+}
+
+#[derive(Debug, Deserialize)]
+struct TorrentGetResult {
+    torrents: Vec<TorrentInfo>,
+}
+
+/// Whether [`TransmissionClient::torrent_remove`] should also delete the torrent's on-disk
+/// data. A plain `bool` reads identically at both call sites (`torrent_remove(&ids, true)` vs
+/// `torrent_remove(&ids, false)`) for a parameter that controls an irreversible filesystem
+/// delete — a named enum makes the call site self-describing and a flipped literal a type
+/// error instead of a silent behavior change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeleteLocalData {
+    /// Also delete the torrent's on-disk files. Irreversible.
+    Yes,
+    /// Only remove Transmission's bookkeeping entry; on-disk files (if any) are left alone.
+    No,
+}
+
+impl DeleteLocalData {
+    fn as_bool(self) -> bool {
+        matches!(self, Self::Yes)
+    }
 }
 
 impl TransmissionClient {
@@ -118,6 +161,49 @@ impl TransmissionClient {
         self.rpc_call("session-stats", None).await
     }
 
+    /// Fetch torrents via `torrent-get`. `fields` selects which attributes Transmission
+    /// returns; pass `ids` to scope the request to specific torrents, or `None` for all.
+    pub async fn torrent_get(
+        &self,
+        fields: &[&str],
+        ids: Option<&[i64]>,
+    ) -> Result<Vec<TorrentInfo>, ApiError> {
+        let mut args = serde_json::json!({ "fields": fields });
+        if let Some(ids) = ids {
+            args["ids"] = serde_json::json!(ids);
+        }
+        let result: TorrentGetResult = self.rpc_call("torrent-get", Some(args)).await?;
+        Ok(result.torrents)
+    }
+
+    /// Trigger a hash-check via `torrent-verify`. Never destructive — Transmission only
+    /// re-reads on-disk data, it never deletes anything.
+    pub async fn torrent_verify(&self, ids: &[i64]) -> Result<(), ApiError> {
+        let args = serde_json::json!({ "ids": ids });
+        let _: serde_json::Value = self.rpc_call("torrent-verify", Some(args)).await?;
+        Ok(())
+    }
+
+    /// Remove torrents via `torrent-remove`. Returns `Ok(())` immediately, without an RPC
+    /// call, when `ids` is empty — Transmission's RPC spec treats an *absent* `ids` key as
+    /// "all torrents", so an empty removal set must never silently degrade into an
+    /// unscoped one.
+    pub async fn torrent_remove(
+        &self,
+        ids: &[i64],
+        delete_local_data: DeleteLocalData,
+    ) -> Result<(), ApiError> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let args = serde_json::json!({
+            "ids": ids,
+            "delete-local-data": delete_local_data.as_bool(),
+        });
+        let _: serde_json::Value = self.rpc_call("torrent-remove", Some(args)).await?;
+        Ok(())
+    }
+
     /// Set authentication credentials via `session-set`.
     ///
     /// Enables RPC authentication and sets the username and password.
@@ -153,21 +239,32 @@ impl TransmissionClient {
             }
             // Retry with the new session ID
             let resp = self.send_rpc(&body).await?;
-            if !resp.status().is_success() {
-                let status = resp.status().as_u16();
-                let body = resp.text().await.unwrap_or_default();
-                return Err(ApiError::ApiResponse { status, body });
-            }
-            let rpc_resp: RpcResponse<T> = resp.json().await.map_err(ApiError::Request)?;
-            Ok(rpc_resp.arguments)
-        } else if resp.status().is_success() {
-            let rpc_resp: RpcResponse<T> = resp.json().await.map_err(ApiError::Request)?;
-            Ok(rpc_resp.arguments)
+            Self::parse_rpc_response(resp).await
         } else {
+            Self::parse_rpc_response(resp).await
+        }
+    }
+
+    /// Parse an RPC HTTP response into its `arguments`. Transmission answers RPC-level
+    /// failures (bad argument, unrecognized method) with HTTP 200 and `result` set to a
+    /// non-"success" message, so the HTTP status alone can't tell a caller the request was
+    /// rejected — callers that trigger destructive follow-up actions (e.g. removing a torrent
+    /// after a `torrent-verify` failure) depend on this check, not just the status code (#483).
+    async fn parse_rpc_response<T: serde::de::DeserializeOwned>(
+        resp: reqwest::Response,
+    ) -> Result<T, ApiError> {
+        if !resp.status().is_success() {
             let status = resp.status().as_u16();
             let body = resp.text().await.unwrap_or_default();
-            Err(ApiError::ApiResponse { status, body })
+            return Err(ApiError::ApiResponse { status, body });
         }
+        let rpc_resp: RpcResponse<T> = resp.json().await.map_err(ApiError::Request)?;
+        if rpc_resp.result != "success" {
+            return Err(ApiError::OperationFailed {
+                message: rpc_resp.result,
+            });
+        }
+        Ok(rpc_resp.arguments)
     }
 
     async fn send_rpc<S: Serialize>(&self, body: &S) -> Result<reqwest::Response, ApiError> {
@@ -272,6 +369,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn rpc_level_failure_with_http_200_is_an_error() {
+        // Transmission answers a rejected RPC (bad argument, unrecognized method) with
+        // HTTP 200 and a non-"success" `result` string — the HTTP status alone must not be
+        // trusted as a success signal.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/transmission/rpc"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "result": "invalid argument",
+                "arguments": {}
+            })))
+            .mount(&server)
+            .await;
+
+        let client = TransmissionClient::new(&server.uri(), None, None).unwrap();
+        let result = client.torrent_verify(&[1]).await;
+        assert!(
+            matches!(result, Err(ApiError::OperationFailed { .. })),
+            "expected OperationFailed, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
     async fn session_set_auth_sends_correct_arguments() {
         let server = MockServer::start().await;
         // First request returns 409 with a session ID
@@ -314,6 +434,97 @@ mod tests {
         let client = TransmissionClient::new(&server.uri(), None, None).unwrap();
         let info = client.session_get().await.unwrap();
         assert!(info.version.starts_with("3.00"));
+    }
+
+    #[tokio::test]
+    async fn torrent_get_parses_torrents_and_sends_requested_fields() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/transmission/rpc"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(rpc_ok(serde_json::json!({
+                "torrents": [
+                    {"id": 1, "name": "Show S01E01", "error": 3, "errorString": "No data found! Ensure your drives are connected.", "status": 0},
+                    {"id": 2, "name": "Movie", "error": 0, "errorString": "", "status": 6},
+                ]
+            }))))
+            .mount(&server)
+            .await;
+
+        let client = TransmissionClient::new(&server.uri(), None, None).unwrap();
+        let torrents = client
+            .torrent_get(&["id", "name", "error", "errorString", "status"], None)
+            .await
+            .unwrap();
+
+        assert_eq!(torrents.len(), 2);
+        assert_eq!(torrents[0].id, 1);
+        assert_eq!(torrents[0].error, 3);
+        assert!(torrents[0].error_string.contains("No data found"));
+        assert_eq!(torrents[1].id, 2);
+        assert_eq!(torrents[1].error, 0);
+    }
+
+    #[tokio::test]
+    async fn torrent_get_scopes_request_to_given_ids() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/transmission/rpc"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(rpc_ok(serde_json::json!({
+                "torrents": [{"id": 7, "name": "Only Me", "error": 0, "errorString": "", "status": 0}]
+            }))))
+            .mount(&server)
+            .await;
+
+        let client = TransmissionClient::new(&server.uri(), None, None).unwrap();
+        let torrents = client
+            .torrent_get(&["id", "name"], Some(&[7]))
+            .await
+            .unwrap();
+
+        assert_eq!(torrents.len(), 1);
+        assert_eq!(torrents[0].id, 7);
+    }
+
+    #[tokio::test]
+    async fn torrent_verify_sends_ids_and_succeeds() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/transmission/rpc"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(rpc_ok(serde_json::json!({}))))
+            .mount(&server)
+            .await;
+
+        let client = TransmissionClient::new(&server.uri(), None, None).unwrap();
+        client.torrent_verify(&[1, 2]).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn torrent_remove_sends_delete_local_data_flag() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/transmission/rpc"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(rpc_ok(serde_json::json!({}))))
+            .mount(&server)
+            .await;
+
+        let client = TransmissionClient::new(&server.uri(), None, None).unwrap();
+        client
+            .torrent_remove(&[1], DeleteLocalData::No)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn torrent_remove_is_a_noop_for_empty_ids() {
+        // No mock mounted — a request would fail with no matching Mock, proving this
+        // never reaches the network when `ids` is empty (an absent `ids` key would mean
+        // "all torrents" to Transmission, so this must short-circuit, not RPC-call).
+        let server = MockServer::start().await;
+        let client = TransmissionClient::new(&server.uri(), None, None).unwrap();
+        client
+            .torrent_remove(&[], DeleteLocalData::No)
+            .await
+            .unwrap();
     }
 
     use super::base64_encode;

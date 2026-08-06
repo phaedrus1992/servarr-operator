@@ -747,6 +747,19 @@ spec:
     intervalSeconds: 30
 ```
 
+**Transmission download-client self-heal.** For `Transmission`-type apps, `apiHealthCheck.enabled: true` also turns on detection and self-healing of torrents whose on-disk data has gone missing -- e.g. an external cleanup job deleted files a torrent still references in its session, and it starts reporting `"No data found!"`. Unlike the general health check above, this does **not** require `apiKeySecret` (Transmission auth uses `adminCredentials` instead, if configured).
+
+Each reconcile, the operator: detects torrents reporting a local data error, triggers Transmission's own `torrent-verify` to re-check the files, and -- only once that verify confirms the data is still missing -- removes the orphaned torrent entry (never the same pass it was detected, and never while Transmission is still hash-checking it). Results are reported via a `DownloadDataMissing` Warning Event and the `DownloadDataHealthy` status condition.
+
+```yaml
+spec:
+  app: Transmission
+  adminCredentials:
+    secretName: transmission-admin
+  apiHealthCheck:
+    enabled: true
+```
+
 ---
 
 ### `backup`
