@@ -79,6 +79,9 @@ pub mod condition_types {
     pub const MAINTAINERR_SYNC_READY: &str = "MaintainerrSyncReady";
     /// Backup restore result (True = restore succeeded, False = restore failed).
     pub const RESTORE_READY: &str = "RestoreReady";
+    /// Transmission download-client data health (True = no torrents reporting missing
+    /// data, False = one or more torrents reference on-disk data that has gone missing).
+    pub const DOWNLOAD_DATA_HEALTHY: &str = "DownloadDataHealthy";
 }
 
 impl Condition {

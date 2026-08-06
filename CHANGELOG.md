@@ -16,6 +16,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   this field lets you say "I mean to drop this one" instead. Entries must name an actual
   default volume for the app type; a typo is rejected at admission rather than silently
   no-opping (#386).
+- Add detection and self-healing for Transmission torrents whose on-disk data has gone missing
+  (e.g. an external cleanup job deleted files a torrent still references). When
+  `apiHealthCheck.enabled` is set on a `Transmission` app, the operator now detects affected
+  torrents, triggers Transmission's own re-verify, and removes torrents confirmed still broken
+  once that verify settles — reported via a `DownloadDataMissing` Event and a new
+  `DownloadDataHealthy` status condition (#483).
 
 ### Changed
 

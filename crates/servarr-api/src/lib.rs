@@ -28,4 +28,4 @@ pub use sabnzbd::SabnzbdClient;
 pub use servarr_v3::{AppKind, ServarrClient};
 pub use tautulli::TautulliClient;
 pub use tenant_safe_message::TenantSafeMessage;
-pub use transmission::TransmissionClient;
+pub use transmission::{DeleteLocalData, TorrentInfo, TransmissionClient};
