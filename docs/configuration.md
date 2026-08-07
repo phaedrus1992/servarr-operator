@@ -724,6 +724,8 @@ Enables API-level health checking that hits the application's API endpoint (rath
 
 `intervalSeconds` limits how often a healthy app is re-polled: once a health condition is `True`, further probes are skipped until the interval elapses. Error, `Unknown`, and `False` conditions are re-polled immediately (not throttled), so a failure surfaces right away instead of waiting out the window. Set `intervalSeconds` to `0` to probe on every reconcile.
 
+**Scope: `intervalSeconds` does not bound the Transmission admin-credentials sync.** For a `Transmission`-type app with `adminCredentials` configured, the operator applies those credentials to Transmission's RPC endpoint (`session-set`) on every reconcile regardless of `intervalSeconds` -- this is deliberate, not an oversight. Transmission's LSIO-based container image resets RPC authentication to disabled on every container start; the admin-credentials sync is the only mechanism that re-enables it, and it must run on the very next reconcile after a restart to avoid leaving the RPC endpoint unauthenticated. A time-based throttle keyed on the last successful sync can't distinguish "nothing changed" from "the container just restarted and reset its auth state," so this RPC intentionally stays outside `intervalSeconds`'s scope.
+
 ```yaml
 spec:
   apiKeySecret: sonarr-api-key
