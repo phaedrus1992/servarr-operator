@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased] - ReleaseDate
 
+Migrates Overseerr support to its successor, Seerr; adds Transmission download-data self-heal and
+fixes the `apiHealthCheck.intervalSeconds` throttle; restores dropped default persistence volumes
+(SSH bastion host keys and others) across overrides; and sweeps the controller/webhook to stop
+leaking raw upstream/Kubernetes errors into tenant-visible status and Events.
+
 ### Added
 
 - Add detection and self-healing for Transmission torrents whose on-disk data has gone missing
@@ -60,40 +65,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   the sync is the only mechanism that re-enables it, so it must not wait out an interval after a
   restart (#517).
 
-### Security
+### Removed
 
-- Mark the Transmission, Sonarr/Radarr/Lidarr/Prowlarr, and Maintainerr API clients' credential
-  headers (`Authorization: Basic ...`, `X-Api-Key`) as sensitive on the underlying HTTP client,
-  so they're redacted rather than printed in full if a client is ever `Debug`-formatted (e.g. an
-  errant `tracing::debug!(?client, ...)`) — closes the gap before any such call site exists.
-- Fix the Transmission self-heal credential fail-closed gate only catching a *partial*
-  adminCredentials read failure (one of username/password unreadable), not a *total* one (both
-  unreadable — e.g. the secret was deleted or renamed) — a total failure could proceed
-  unauthenticated on the destructive torrent-remove path instead of failing closed like the
-  partial case already did.
-- Fix admin credentials and API keys leaking into `status.conditions[]` and Kubernetes Events
-  when Sabnzbd or Tautulli returned a transport error (connection refused, timeout, etc.)
-  during credential setup — both apps send credentials as URL query parameters, and the
-  error-sanitization helper wasn't stripping the request URL from that specific error variant
-  (#421).
-- Fix `error_policy` publishing raw Kubernetes API error text (RBAC denial detail, exec-auth
-  credential-plugin failures, kubeconfig paths) into the tenant-visible reconciliation-failure
-  Warning Event and several status Condition messages instead of a sanitized summary. The
-  admission webhook's duplicate-instance rejection message — the one other tenant-facing caller
-  of the sanitizer — is now routed through a stricter summary that never passes through the
-  underlying error's raw text, closing a gap where a non-API-server failure (auth, transport,
-  kubeconfig) could still leak past the #422 fix (#428, #429, #430).
-- Fix ~31 remaining call sites across backup/restore, Prowlarr/Overseerr/Bazarr/Maintainerr sync,
-  and Subgen-Jellyfin sync using the log-only error summary (safe for logs, not for tenants)
-  instead of the stricter tenant-safe one wherever the result reaches a status Condition or
-  `status.backupStatus.lastBackupResult`, and several places interpolating an upstream API
-  client error's raw text instead of its sanitized summary — same failure class as #428/#429/#430,
-  found while sweeping the rest of the controller for the same pattern (#437, #438).
-- Make the tenant-safe guarantee compile-time enforced instead of convention: the
-  `result_to_condition` helper now accepts only a `TenantSafeMessage` (or a type that converts
-  into one through an explicit sanitizer), so a raw `kube::Error`, upstream API error, or
-  secret-read error cannot be passed where a tenant-visible Condition message is produced
-  without an explicit, reviewable sanitization step (#443).
+- Remove the half-working Lidarr YouTube Downloader sidecar (no upstream image we control, superseded by yt-dlp download support). `spec.appConfig.lidarr.youtubeDownloader` and its `LidarrYoutubeDownloaderSpec` are gone from the CRD — with structural pruning the field is silently dropped on apply, so any `ServarrApp` still setting it simply stops getting the sidecar on the next reconcile (#362).
 
 ### Fixed
 
@@ -154,9 +128,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   act on a different torrent than the one detected. The operator now addresses torrents by
   their stable content hash instead (#500).
 
-### Removed
+### Security
 
-- Remove the half-working Lidarr YouTube Downloader sidecar (no upstream image we control, superseded by yt-dlp download support). `spec.appConfig.lidarr.youtubeDownloader` and its `LidarrYoutubeDownloaderSpec` are gone from the CRD — with structural pruning the field is silently dropped on apply, so any `ServarrApp` still setting it simply stops getting the sidecar on the next reconcile (#362).
+- Mark the Transmission, Sonarr/Radarr/Lidarr/Prowlarr, and Maintainerr API clients' credential
+  headers (`Authorization: Basic ...`, `X-Api-Key`) as sensitive on the underlying HTTP client,
+  so they're redacted rather than printed in full if a client is ever `Debug`-formatted (e.g. an
+  errant `tracing::debug!(?client, ...)`) — closes the gap before any such call site exists.
+- Fix the Transmission self-heal credential fail-closed gate only catching a *partial*
+  adminCredentials read failure (one of username/password unreadable), not a *total* one (both
+  unreadable — e.g. the secret was deleted or renamed) — a total failure could proceed
+  unauthenticated on the destructive torrent-remove path instead of failing closed like the
+  partial case already did.
+- Fix admin credentials and API keys leaking into `status.conditions[]` and Kubernetes Events
+  when Sabnzbd or Tautulli returned a transport error (connection refused, timeout, etc.)
+  during credential setup — both apps send credentials as URL query parameters, and the
+  error-sanitization helper wasn't stripping the request URL from that specific error variant
+  (#421).
+- Fix `error_policy` publishing raw Kubernetes API error text (RBAC denial detail, exec-auth
+  credential-plugin failures, kubeconfig paths) into the tenant-visible reconciliation-failure
+  Warning Event and several status Condition messages instead of a sanitized summary. The
+  admission webhook's duplicate-instance rejection message — the one other tenant-facing caller
+  of the sanitizer — is now routed through a stricter summary that never passes through the
+  underlying error's raw text, closing a gap where a non-API-server failure (auth, transport,
+  kubeconfig) could still leak past the #422 fix (#428, #429, #430).
+- Fix ~31 remaining call sites across backup/restore, Prowlarr/Overseerr/Bazarr/Maintainerr sync,
+  and Subgen-Jellyfin sync using the log-only error summary (safe for logs, not for tenants)
+  instead of the stricter tenant-safe one wherever the result reaches a status Condition or
+  `status.backupStatus.lastBackupResult`, and several places interpolating an upstream API
+  client error's raw text instead of its sanitized summary — same failure class as #428/#429/#430,
+  found while sweeping the rest of the controller for the same pattern (#437, #438).
+- Make the tenant-safe guarantee compile-time enforced instead of convention: the
+  `result_to_condition` helper now accepts only a `TenantSafeMessage` (or a type that converts
+  into one through an explicit sanitizer), so a raw `kube::Error`, upstream API error, or
+  secret-read error cannot be passed where a tenant-visible Condition message is produced
+  without an explicit, reviewable sanitization step (#443).
 
 ## [1.2.3] - 2026-07-07
 
