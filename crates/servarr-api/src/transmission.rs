@@ -125,10 +125,22 @@ impl DeleteLocalData {
 /// One indivisible credential: a half-set state (username without password, or
 /// vice-versa) is unrepresentable, so a client built from it can never silently
 /// degrade to anonymous the way the old two-`Option<&str>` signature could (#505).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct BasicCredentials {
     username: String,
     password: String,
+}
+
+// Manual Debug: the derived form would print the password in cleartext if a caller
+// debug-formats the value (e.g. `tracing::debug!(?creds, ...)`). The username stays
+// visible for debuggability; the secret half is redacted.
+impl std::fmt::Debug for BasicCredentials {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BasicCredentials")
+            .field("username", &self.username)
+            .field("password", &"[REDACTED]")
+            .finish()
+    }
 }
 
 impl BasicCredentials {
@@ -682,6 +694,24 @@ mod tests {
     fn base64_credentials() {
         // "user:pass" -> "dXNlcjpwYXNz"
         assert_eq!(base64_encode("user:pass"), "dXNlcjpwYXNz");
+    }
+
+    #[test]
+    fn basic_credentials_debug_redacts_password() {
+        let creds = BasicCredentials::new("admin", "hunter2");
+        let rendered = format!("{creds:?}");
+        assert!(
+            rendered.contains("admin"),
+            "username stays visible: {rendered}"
+        );
+        assert!(
+            !rendered.contains("hunter2"),
+            "password must never appear in Debug output: {rendered}"
+        );
+        assert!(
+            rendered.contains("[REDACTED]"),
+            "redaction marker present: {rendered}"
+        );
     }
 
     // ---- TorrentInfo roundtrip (#501) ----
