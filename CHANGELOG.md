@@ -76,6 +76,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Drop the unused `apiKeySecret` requirement from the Transmission API health check: the probe
   now authenticates with `adminCredentials` when configured, so `app: Transmission` CRs no longer
   need an `apiKeySecret` just to enable health checking or the download-data self-heal (#509).
+- Clarify that `apiHealthCheck.intervalSeconds` does not bound the Transmission
+  admin-credentials sync RPC: that sync runs on every reconcile regardless of the interval, by
+  design — Transmission's LSIO container image resets RPC authentication on every restart, and
+  the sync is the only mechanism that re-enables it, so it must not wait out an interval after a
+  restart (#517).
 
 ### Security
 
@@ -156,6 +161,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   Prowlarr or Overseerr registration fails, instead of leaving the failure visible only in
   operator logs — the Event carries a tenant-safe summary of the failure, and no Event is
   published on success or when there is nothing to clean up (#444).
+- Fix the `apiHealthCheck.intervalSeconds` throttle failing open (running the poll) when an
+  existing status condition's `lastTransitionTime` was missing or unparseable. That was safe for
+  the read-only API health probe, but on the destructive Transmission download-client self-heal
+  pass (torrent-verify, and torrent-remove when `autoRemoveOrphanedTorrents` is set) a corrupt
+  timestamp meant the self-heal ran unthrottled on every reconcile instead of at most once per
+  `intervalSeconds`. The self-heal pass now fails closed on a corrupt timestamp — treating it as
+  throttled and repairing the timestamp so it self-heals on a later reconcile rather than being
+  wedged indefinitely — while the read-only health probe keeps its existing lenient behavior
+  (#519).
 - Fix Prowlarr/Overseerr finalizer cleanup silently giving up on a transient failure (e.g. a
   Kubernetes API hiccup listing ServarrApps) instead of retrying — the finalizer was dropped and
   the CR deleted regardless of outcome, permanently orphaning the downstream registration with no

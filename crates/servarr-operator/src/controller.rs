@@ -1063,6 +1063,20 @@ pub(crate) async fn sync_admin_credentials(
     let ac = app.spec.admin_credentials.as_ref()?;
     let now = chrono_now();
 
+    // #517: `apiHealthCheck.intervalSeconds` documents that it bounds Transmission RPC load,
+    // but this function's `session_set_auth` handshake runs unconditionally on every reconcile
+    // regardless of the interval. That's deliberate, not the oversight #517 first assumed:
+    // gating it on a status-condition timestamp is unsafe here specifically. The LSIO base
+    // image's init script resets `rpc-authentication-required` to false on every container
+    // start (see the checksum-annotation comment above in `reconcile`), and this RPC is the
+    // *only* code path that re-enables it. A reconcile fires on that same pod-restart event,
+    // but if `ADMIN_CREDENTIALS_CONFIGURED` still looks "fresh" from before the restart (well
+    // within `intervalSeconds`), a time-based throttle would skip re-enabling auth and leave
+    // Transmission's RPC endpoint unauthenticated for up to the rest of the window -- the
+    // condition timestamp has no way to know the app underneath it just restarted. Documented
+    // as the accepted trade-off (see docs/configuration.md); do not add a throttle here without
+    // also solving that detection problem (e.g. keying off Pod/Deployment restart time).
+
     let username = match servarr_api::read_secret_key(client, ns, &ac.secret_name, "username").await
     {
         Ok(v) => v,
@@ -1460,19 +1474,38 @@ fn current_condition<'a>(app: &'a ServarrApp, condition_type: &str) -> Option<&'
     })
 }
 
+/// How [`is_health_poll_throttled`] treats an *existing* condition whose `lastTransitionTime`
+/// fails to parse. A raw `bool` here is a misuse trap: a swapped literal at a call site
+/// silently reintroduces #519's fail-open bug on a destructive caller with no compile error
+/// and no test signal, so this is a dedicated type instead of a positional flag.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CorruptTimestampPolicy {
+    /// Treat an unparseable timestamp as "not throttled" — run the poll. Safe for read-only
+    /// callers (re-running a probe on corrupt data costs nothing extra).
+    FailOpen,
+    /// Treat an unparseable timestamp as throttled — skip, preserve/repair the existing
+    /// condition, and log a warning. Required for callers gating a destructive operation.
+    FailClosed,
+}
+
 /// `apiHealthCheck.intervalSeconds` throttle (#506): whether the health poll for
 /// `condition_type` should be skipped because the existing condition's
 /// `lastTransitionTime` still falls inside `interval_seconds` of now.
 ///
 /// Only a positive health assertion (`status == "True"`) is rate-limited. An error,
 /// `Unknown`, or `False` condition is never throttled, so recovery is re-probed on the
-/// next reconcile instead of being frozen until the interval elapses. A missing or
-/// unparseable timestamp, a future-dated timestamp, or an unset/zero interval never
-/// throttles — the poll runs.
+/// next reconcile instead of being frozen until the interval elapses. A missing timestamp,
+/// a future-dated timestamp, or an unset/zero interval never throttles — the poll runs.
+///
+/// An *existing* condition whose `lastTransitionTime` fails to parse is ambiguous: it's cheap
+/// to just re-run a read-only probe, but running an unthrottled destructive pass (torrent
+/// removal) on corrupt status data every reconcile is not (#519). `policy` lets the caller
+/// pick — see [`CorruptTimestampPolicy`].
 fn is_health_poll_throttled(
     existing: Option<&Condition>,
     interval_seconds: Option<u32>,
     now: &str,
+    policy: CorruptTimestampPolicy,
 ) -> bool {
     let interval = interval_seconds.unwrap_or(DEFAULT_HEALTH_CHECK_INTERVAL_SECONDS);
     let Some(existing) = existing else {
@@ -1485,7 +1518,19 @@ fn is_health_poll_throttled(
         chrono::DateTime::parse_from_rfc3339(&existing.last_transition_time),
         chrono::DateTime::parse_from_rfc3339(now),
     ) else {
-        return false;
+        // Corrupt status data is worth a trace either way, even on the lenient fail-open path
+        // where it's silently overwritten by the next probe result. This helper has no access
+        // to the owning object's identity (it's a pure function over a Condition), so it can
+        // only log the condition type/value; a fail-closed caller is expected to also emit its
+        // own object-scoped warning (see check_download_client_health) since that's the case
+        // where the corrupt data actually blocks an operation rather than being replaced.
+        debug!(
+            condition_type = %existing.condition_type,
+            last_transition_time = %existing.last_transition_time,
+            policy = ?policy,
+            "is_health_poll_throttled: unparseable lastTransitionTime"
+        );
+        return policy == CorruptTimestampPolicy::FailClosed;
     };
     // Fail open on a future-dated timestamp (clock skew, hand-edit): `current < last`
     // would otherwise throttle every poll — including at `intervalSeconds: 0` — until
@@ -1516,7 +1561,14 @@ pub(crate) async fn check_api_health(
     // conditions are kept frozen, so the throttle doesn't erase the update-available signal
     // from status between polls.
     let existing_health = current_condition(app, condition_types::APP_HEALTHY);
-    if is_health_poll_throttled(existing_health, health_check.interval_seconds, &now) {
+    // Read-only probe: fail_open so a corrupt timestamp still gets re-checked rather than
+    // frozen (#519's fail-closed hardening only applies to the destructive path below).
+    if is_health_poll_throttled(
+        existing_health,
+        health_check.interval_seconds,
+        &now,
+        CorruptTimestampPolicy::FailOpen,
+    ) {
         // A skip is intentional (rate-limit window), but it must be observable — otherwise a
         // stale health status looks indistinguishable from a healthy app that's just idle.
         debug!(
@@ -1854,7 +1906,15 @@ async fn check_download_client_health(
     // `autoRemoveOrphanedTorrents: true` expects the destructive torrent-remove check at most
     // hourly, not on every reconcile.
     let existing_download = current_condition(app, condition_types::DOWNLOAD_DATA_HEALTHY);
-    if is_health_poll_throttled(existing_download, health_check.interval_seconds, &now) {
+    // Destructive path (torrent-verify / torrent-remove): fail_closed so a corrupt or
+    // unparseable lastTransitionTime is treated as throttled rather than running the self-heal
+    // pass unthrottled on every reconcile (#519).
+    if is_health_poll_throttled(
+        existing_download,
+        health_check.interval_seconds,
+        &now,
+        CorruptTimestampPolicy::FailClosed,
+    ) {
         // A skip is intentional (rate-limit window), but it must be observable — otherwise the
         // self-heal pass pausing (including destructive torrent-remove checks) looks like a
         // hang. This branch returns before the access match, so a broken client/credential
@@ -1867,6 +1927,30 @@ async fn check_download_client_health(
                 .unwrap_or(DEFAULT_HEALTH_CHECK_INTERVAL_SECONDS),
             "download client health poll throttled inside intervalSeconds window; keeping existing condition"
         );
+        // #519 follow-up: a corrupt/unparseable lastTransitionTime is what triggered the
+        // fail-closed skip above, not a genuinely-recent valid one -- re-persisting it
+        // verbatim would wedge the destructive path forever, since every future reconcile
+        // hits the same unparseable value and fails closed again. Repair it to `now` (keeping
+        // status/reason/message) so this reconcile still skips the pass once, but a normal,
+        // parseable elapsed-time throttle governs from here on.
+        if let Some(existing) = existing_download
+            && chrono::DateTime::parse_from_rfc3339(&existing.last_transition_time).is_err()
+        {
+            warn!(
+                app = %app.name_any(),
+                condition = condition_types::DOWNLOAD_DATA_HEALTHY,
+                last_transition_time = %existing.last_transition_time,
+                "download client health: corrupt lastTransitionTime failed closed; repairing \
+                 timestamp so the self-heal pass isn't wedged indefinitely"
+            );
+            return Some(Condition {
+                condition_type: existing.condition_type.clone(),
+                status: existing.status.clone(),
+                reason: existing.reason.clone(),
+                message: existing.message.clone(),
+                last_transition_time: now,
+            });
+        }
         return existing_download.cloned();
     }
     let auto_remove = health_check.auto_remove_orphaned_torrents;
@@ -5485,7 +5569,12 @@ mod tests {
             message: "API responded healthy".to_string(),
             last_transition_time: recent,
         };
-        assert!(is_health_poll_throttled(Some(&existing), Some(60), &now));
+        assert!(is_health_poll_throttled(
+            Some(&existing),
+            Some(60),
+            &now,
+            CorruptTimestampPolicy::FailOpen
+        ));
     }
 
     #[test]
@@ -5500,7 +5589,12 @@ mod tests {
             message: "API responded healthy".to_string(),
             last_transition_time: stale,
         };
-        assert!(!is_health_poll_throttled(Some(&existing), Some(60), &now));
+        assert!(!is_health_poll_throttled(
+            Some(&existing),
+            Some(60),
+            &now,
+            CorruptTimestampPolicy::FailOpen
+        ));
     }
 
     #[test]
@@ -5516,13 +5610,23 @@ mod tests {
             last_transition_time: within_default,
         };
         // interval omitted → default 60s window, so a 30s-old condition is still throttled.
-        assert!(is_health_poll_throttled(Some(&existing), None, &now));
+        assert!(is_health_poll_throttled(
+            Some(&existing),
+            None,
+            &now,
+            CorruptTimestampPolicy::FailOpen
+        ));
     }
 
     #[test]
     fn is_health_poll_throttled_never_throttles_without_existing_or_bad_timestamp() {
         let now = chrono_now();
-        assert!(!is_health_poll_throttled(None, Some(60), &now));
+        assert!(!is_health_poll_throttled(
+            None,
+            Some(60),
+            &now,
+            CorruptTimestampPolicy::FailOpen
+        ));
 
         let bad = Condition {
             condition_type: condition_types::APP_HEALTHY.to_string(),
@@ -5531,7 +5635,12 @@ mod tests {
             message: "API responded healthy".to_string(),
             last_transition_time: "not-a-timestamp".to_string(),
         };
-        assert!(!is_health_poll_throttled(Some(&bad), Some(60), &now));
+        assert!(!is_health_poll_throttled(
+            Some(&bad),
+            Some(60),
+            &now,
+            CorruptTimestampPolicy::FailOpen
+        ));
 
         // intervalSeconds: 0 means "poll on every reconcile" — never throttled.
         let zero = Condition {
@@ -5541,7 +5650,60 @@ mod tests {
             message: "API responded healthy".to_string(),
             last_transition_time: now.clone(),
         };
-        assert!(!is_health_poll_throttled(Some(&zero), Some(0), &now));
+        assert!(!is_health_poll_throttled(
+            Some(&zero),
+            Some(0),
+            &now,
+            CorruptTimestampPolicy::FailOpen
+        ));
+    }
+
+    // ---- #519: fail_open caller control on a corrupt lastTransitionTime ----
+
+    #[test]
+    fn is_health_poll_throttled_fails_closed_on_bad_timestamp_when_requested() {
+        let now = chrono_now();
+        let bad = Condition {
+            condition_type: condition_types::DOWNLOAD_DATA_HEALTHY.to_string(),
+            status: "True".to_string(),
+            reason: "NoStaleData".to_string(),
+            message: "No torrents reporting missing data".to_string(),
+            last_transition_time: "not-a-timestamp".to_string(),
+        };
+        // Destructive callers pass fail_open: false and must treat a corrupt timestamp as
+        // throttled, preserving the last-good condition instead of re-running unthrottled.
+        assert!(is_health_poll_throttled(
+            Some(&bad),
+            Some(60),
+            &now,
+            CorruptTimestampPolicy::FailClosed
+        ));
+        // Read-only callers keep the lenient default: run the poll despite bad data.
+        assert!(!is_health_poll_throttled(
+            Some(&bad),
+            Some(60),
+            &now,
+            CorruptTimestampPolicy::FailOpen
+        ));
+    }
+
+    #[test]
+    fn is_health_poll_throttled_missing_condition_ignores_fail_open() {
+        let now = chrono_now();
+        // No prior condition at all (first-ever reconcile) is not a "corrupt state" —
+        // it must always run the poll regardless of the caller's fail_open policy.
+        assert!(!is_health_poll_throttled(
+            None,
+            Some(60),
+            &now,
+            CorruptTimestampPolicy::FailClosed
+        ));
+        assert!(!is_health_poll_throttled(
+            None,
+            Some(60),
+            &now,
+            CorruptTimestampPolicy::FailOpen
+        ));
     }
 
     #[test]
@@ -5563,7 +5725,8 @@ mod tests {
         assert!(!is_health_poll_throttled(
             Some(&false_cond),
             Some(3600),
-            &now
+            &now,
+            CorruptTimestampPolicy::FailOpen
         ));
 
         // Same for "Unknown" — never a positive assertion, never rate-limited.
@@ -5577,7 +5740,8 @@ mod tests {
         assert!(!is_health_poll_throttled(
             Some(&unknown_cond),
             Some(3600),
-            &now
+            &now,
+            CorruptTimestampPolicy::FailOpen
         ));
     }
 
@@ -5596,8 +5760,18 @@ mod tests {
         // A future-dated lastTransitionTime (clock skew, hand-edit) must not freeze the
         // poll — not even at intervalSeconds: 0, where `current < last` would otherwise
         // throttle on every reconcile until the future passes.
-        assert!(!is_health_poll_throttled(Some(&existing), Some(0), &now));
-        assert!(!is_health_poll_throttled(Some(&existing), Some(3600), &now));
+        assert!(!is_health_poll_throttled(
+            Some(&existing),
+            Some(0),
+            &now,
+            CorruptTimestampPolicy::FailOpen
+        ));
+        assert!(!is_health_poll_throttled(
+            Some(&existing),
+            Some(3600),
+            &now,
+            CorruptTimestampPolicy::FailOpen
+        ));
     }
 
     // Property tests for the throttle's documented invariants (see is_health_poll_throttled):
@@ -5608,12 +5782,20 @@ mod tests {
         use super::*;
         use proptest::prelude::*;
 
+        fn any_policy() -> impl Strategy<Value = CorruptTimestampPolicy> {
+            proptest::sample::select(&[
+                CorruptTimestampPolicy::FailOpen,
+                CorruptTimestampPolicy::FailClosed,
+            ])
+        }
+
         proptest! {
             #[test]
             fn only_throttles_healthy_within_window(
                 status in proptest::sample::select(&["True", "False", "Unknown"]),
                 offset_secs in -7_200i64..=7_200i64,
                 interval in 0u32..=3_600u32,
+                policy in any_policy(),
             ) {
                 let now = chrono::Utc::now();
                 let last = (now + chrono::Duration::seconds(offset_secs))
@@ -5626,7 +5808,8 @@ mod tests {
                     message: "proptest".to_string(),
                     last_transition_time: last,
                 };
-                let throttled = is_health_poll_throttled(Some(&existing), Some(interval), &now_str);
+                let throttled =
+                    is_health_poll_throttled(Some(&existing), Some(interval), &now_str, policy);
                 if throttled {
                     prop_assert_eq!(status, "True", "only a positive health assertion is rate-limited");
                     prop_assert!(interval > 0, "interval 0 must never throttle");
@@ -5644,6 +5827,7 @@ mod tests {
                 now in "\\PC*",
                 status in "\\PC*",
                 interval in 0u32..=u32::MAX,
+                policy in any_policy(),
             ) {
                 let existing = Condition {
                     condition_type: "AppHealthy".to_string(),
@@ -5652,11 +5836,84 @@ mod tests {
                     message: "m".to_string(),
                     last_transition_time: last,
                 };
-                // Garbage status strings and timestamps must fail open, not panic.
-                let _ = is_health_poll_throttled(Some(&existing), Some(interval), &now);
-                let _ = is_health_poll_throttled(None, Some(interval), &now);
+                // Garbage status strings and timestamps must never panic, regardless of the
+                // caller's policy.
+                let _ = is_health_poll_throttled(Some(&existing), Some(interval), &now, policy);
+                let _ = is_health_poll_throttled(None, Some(interval), &now, policy);
+            }
+
+            // #519 follow-up (closes the gap where the above only checked "no panic," not the
+            // actual return value): a True condition with a genuinely unparseable timestamp
+            // must be throttled if and only if the caller asked for FailClosed.
+            #[test]
+            fn corrupt_timestamp_throttled_iff_fail_closed(
+                last in "\\PC*".prop_filter(
+                    "must be unparseable as RFC3339",
+                    |s| chrono::DateTime::parse_from_rfc3339(s).is_err()
+                ),
+                interval in 0u32..=3_600u32,
+                policy in any_policy(),
+            ) {
+                let now = chrono_now();
+                let existing = Condition {
+                    condition_type: condition_types::APP_HEALTHY.to_string(),
+                    status: "True".to_string(),
+                    reason: "Healthy".to_string(),
+                    message: "proptest".to_string(),
+                    last_transition_time: last,
+                };
+                let throttled = is_health_poll_throttled(Some(&existing), Some(interval), &now, policy);
+                prop_assert_eq!(
+                    throttled,
+                    policy == CorruptTimestampPolicy::FailClosed,
+                    "an unparseable timestamp on a True condition must be throttled iff the \
+                     caller requested FailClosed"
+                );
             }
         }
+    }
+
+    // ---- shared throttle-test helpers (#518 code-simplifier follow-up) ----
+
+    /// Build a single-condition `ServarrAppStatus` — the shape every throttle test below needs.
+    /// `ready`/`ready_replicas`/`observed_generation` are fixed placeholders, irrelevant to
+    /// throttle behavior; only the condition's own fields vary per test.
+    fn status_with_condition(
+        condition_type: &str,
+        condition_status: &str,
+        reason: &str,
+        message: &str,
+        last_transition_time: String,
+    ) -> ServarrAppStatus {
+        ServarrAppStatus {
+            ready: true,
+            ready_replicas: 1,
+            observed_generation: 1,
+            conditions: vec![Condition {
+                condition_type: condition_type.to_string(),
+                status: condition_status.to_string(),
+                reason: reason.to_string(),
+                message: message.to_string(),
+                last_transition_time,
+            }],
+            backup_status: None,
+        }
+    }
+
+    /// Build a Transmission `ServarrApp` with `apiHealthCheck` (3600s interval) and
+    /// `adminCredentials` (secret `tx-admin-creds`) configured — the app shape every throttle
+    /// test below needs, differing only in `autoRemoveOrphanedTorrents`.
+    fn transmission_app_with_health_check(auto_remove_orphaned_torrents: bool) -> ServarrApp {
+        let mut app = make_test_app("my-transmission", "test", AppType::Transmission);
+        app.spec.api_health_check = Some(servarr_crds::ApiHealthCheckSpec {
+            enabled: true,
+            interval_seconds: Some(3600),
+            auto_remove_orphaned_torrents,
+        });
+        app.spec.admin_credentials = Some(servarr_crds::AdminCredentialsSpec {
+            secret_name: "tx-admin-creds".into(),
+        });
+        app
     }
 
     #[tokio::test]
@@ -5686,32 +5943,17 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let mut app = make_test_app("my-transmission", "test", AppType::Transmission);
-        app.spec.api_health_check = Some(servarr_crds::ApiHealthCheckSpec {
-            enabled: true,
-            interval_seconds: Some(3600),
-            auto_remove_orphaned_torrents: false,
-        });
-        app.spec.admin_credentials = Some(servarr_crds::AdminCredentialsSpec {
-            secret_name: "tx-admin-creds".into(),
-        });
-
         // Existing APP_HEALTHY condition from a poll moments ago — still inside the 3600s
         // window, so the probe must be skipped and the condition reused unchanged.
         let recent = chrono_now();
-        app.status = Some(ServarrAppStatus {
-            ready: true,
-            ready_replicas: 1,
-            observed_generation: 1,
-            conditions: vec![Condition {
-                condition_type: condition_types::APP_HEALTHY.to_string(),
-                status: "True".to_string(),
-                reason: "Healthy".to_string(),
-                message: "API responded healthy".to_string(),
-                last_transition_time: recent.clone(),
-            }],
-            backup_status: None,
-        });
+        let mut app = transmission_app_with_health_check(false);
+        app.status = Some(status_with_condition(
+            condition_types::APP_HEALTHY,
+            "True",
+            "Healthy",
+            "API responded healthy",
+            recent.clone(),
+        ));
 
         let access = resolve_transmission_access(&client, &app, "test", &mock_server.uri()).await;
         assert!(access.is_ok(), "expected access to resolve, got {access:?}");
@@ -5754,32 +5996,17 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let mut app = make_test_app("my-transmission", "test", AppType::Transmission);
-        app.spec.api_health_check = Some(servarr_crds::ApiHealthCheckSpec {
-            enabled: true,
-            interval_seconds: Some(3600),
-            auto_remove_orphaned_torrents: false,
-        });
-        app.spec.admin_credentials = Some(servarr_crds::AdminCredentialsSpec {
-            secret_name: "tx-admin-creds".into(),
-        });
-
         // Existing condition from 2 hours ago — outside the 3600s window, so the poll runs.
         let stale = (chrono::Utc::now() - chrono::Duration::hours(2))
             .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
-        app.status = Some(ServarrAppStatus {
-            ready: true,
-            ready_replicas: 1,
-            observed_generation: 1,
-            conditions: vec![Condition {
-                condition_type: condition_types::APP_HEALTHY.to_string(),
-                status: "True".to_string(),
-                reason: "Healthy".to_string(),
-                message: "API responded healthy".to_string(),
-                last_transition_time: stale.clone(),
-            }],
-            backup_status: None,
-        });
+        let mut app = transmission_app_with_health_check(false);
+        app.status = Some(status_with_condition(
+            condition_types::APP_HEALTHY,
+            "True",
+            "Healthy",
+            "API responded healthy",
+            stale.clone(),
+        ));
 
         let access = resolve_transmission_access(&client, &app, "test", &mock_server.uri()).await;
         assert!(access.is_ok(), "expected access to resolve, got {access:?}");
@@ -5822,30 +6049,16 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let mut app = make_test_app("my-transmission", "test", AppType::Transmission);
-        app.spec.api_health_check = Some(servarr_crds::ApiHealthCheckSpec {
-            enabled: true,
-            interval_seconds: Some(3600),
-            auto_remove_orphaned_torrents: true, // the destructive opt-in must be throttled too
-        });
-        app.spec.admin_credentials = Some(servarr_crds::AdminCredentialsSpec {
-            secret_name: "tx-admin-creds".into(),
-        });
-
+        // the destructive opt-in (true) must be throttled too
+        let mut app = transmission_app_with_health_check(true);
         let recent = chrono_now();
-        app.status = Some(ServarrAppStatus {
-            ready: true,
-            ready_replicas: 1,
-            observed_generation: 1,
-            conditions: vec![Condition {
-                condition_type: condition_types::DOWNLOAD_DATA_HEALTHY.to_string(),
-                status: "True".to_string(),
-                reason: "NoStaleData".to_string(),
-                message: "No torrents reporting missing data".to_string(),
-                last_transition_time: recent.clone(),
-            }],
-            backup_status: None,
-        });
+        app.status = Some(status_with_condition(
+            condition_types::DOWNLOAD_DATA_HEALTHY,
+            "True",
+            "NoStaleData",
+            "No torrents reporting missing data",
+            recent.clone(),
+        ));
 
         let recorder = Recorder::new(client.clone(), "test".into());
         let obj_ref = app.object_ref(&());
@@ -5857,6 +6070,70 @@ mod tests {
             cond.map(|c| c.last_transition_time),
             Some(recent),
             "throttled self-heal must reuse the existing DOWNLOAD_DATA_HEALTHY condition unchanged"
+        );
+        mock_server.verify().await;
+    }
+
+    // #519: a corrupt/unparseable lastTransitionTime must fail CLOSED on this destructive path
+    // (treated as throttled), not open (which would re-run torrent-verify/torrent-remove on
+    // every reconcile against a hand-edited or older-operator-written status).
+    #[tokio::test]
+    async fn check_download_client_health_fails_closed_on_corrupt_last_transition_time() {
+        let mock_server = MockServer::start().await;
+        let client = build_mock_client(&mock_server.uri()).await;
+
+        mount_secret_mock(
+            &mock_server,
+            "test",
+            "tx-admin-creds",
+            json!({"username": "YWRtaW4=", "password": "c2VjcmV0"}),
+        )
+        .await;
+        // If the fail-closed hardening is broken, the destructive self-heal would run
+        // torrent-get despite the corrupt timestamp — `.expect(0)` catches the regression.
+        Mock::given(method("POST"))
+            .and(path("/transmission/rpc"))
+            .and(body_partial_json(
+                serde_json::json!({"method": "torrent-get"}),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "result": "success",
+                "arguments": {"torrents": []}
+            })))
+            .expect(0)
+            .mount(&mock_server)
+            .await;
+
+        let mut app = transmission_app_with_health_check(true);
+        app.status = Some(status_with_condition(
+            condition_types::DOWNLOAD_DATA_HEALTHY,
+            "True",
+            "NoStaleData",
+            "No torrents reporting missing data",
+            "not-a-timestamp".to_string(),
+        ));
+
+        let recorder = Recorder::new(client.clone(), "test".into());
+        let obj_ref = app.object_ref(&());
+
+        let cond = check_download_client_health(&app, &recorder, &obj_ref, None)
+            .await
+            .expect("fail-closed skip must still report a condition");
+        // The corrupt timestamp is repaired (set to now) rather than re-persisted verbatim —
+        // otherwise the destructive pass would stay wedged forever (every future reconcile
+        // hits the same unparseable value and fails closed again). Repairing it means this
+        // reconcile skips the destructive pass exactly once, then normal elapsed-time
+        // throttling resumes on a valid timestamp.
+        assert_eq!(cond.status, "True");
+        assert_eq!(cond.reason, "NoStaleData");
+        assert_ne!(
+            cond.last_transition_time, "not-a-timestamp",
+            "corrupt timestamp must be repaired to a fresh, parseable value so the \
+             destructive path can self-heal on a later reconcile instead of being wedged"
+        );
+        assert!(
+            chrono::DateTime::parse_from_rfc3339(&cond.last_transition_time).is_ok(),
+            "repaired timestamp must be valid RFC3339"
         );
         mock_server.verify().await;
     }
@@ -5886,32 +6163,17 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let mut app = make_test_app("my-transmission", "test", AppType::Transmission);
-        app.spec.api_health_check = Some(servarr_crds::ApiHealthCheckSpec {
-            enabled: true,
-            interval_seconds: Some(3600),
-            auto_remove_orphaned_torrents: true,
-        });
-        app.spec.admin_credentials = Some(servarr_crds::AdminCredentialsSpec {
-            secret_name: "tx-admin-creds".into(),
-        });
-
         // Existing condition from 2 hours ago — outside the 3600s window, so the pass runs.
         let stale = (chrono::Utc::now() - chrono::Duration::hours(2))
             .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
-        app.status = Some(ServarrAppStatus {
-            ready: true,
-            ready_replicas: 1,
-            observed_generation: 1,
-            conditions: vec![Condition {
-                condition_type: condition_types::DOWNLOAD_DATA_HEALTHY.to_string(),
-                status: "True".to_string(),
-                reason: "NoStaleData".to_string(),
-                message: "No torrents reporting missing data".to_string(),
-                last_transition_time: stale.clone(),
-            }],
-            backup_status: None,
-        });
+        let mut app = transmission_app_with_health_check(true);
+        app.status = Some(status_with_condition(
+            condition_types::DOWNLOAD_DATA_HEALTHY,
+            "True",
+            "NoStaleData",
+            "No torrents reporting missing data",
+            stale.clone(),
+        ));
 
         let recorder = Recorder::new(client.clone(), "test".into());
         let obj_ref = app.object_ref(&());
@@ -5928,6 +6190,53 @@ mod tests {
             "self-heal must produce a fresh condition, not reuse the stale one"
         );
         mock_server.verify().await;
+    }
+
+    // ---- #517: sync_admin_credentials' Transmission RPC must NEVER be throttled ----
+    //
+    // sync_admin_credentials builds its Transmission base URL from the in-cluster Service DNS
+    // name (not an injectable mock URI like resolve_transmission_access/check_api_health take),
+    // so a real attempt in this test sandbox always fails to connect. That's actually useful
+    // here: "attempted" is distinguishable from "skipped" purely by whether the returned
+    // condition is the untouched existing one (status True, identical timestamp) or a fresh
+    // SyncFailed one (status False) from the failed connection attempt.
+
+    #[tokio::test]
+    async fn sync_admin_credentials_transmission_always_attempts_even_with_fresh_condition() {
+        let mock_server = MockServer::start().await;
+        let client = build_mock_client(&mock_server.uri()).await;
+
+        mount_secret_mock(
+            &mock_server,
+            "test",
+            "tx-admin-creds",
+            json!({"username": "YWRtaW4=", "password": "c2VjcmV0"}),
+        )
+        .await;
+
+        // Regression guard for #517: a *very recent* ADMIN_CREDENTIALS_CONFIGURED condition,
+        // with a long intervalSeconds, is exactly the combination that would have been wrongly
+        // throttled by a naive time-based gate -- and exactly the case a pod restart produces,
+        // since the LSIO base image resets Transmission's auth on every container start
+        // regardless of how "fresh" the last successful sync looked.
+        let mut app = transmission_app_with_health_check(false);
+        app.status = Some(status_with_condition(
+            condition_types::ADMIN_CREDENTIALS_CONFIGURED,
+            "True",
+            "Configured",
+            "Admin credentials applied successfully",
+            chrono_now(),
+        ));
+
+        let cond = sync_admin_credentials(&client, &app, None)
+            .await
+            .expect("sync must always attempt, never return None for a throttle skip");
+        assert_eq!(
+            cond.status, "False",
+            "attempt against the unreachable test host must fail, proving sync was NOT \
+             throttled by the fresh existing condition"
+        );
+        assert_eq!(cond.reason, "SyncFailed");
     }
 
     // ---- json_is_subset ----
