@@ -1428,6 +1428,16 @@ pub(crate) async fn check_api_health(
     // from status between polls.
     let existing_health = current_condition(app, condition_types::APP_HEALTHY);
     if is_health_poll_throttled(existing_health, health_check.interval_seconds, &now) {
+        // A skip is intentional (rate-limit window), but it must be observable — otherwise a
+        // stale health status looks indistinguishable from a healthy app that's just idle.
+        debug!(
+            app = %app.name_any(),
+            condition = condition_types::APP_HEALTHY,
+            interval_seconds = health_check
+                .interval_seconds
+                .unwrap_or(DEFAULT_HEALTH_CHECK_INTERVAL_SECONDS),
+            "api health poll throttled inside intervalSeconds window; keeping existing condition"
+        );
         return (
             existing_health.cloned(),
             current_condition(app, condition_types::UPDATE_AVAILABLE).cloned(),
@@ -1693,6 +1703,18 @@ async fn check_download_client_health(
     // hourly, not on every reconcile.
     let existing_download = current_condition(app, condition_types::DOWNLOAD_DATA_HEALTHY);
     if is_health_poll_throttled(existing_download, health_check.interval_seconds, &now) {
+        // A skip is intentional (rate-limit window), but it must be observable — otherwise the
+        // self-heal pass pausing (including destructive torrent-remove checks) looks like a
+        // hang. This branch returns before the access match, so a broken client/credential
+        // surfaced here would otherwise be invisible until the window elapses.
+        debug!(
+            app = %app.name_any(),
+            condition = condition_types::DOWNLOAD_DATA_HEALTHY,
+            interval_seconds = health_check
+                .interval_seconds
+                .unwrap_or(DEFAULT_HEALTH_CHECK_INTERVAL_SECONDS),
+            "download client health poll throttled inside intervalSeconds window; keeping existing condition"
+        );
         return existing_download.cloned();
     }
     let auto_remove = health_check.auto_remove_orphaned_torrents;
