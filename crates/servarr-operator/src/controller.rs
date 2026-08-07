@@ -319,9 +319,14 @@ pub async fn reconcile(app: Arc<ServarrApp>, ctx: Arc<Context>) -> Result<Action
     // Issue #534: a stale DEFAULT_IMAGE_OVERSEERR_* env var (e.g. from a Helm release
     // upgraded with --reuse-values) can silently drive this app's image via the legacy
     // fallback in load_image_overrides. A tracing warn! alone is invisible to a user who
-    // isn't reading operator logs; surface it as a Warning Event too.
-    if ctx.legacy_image_override_apps.contains(app_type) {
-        recorder
+    // isn't reading operator logs; surface it as a Warning Event too. Only when the
+    // fallback can actually be in effect: an explicit `spec.image` always outranks the env
+    // override (see deployment::build's merge order), so publishing this for an app that
+    // pins its own image would be actively wrong. This is advisory, not load-bearing --
+    // never fail the reconcile over an Events-API hiccup for a deprecation notice.
+    if app.spec.image.is_none()
+        && ctx.legacy_image_override_apps.contains(app_type)
+        && let Err(e) = recorder
             .publish(
                 &Event {
                     type_: EventType::Warning,
@@ -337,7 +342,8 @@ pub async fn reconcile(app: Arc<ServarrApp>, ctx: Arc<Context>) -> Result<Action
                 &obj_ref,
             )
             .await
-            .map_err(Error::Kube)?;
+    {
+        warn!(%name, error = %kube_err_summary(&e), "failed to publish DeprecatedImageOverride event");
     }
 
     // Issue #44: an AppType rename (e.g. Overseerr -> Seerr) changes the

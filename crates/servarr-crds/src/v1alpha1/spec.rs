@@ -285,3 +285,42 @@ pub(crate) fn nullable_app_config_schema(generator: &mut SchemaGenerator) -> Sch
     schema.insert("nullable".to_string(), serde_json::Value::Bool(true));
     schema
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression guard for #540: `LEGACY_APP_TYPE_ALIASES` is a hand-maintained mirror of
+    /// the `#[serde(alias = "...")]` attributes on `AppType`'s variants (schemars can't see
+    /// serde aliases, so this list exists to fold them into the generated schema). A typo'd
+    /// or stale entry would make the CRD schema *accept* a value the operator's Deserialize
+    /// then rejects -- the exact failure mode #540 was about, inverted.
+    #[test]
+    fn every_legacy_app_type_alias_deserializes() {
+        for alias in LEGACY_APP_TYPE_ALIASES {
+            let parsed: Result<AppType, _> = serde_json::from_value(serde_json::json!(alias));
+            assert!(
+                parsed.is_ok(),
+                "LEGACY_APP_TYPE_ALIASES entry {alias:?} does not deserialize to a valid \
+                 AppType -- the schema would accept a value the operator rejects"
+            );
+        }
+    }
+
+    /// Guards against the schema silently growing extra or duplicate entries: it must
+    /// contain exactly one value per current variant plus one per legacy alias, no more.
+    #[test]
+    fn schema_enum_length_matches_all_variants_plus_legacy_aliases() {
+        let schema = schemars::schema_for!(AppType);
+        let enum_len = schema
+            .get("enum")
+            .and_then(|v| v.as_array())
+            .expect("AppType schema should have an enum array")
+            .len();
+        assert_eq!(
+            enum_len,
+            AppType::ALL.len() + LEGACY_APP_TYPE_ALIASES.len(),
+            "schema enum length drifted from AppType::ALL + LEGACY_APP_TYPE_ALIASES"
+        );
+    }
+}

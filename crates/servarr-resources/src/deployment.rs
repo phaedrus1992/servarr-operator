@@ -1280,10 +1280,28 @@ fn build_init_containers(
     // top-level-only check-then-recurse, this is resumable: an init container killed
     // mid-migration (eviction, OOM) leaves some descendants still mismatched, and the next
     // run's `find` picks those back up instead of skipping the whole tree because the root
-    // entry alone now reports the target uid. Must run as root with CHOWN/FOWNER added back
-    // (the base NonRoot profile drops all capabilities): the migration requires elevated
-    // permission precisely because the current owner is unknown/mismatched.
-    if matches!(app.spec.app, AppType::Seerr) {
+    // entry alone now reports the target uid. Must run as root with the same
+    // CHOWN/FOWNER/SETGID/SETUID capability set the LinuxServer profile above uses (the base
+    // NonRoot profile drops all capabilities): the migration requires elevated permission
+    // precisely because the current owner is unknown/mismatched.
+    //
+    // Only inject this when uid/gid/security are all left at their defaults and the config
+    // volume is operator-provisioned (no `existingClaimName`). This keeps the chown target
+    // (`uid`/`gid` here) always in lockstep with what the main container actually runs as
+    // (`build_security_contexts` derives `run_as_user`/`run_as_group` from
+    // `app.spec.security`, a field independent of `uid`/`gid` -- if a caller overrode one
+    // without the other, this container would chown to a uid the app doesn't run as, and
+    // repeat that every pod start). It also closes a confused-deputy path: without this
+    // gate, a caller with only `create servarrapps` RBAC could set `spec.uid: 0` or point
+    // `existingClaimName` at another workload's PVC and get the operator to run a
+    // root+CHOWN container against it. A user who has deliberately customized any of these
+    // is also better positioned to manage the migration themselves.
+    if matches!(app.spec.app, AppType::Seerr)
+        && app.spec.uid.is_none()
+        && app.spec.gid.is_none()
+        && app.spec.security.is_none()
+        && !config_volume_uses_existing_claim(app)
+    {
         let chown_script = format!(
             "find /app/config \\( \\! -user {uid} -o \\! -group {gid} \\) \
              -exec chown -h {uid}:{gid} {{}} +"
@@ -1299,7 +1317,12 @@ fn build_init_containers(
                 allow_privilege_escalation: Some(false),
                 capabilities: Some(Capabilities {
                     drop: Some(vec!["ALL".into()]),
-                    add: Some(vec!["CHOWN".into(), "FOWNER".into()]),
+                    add: Some(vec![
+                        "CHOWN".into(),
+                        "FOWNER".into(),
+                        "SETGID".into(),
+                        "SETUID".into(),
+                    ]),
                 }),
                 ..security_context.clone()
             }),
@@ -1313,6 +1336,18 @@ fn build_init_containers(
     }
 
     init
+}
+
+/// Whether the app's `config` volume is bound to a user-supplied claim rather than one the
+/// operator provisions and owns. Skip privileged migration containers on user-supplied
+/// claims -- the operator should never chown storage it didn't create.
+fn config_volume_uses_existing_claim(app: &ServarrApp) -> bool {
+    app.spec
+        .persistence
+        .as_ref()
+        .into_iter()
+        .flat_map(|p| p.volumes.iter())
+        .any(|v| v.name == "config" && v.existing_claim_name.is_some())
 }
 
 /// Build SSH bastion init containers for host key generation and entry.sh patching.

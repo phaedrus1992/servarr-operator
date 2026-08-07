@@ -607,21 +607,161 @@ async fn test_seerr_reconcile_warns_on_legacy_image_override() {
     let deprecated_override_event = requests.iter().any(|r| {
         r.method == wiremock::http::Method::POST
             && r.url.path() == "/apis/events.k8s.io/v1/namespaces/test/events"
-            && serde_json::from_slice::<serde_json::Value>(&r.body)
-                .ok()
-                .and_then(|body| {
-                    body.get("reason")
-                        .and_then(|v| v.as_str())
-                        .map(String::from)
-                })
-                .as_deref()
-                == Some("DeprecatedImageOverride")
+            && serde_json::from_slice::<serde_json::Value>(&r.body).is_ok_and(|body| {
+                body["reason"] == "DeprecatedImageOverride" && body["type"] == "Warning"
+            })
     });
     assert!(
         deprecated_override_event,
         "reconcile should publish a Warning Event with reason DeprecatedImageOverride when \
          the app's image came from the legacy DEFAULT_IMAGE_OVERSEERR_* fallback (#534), \
          requests: {requests:?}"
+    );
+}
+
+/// Regression test: an explicit `spec.image` always wins over the env-var fallback (see
+/// deployment::build's merge order), so the deprecation Event must not fire for an app that
+/// pins its own image -- publishing it there would be actively misleading.
+#[tokio::test]
+async fn test_seerr_reconcile_skips_legacy_override_warning_when_image_pinned() {
+    let mock_server = MockServer::start().await;
+    let client = mock_client(&mock_server.uri()).await;
+    let ctx = test_context_with_legacy_seerr_override(client);
+
+    let spec = ServarrAppSpec {
+        app: AppType::Seerr,
+        image: Some(servarr_crds::ImageSpec {
+            repository: "ghcr.io/seerr-team/seerr".into(),
+            tag: "v3.4.1".into(),
+            digest: String::new(),
+            pull_policy: "IfNotPresent".into(),
+        }),
+        ..Default::default()
+    };
+    let mut app = ServarrApp::new("test-seerr-pinned", spec);
+    app.metadata.namespace = Some("test".into());
+    app.metadata.uid = Some("test-uid-seerr-pinned".into());
+    app.metadata.resource_version = Some("1".into());
+    app.metadata.generation = Some(1);
+    let app = Arc::new(app);
+
+    Mock::given(method("PATCH"))
+        .and(path(
+            "/apis/apps/v1/namespaces/test/deployments/test-seerr-pinned",
+        ))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(deployment_response(
+                "test-seerr-pinned",
+                "test",
+                "seerr",
+            )),
+        )
+        .mount(&mock_server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path(
+            "/apis/apps/v1/namespaces/test/deployments/test-seerr-pinned",
+        ))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(deployment_response(
+                "test-seerr-pinned",
+                "test",
+                "seerr",
+            )),
+        )
+        .mount(&mock_server)
+        .await;
+
+    Mock::given(method("PATCH"))
+        .and(path("/api/v1/namespaces/test/services/test-seerr-pinned"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(service_response("test-seerr-pinned", "test")),
+        )
+        .mount(&mock_server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path_regex(
+            r"/api/v1/namespaces/test/persistentvolumeclaims/.*",
+        ))
+        .respond_with(ResponseTemplate::new(404).set_body_json(json!({
+            "apiVersion": "v1",
+            "kind": "Status",
+            "metadata": {},
+            "status": "Failure",
+            "message": "not found",
+            "reason": "NotFound",
+            "code": 404
+        })))
+        .mount(&mock_server)
+        .await;
+
+    Mock::given(method("PATCH"))
+        .and(path_regex(
+            r"/api/v1/namespaces/test/persistentvolumeclaims/.*",
+        ))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(pvc_response("test-seerr-pinned-config", "test")),
+        )
+        .mount(&mock_server)
+        .await;
+
+    Mock::given(method("PATCH"))
+        .and(path(
+            "/apis/networking.k8s.io/v1/namespaces/test/networkpolicies/test-seerr-pinned",
+        ))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(networkpolicy_response("test-seerr-pinned", "test")),
+        )
+        .mount(&mock_server)
+        .await;
+
+    Mock::given(method("PATCH"))
+        .and(path(
+            "/apis/servarr.dev/v1alpha1/namespaces/test/servarrapps/test-seerr-pinned/status",
+        ))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(servarrapp_response("test-seerr-pinned", "test")),
+        )
+        .mount(&mock_server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/apis/events.k8s.io/v1/namespaces/test/events"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(event_response()))
+        .mount(&mock_server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path(
+            "/apis/servarr.dev/v1alpha1/namespaces/test/servarrapps",
+        ))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(empty_list("servarr.dev/v1alpha1", "ServarrAppList")),
+        )
+        .mount(&mock_server)
+        .await;
+
+    let result = servarr_operator::controller::reconcile(app, ctx).await;
+    assert!(result.is_ok(), "reconcile should succeed, got: {result:?}");
+
+    let requests = mock_server.received_requests().await.unwrap_or_default();
+    let deprecated_override_event = requests.iter().any(|r| {
+        r.method == wiremock::http::Method::POST
+            && r.url.path() == "/apis/events.k8s.io/v1/namespaces/test/events"
+            && serde_json::from_slice::<serde_json::Value>(&r.body)
+                .is_ok_and(|body| body["reason"] == "DeprecatedImageOverride")
+    });
+    assert!(
+        !deprecated_override_event,
+        "reconcile must not publish DeprecatedImageOverride when spec.image is explicitly \
+         set -- the CR's own image always outranks the env fallback, so warning about the \
+         fallback would be misleading, requests: {requests:?}"
     );
 }
 
@@ -1653,6 +1793,20 @@ async fn test_media_stack_reconcile_orphan_cleanup_runs_before_apply() {
         .mount(&mock_server)
         .await;
 
+    // PATCH the orphan's config PVC to strip its ownerReference (must happen before the
+    // ServarrApp DELETE below).
+    Mock::given(method("PATCH"))
+        .and(path(
+            "/api/v1/namespaces/test/persistentvolumeclaims/migrate-stack-old-radarr-config",
+        ))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(pvc_response("migrate-stack-old-radarr-config", "test")),
+        )
+        .expect(1)
+        .mount(&mock_server)
+        .await;
+
     // DELETE the orphaned child
     Mock::given(method("DELETE"))
         .and(path(
@@ -1726,22 +1880,46 @@ async fn test_media_stack_reconcile_orphan_cleanup_runs_before_apply() {
 
     // Regression test for the data-loss variant of #533 caught in review: the orphaned
     // ServarrApp owns its config PVC via an ownerReference (see
-    // servarr_resources::common::metadata), so a plain delete triggers Kubernetes' default
-    // cascading garbage collection and destroys the PVC along with it. Once cleanup runs
-    // before apply (the #533 fix above), that delete actually succeeds on every rename --
-    // where before it was blocked by the deadlock and the PVC survived by accident. The
-    // orphan delete must use PropagationPolicy::Orphan so the child CR is removed but its
-    // PVC is left behind, never silently destroyed by routine reconcile cleanup.
+    // servarr_resources::common::metadata), so a plain cascading delete would destroy the
+    // PVC along with it. Once cleanup runs before apply (the #533 fix above), that delete
+    // actually succeeds on every rename -- where before it was blocked by the deadlock and
+    // the PVC survived by accident. Rather than orphaning the *entire* child (which would
+    // leave its Deployment/Service/Secrets permanently running and unmanaged -- caught in
+    // review as its own regression), the fix strips only the PVC's ownerReference before a
+    // normal cascading delete: the CR and everything else it owns is torn down as before,
+    // but the PVC survives, unowned.
+    let strip_pvc_owner_idx = requests
+        .iter()
+        .position(|r| {
+            r.method == wiremock::http::Method::PATCH
+                && r.url
+                    .path()
+                    .ends_with("/persistentvolumeclaims/migrate-stack-old-radarr-config")
+        })
+        .expect("PVC ownerReference-strip PATCH should have been sent");
+    assert!(
+        strip_pvc_owner_idx < delete_orphan_idx,
+        "PVC ownership must be detached (request #{strip_pvc_owner_idx}) before the child \
+         ServarrApp is deleted (request #{delete_orphan_idx}), or the cascade could destroy \
+         the PVC before the detach patch lands"
+    );
+    let strip_body: serde_json::Value = requests[strip_pvc_owner_idx]
+        .body_json()
+        .expect("PVC patch body should be valid JSON");
+    assert!(
+        strip_body["metadata"]["ownerReferences"].is_null(),
+        "PVC patch must null out ownerReferences to detach it from the deleted child, got: \
+         {strip_body}"
+    );
+
     let delete_body: serde_json::Value = requests[delete_orphan_idx]
         .body_json()
         .expect("DELETE request body should be valid JSON DeleteParams");
-    assert_eq!(
-        delete_body
-            .get("propagationPolicy")
-            .and_then(|v| v.as_str()),
-        Some("Orphan"),
-        "orphan child cleanup must delete with PropagationPolicy::Orphan so the child's \
-         owned PVC is never cascade-deleted, got body: {delete_body}"
+    assert!(
+        delete_body.get("propagationPolicy").is_none(),
+        "orphan ServarrApp delete must use the default (cascading) propagation policy -- \
+         PropagationPolicy::Orphan on the whole CR would leave its Deployment/Service/Secrets \
+         permanently running with no owner to ever clean them up, got body: {delete_body}"
     );
 }
 

@@ -1890,8 +1890,16 @@ fn test_deployment_seerr_config_ownership_migration_init_container() {
     );
     assert_eq!(
         caps.add.as_deref(),
-        Some(["CHOWN".to_string(), "FOWNER".to_string()].as_slice()),
-        "must add back only the capabilities chown actually needs"
+        Some(
+            [
+                "CHOWN".to_string(),
+                "FOWNER".to_string(),
+                "SETGID".to_string(),
+                "SETUID".to_string(),
+            ]
+            .as_slice()
+        ),
+        "must match the same capability set the LinuxServer profile uses"
     );
 
     let mounts = migrate
@@ -1914,6 +1922,84 @@ fn test_deployment_seerr_config_ownership_migration_init_container() {
     assert!(
         script.contains("/app/config"),
         "script must operate on /app/config: {script}"
+    );
+}
+
+fn has_migrate_config_ownership_container(app: &ServarrApp) -> bool {
+    let deploy =
+        servarr_resources::deployment::build(app, &std::collections::HashMap::new()).unwrap();
+    deploy
+        .spec
+        .unwrap()
+        .template
+        .spec
+        .unwrap()
+        .init_containers
+        .unwrap_or_default()
+        .iter()
+        .any(|c| c.name == "migrate-config-ownership")
+}
+
+/// Regression test for the confused-deputy / uid-mismatch findings on #535's review: the
+/// chown init container must never run when the caller has overridden uid/gid/security or
+/// pointed the config volume at a claim the operator didn't provision -- otherwise the
+/// chown target can silently diverge from what the app actually runs as, or a caller with
+/// only `create servarrapps` RBAC could weaponize it to rewrite ownership on an arbitrary
+/// same-namespace PVC.
+#[test]
+fn test_deployment_seerr_config_ownership_migration_skipped_when_uid_overridden() {
+    let mut app = make_app(AppType::Seerr);
+    app.spec.uid = Some(1001);
+    assert!(
+        !has_migrate_config_ownership_container(&app),
+        "must skip the chown container when spec.uid is explicitly set -- otherwise it \
+         could chown to a uid the app doesn't actually run as"
+    );
+}
+
+#[test]
+fn test_deployment_seerr_config_ownership_migration_skipped_when_security_overridden() {
+    let mut app = make_app(AppType::Seerr);
+    app.spec.security = Some(SecurityProfile {
+        profile_type: SecurityProfileType::NonRoot,
+        user: 2000,
+        group: 2000,
+        ..Default::default()
+    });
+    assert!(
+        !has_migrate_config_ownership_container(&app),
+        "must skip the chown container when spec.security is explicitly set -- otherwise \
+         it could chown to a uid the app doesn't actually run as"
+    );
+}
+
+#[test]
+fn test_deployment_seerr_config_ownership_migration_skipped_for_existing_claim_name() {
+    let mut app = make_app(AppType::Seerr);
+    app.spec.persistence = Some(PersistenceSpec {
+        volumes: vec![PvcVolume {
+            name: "config".into(),
+            mount_path: "/app/config".into(),
+            existing_claim_name: Some("some-other-workloads-pvc".into()),
+            access_mode: "ReadWriteOnce".into(),
+            storage_class: String::new(),
+            size: String::new(),
+        }],
+        nfs_mounts: vec![],
+    });
+    assert!(
+        !has_migrate_config_ownership_container(&app),
+        "must skip the chown container when the config volume is a user-supplied claim -- \
+         the operator must never chown storage it didn't provision"
+    );
+}
+
+#[test]
+fn test_deployment_non_seerr_app_has_no_config_ownership_migration_container() {
+    let app = make_app(AppType::Sonarr);
+    assert!(
+        !has_migrate_config_ownership_container(&app),
+        "only Seerr apps should ever get the migrate-config-ownership init container"
     );
 }
 
