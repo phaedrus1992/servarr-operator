@@ -6193,13 +6193,6 @@ mod tests {
     }
 
     // ---- #517: sync_admin_credentials' Transmission RPC must NEVER be throttled ----
-    //
-    // sync_admin_credentials builds its Transmission base URL from the in-cluster Service DNS
-    // name (not an injectable mock URI like resolve_transmission_access/check_api_health take),
-    // so a real attempt in this test sandbox always fails to connect. That's actually useful
-    // here: "attempted" is distinguishable from "skipped" purely by whether the returned
-    // condition is the untouched existing one (status True, identical timestamp) or a fresh
-    // SyncFailed one (status False) from the failed connection attempt.
 
     #[tokio::test]
     async fn sync_admin_credentials_transmission_always_attempts_even_with_fresh_condition() {
@@ -6213,6 +6206,20 @@ mod tests {
             json!({"username": "YWRtaW4=", "password": "c2VjcmV0"}),
         )
         .await;
+        // If a throttle wrongly skipped this RPC, `.expect(1)` would fail the mock server
+        // verify below.
+        Mock::given(method("POST"))
+            .and(path("/transmission/rpc"))
+            .and(body_partial_json(
+                serde_json::json!({"method": "session-set"}),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "result": "success",
+                "arguments": {}
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
 
         // Regression guard for #517: a *very recent* ADMIN_CREDENTIALS_CONFIGURED condition,
         // with a long intervalSeconds, is exactly the combination that would have been wrongly
@@ -6228,15 +6235,16 @@ mod tests {
             chrono_now(),
         ));
 
-        let cond = sync_admin_credentials(&client, &app, None)
+        let mock_uri = mock_server.uri();
+        let cond = sync_admin_credentials(&client, &app, Some(&mock_uri), None)
             .await
             .expect("sync must always attempt, never return None for a throttle skip");
         assert_eq!(
-            cond.status, "False",
-            "attempt against the unreachable test host must fail, proving sync was NOT \
-             throttled by the fresh existing condition"
+            cond.status, "True",
+            "sync must succeed against the mock RPC endpoint, proving it was NOT throttled \
+             by the fresh existing condition"
         );
-        assert_eq!(cond.reason, "SyncFailed");
+        mock_server.verify().await;
     }
 
     // ---- json_is_subset ----
