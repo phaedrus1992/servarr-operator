@@ -1275,17 +1275,18 @@ fn build_init_containers(
     // it may be replacing on an Overseerr->Seerr migration), and unlike Transmission/Bazarr
     // it has no built-in mechanism to self-chown its config volume. An inherited volume
     // still owned by the old app's uid/gid leaves Seerr unable to write its config,
-    // crash-looping on permission errors. Conditionally chown only when the top-level
-    // entry isn't already owned by the target uid -- never a blanket chown every reconcile.
-    // Must run as root: the migration requires elevated permission precisely because the
-    // current owner is unknown/mismatched.
+    // crash-looping on permission errors. Conditionally chown per-entry (find only touches
+    // mismatched files) rather than a blanket `chown -R` every reconcile -- and, unlike a
+    // top-level-only check-then-recurse, this is resumable: an init container killed
+    // mid-migration (eviction, OOM) leaves some descendants still mismatched, and the next
+    // run's `find` picks those back up instead of skipping the whole tree because the root
+    // entry alone now reports the target uid. Must run as root with CHOWN/FOWNER added back
+    // (the base NonRoot profile drops all capabilities): the migration requires elevated
+    // permission precisely because the current owner is unknown/mismatched.
     if matches!(app.spec.app, AppType::Seerr) {
         let chown_script = format!(
-            "current_uid=$(stat -c '%u' /app/config); \
-             if [ \"$current_uid\" != \"{uid}\" ]; then \
-               echo \"migrating /app/config ownership from uid $current_uid to {uid}:{gid}\"; \
-               chown -R {uid}:{gid} /app/config; \
-             fi"
+            "find /app/config \\( \\! -user {uid} -o \\! -group {gid} \\) \
+             -exec chown -h {uid}:{gid} {{}} +"
         );
         init.push(Container {
             name: "migrate-config-ownership".into(),
@@ -1295,7 +1296,12 @@ fn build_init_containers(
                 run_as_user: Some(0),
                 run_as_group: Some(0),
                 run_as_non_root: Some(false),
-                ..Default::default()
+                allow_privilege_escalation: Some(false),
+                capabilities: Some(Capabilities {
+                    drop: Some(vec!["ALL".into()]),
+                    add: Some(vec!["CHOWN".into(), "FOWNER".into()]),
+                }),
+                ..security_context.clone()
             }),
             volume_mounts: Some(vec![VolumeMount {
                 name: "config".into(),

@@ -197,7 +197,14 @@ pub async fn reconcile(stack: Arc<MediaStack>, ctx: Arc<Context>) -> Result<Acti
         let child_name = child.name_any();
         if !desired_children.contains(&child_name) {
             info!(%name, child = %child_name, "deleting orphaned child ServarrApp");
-            if let Err(e) = sa_api.delete(&child_name, &Default::default()).await {
+            // Orphan, don't cascade: the child's config PVC is owned by it via
+            // ownerReference (servarr_resources::common::metadata), and the default
+            // propagation policy would garbage-collect that PVC along with the CR. A
+            // renamed app (e.g. Overseerr -> Seerr within a MediaStack) produces a new
+            // child name, so this delete now runs -- and succeeds -- on every such
+            // rename; it must never silently destroy the user's config data as a side
+            // effect of routine cleanup.
+            if let Err(e) = sa_api.delete(&child_name, &DeleteParams::orphan()).await {
                 warn!(
                     %name,
                     child = %child_name,

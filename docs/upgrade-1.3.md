@@ -56,8 +56,32 @@ Renaming a `MediaStack` app entry from `Overseerr` to `Seerr` changes the genera
 wedge the stack's reconcile in a permanent error loop during that transition (the old child was
 deleted only *after* trying to apply the new one, which the admission webhook rejected as a
 duplicate instance) — fixed in 1.3.1
-([#533](https://github.com/phaedrus1992/servarr-operator/issues/533)); no workaround needed once
-you're on 1.3.1+.
+([#533](https://github.com/phaedrus1992/servarr-operator/issues/533)).
+
+> **This is a name change, not an in-place migration, for `MediaStack` children.** Unlike a
+> standalone `ServarrApp` (see below — same name, same PVC, Seerr migrates the inherited database
+> in place), a `MediaStack` app rename produces a *new* child name and therefore a *new*,
+> empty config PVC (`media-seerr-config`), while the old one (`media-overseerr-config`) is
+> preserved but orphaned — 1.3.1 deletes only the old `ServarrApp` object, never its PVC
+> (`PropagationPolicy: Orphan`), so your data is never silently destroyed, but it also isn't
+> automatically attached to the new Seerr instance. To reuse the old data instead of starting
+> Seerr fresh:
+>
+> ```bash
+> # 1. Drop the ownership link left on the orphaned PVC so it isn't cleaned up further.
+> kubectl patch pvc media-overseerr-config -n <namespace> --type=json \
+>   -p '[{"op":"remove","path":"/metadata/ownerReferences"}]'
+> # 2. Point the new Seerr entry's config volume at the old claim (existingClaimName skips
+> #    PVC creation and binds to the existing one) before applying the renamed MediaStack.
+> ```
+> ```yaml
+> apps:
+>   - app: Seerr
+>     persistence:
+>       volumes:
+>         - name: config
+>           existingClaimName: media-overseerr-config
+> ```
 
 Seerr's image and config volume also change on the same transition:
 
@@ -143,6 +167,8 @@ full behavior and batch-size limits.
       maintain
 - [ ] Rename `defaultImages.overseerr` → `defaultImages.seerr` in your Helm values
 - [ ] Take a PVC snapshot of any Overseerr app's `config` volume before changing `spec.app`
+- [ ] For a `MediaStack` app rename specifically: reattach the old (orphaned, not deleted)
+      config PVC via `existingClaimName` if you want Seerr to inherit its data
 - [ ] Remove any legacy `appConfig.transmission.auth` block that duplicates `adminCredentials`
 - [ ] Set `apiKeySecret` on any app newly opting into `apiHealthCheck`
 - [ ] Review whether Transmission `autoRemoveOrphanedTorrents` fits your setup before enabling it

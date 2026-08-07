@@ -1723,6 +1723,26 @@ async fn test_media_stack_reconcile_orphan_cleanup_runs_before_apply() {
          duplicate-instance rejection on the apply call aborts reconcile before cleanup ever \
          runs, permanently wedging the stack (issue #533)"
     );
+
+    // Regression test for the data-loss variant of #533 caught in review: the orphaned
+    // ServarrApp owns its config PVC via an ownerReference (see
+    // servarr_resources::common::metadata), so a plain delete triggers Kubernetes' default
+    // cascading garbage collection and destroys the PVC along with it. Once cleanup runs
+    // before apply (the #533 fix above), that delete actually succeeds on every rename --
+    // where before it was blocked by the deadlock and the PVC survived by accident. The
+    // orphan delete must use PropagationPolicy::Orphan so the child CR is removed but its
+    // PVC is left behind, never silently destroyed by routine reconcile cleanup.
+    let delete_body: serde_json::Value = requests[delete_orphan_idx]
+        .body_json()
+        .expect("DELETE request body should be valid JSON DeleteParams");
+    assert_eq!(
+        delete_body
+            .get("propagationPolicy")
+            .and_then(|v| v.as_str()),
+        Some("Orphan"),
+        "orphan child cleanup must delete with PropagationPolicy::Orphan so the child's \
+         owned PVC is never cascade-deleted, got body: {delete_body}"
+    );
 }
 
 // ---------------------------------------------------------------------------

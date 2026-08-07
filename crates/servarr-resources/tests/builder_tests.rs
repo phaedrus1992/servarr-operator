@@ -1879,6 +1879,20 @@ fn test_deployment_seerr_config_ownership_migration_init_container() {
         Some(0),
         "must run as root to chown regardless of the volume's current owner"
     );
+    let caps = init_sec
+        .capabilities
+        .as_ref()
+        .expect("chown init container must not silently inherit an all-capabilities root");
+    assert_eq!(
+        caps.drop.as_deref(),
+        Some(["ALL".to_string()].as_slice()),
+        "must drop all capabilities by default, matching the pod's hardened baseline"
+    );
+    assert_eq!(
+        caps.add.as_deref(),
+        Some(["CHOWN".to_string(), "FOWNER".to_string()].as_slice()),
+        "must add back only the capabilities chown actually needs"
+    );
 
     let mounts = migrate
         .volume_mounts
