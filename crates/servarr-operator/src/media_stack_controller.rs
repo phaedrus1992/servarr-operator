@@ -5,7 +5,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use futures::StreamExt;
 use k8s_openapi::api::apps::v1::StatefulSet;
-use k8s_openapi::api::core::v1::{Pod, Service};
+use k8s_openapi::api::core::v1::{PersistentVolumeClaim, Pod, Service};
 use kube::api::{Api, DeleteParams, ListParams, Patch, PatchParams};
 use kube::runtime::controller::{Action, Controller};
 use kube::runtime::watcher;
@@ -180,6 +180,74 @@ pub async fn reconcile(stack: Arc<MediaStack>, ctx: Arc<Context>) -> Result<Acti
         .collect();
 
     let sa_api = Api::<ServarrApp>::namespaced(client.clone(), &ns);
+
+    // Cleanup orphaned children BEFORE applying desired children. A renamed app (e.g.
+    // Overseerr -> Seerr) produces a new child name whose normalized `spec.app` collides
+    // with the stale orphan's under the admission webhook's duplicate-instance check.
+    // Deleting the orphan first avoids that collision; deleting it after the apply loop
+    // (as this used to) means every apply is rejected and cleanup is never reached,
+    // permanently wedging the stack (#533).
+    let label_selector = format!("servarr.dev/stack={name}");
+    let existing = sa_api
+        .list(&ListParams::default().labels(&label_selector))
+        .await
+        .map_err(Error::Kube)?;
+
+    let pvc_api = Api::<PersistentVolumeClaim>::namespaced(client.clone(), &ns);
+    for child in &existing {
+        let child_name = child.name_any();
+        if !desired_children.contains(&child_name) {
+            info!(%name, child = %child_name, "deleting orphaned child ServarrApp");
+            // Detach this child's PVCs from the ownership chain before deleting the CR.
+            // The child's config PVC is owned by it via ownerReference
+            // (servarr_resources::common::metadata), and the default cascading delete
+            // below would garbage-collect it along with the CR. A renamed app (e.g.
+            // Overseerr -> Seerr within a MediaStack) produces a new child name, so this
+            // delete now runs -- and succeeds -- on every such rename; it must never
+            // silently destroy the user's config data as a side effect of routine
+            // cleanup. Everything *else* the child owns (Deployment, Service, Secrets,
+            // NetworkPolicy, routes) should still be torn down normally -- a
+            // removed/renamed app must actually stop running, not linger unmanaged.
+            match servarr_resources::pvc::build_all(child) {
+                Ok(pvcs) => {
+                    for pvc in &pvcs {
+                        let Some(pvc_name) = pvc.metadata.name.as_deref() else {
+                            continue;
+                        };
+                        let detach = serde_json::json!({ "metadata": { "ownerReferences": null } });
+                        if let Err(e) = pvc_api
+                            .patch(pvc_name, &PatchParams::default(), &Patch::Merge(detach))
+                            .await
+                            && !is_not_found(&e)
+                        {
+                            warn!(
+                                %name, child = %child_name, pvc = %pvc_name,
+                                error = %kube_err_summary(&e),
+                                "failed to detach PVC ownership before orphan cleanup"
+                            );
+                        }
+                    }
+                }
+                Err(e) => {
+                    warn!(
+                        %name, child = %child_name, error = %e,
+                        "failed to compute child's PVCs before orphan cleanup"
+                    );
+                }
+            }
+            if let Err(e) = sa_api.delete(&child_name, &Default::default()).await
+                && !is_not_found(&e)
+            {
+                warn!(
+                    %name,
+                    child = %child_name,
+                    error = %kube_err_summary(&e),
+                    "failed to delete orphaned child"
+                );
+            }
+        }
+    }
+
     let mut app_statuses: Vec<StackAppStatus> = Vec::new();
     let mut ready_count: i32 = 0;
     let mut current_tier: Option<u8> = None;
@@ -324,28 +392,6 @@ pub async fn reconcile(stack: Arc<MediaStack>, ctx: Arc<Context>) -> Result<Acti
                 enabled: false,
                 bypassed: false,
             });
-        }
-    }
-
-    // Cleanup orphaned children
-    let label_selector = format!("servarr.dev/stack={name}");
-    let existing = sa_api
-        .list(&ListParams::default().labels(&label_selector))
-        .await
-        .map_err(Error::Kube)?;
-
-    for child in &existing {
-        let child_name = child.name_any();
-        if !desired_children.contains(&child_name) {
-            info!(%name, child = %child_name, "deleting orphaned child ServarrApp");
-            if let Err(e) = sa_api.delete(&child_name, &Default::default()).await {
-                warn!(
-                    %name,
-                    child = %child_name,
-                    error = %kube_err_summary(&e),
-                    "failed to delete orphaned child"
-                );
-            }
         }
     }
 

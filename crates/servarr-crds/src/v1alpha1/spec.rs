@@ -135,7 +135,7 @@ pub struct ServarrAppSpec {
     pub admin_credentials: Option<AdminCredentialsSpec>,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq, JsonSchema)]
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
 pub enum AppType {
     #[default]
     Sonarr,
@@ -154,6 +154,43 @@ pub enum AppType {
     SshBastion,
     Bazarr,
     Subgen,
+}
+
+/// Legacy serde aliases accepted by `AppType`'s `Deserialize` impl (e.g.
+/// `#[serde(alias = "Overseerr")]` on `Seerr` above) but invisible to schemars, which has no
+/// insight into serde aliases. Without merging these into the generated schema, a fresh
+/// `kubectl apply` of a manifest using a pre-rename spelling is rejected outright by the CRD's
+/// structural schema, even though an already-stored object with that spelling keeps
+/// reconciling fine (#540). Append here whenever a variant gains a new `#[serde(alias = ...)]`.
+const LEGACY_APP_TYPE_ALIASES: &[&str] = &["Overseerr"];
+
+impl JsonSchema for AppType {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "AppType".into()
+    }
+
+    fn inline_schema() -> bool {
+        true
+    }
+
+    fn json_schema(_generator: &mut SchemaGenerator) -> Schema {
+        // Current wire values, derived from `Serialize` so this can't drift from the variant
+        // list -- only the legacy-alias list above needs manual upkeep.
+        let mut values: Vec<serde_json::Value> = Self::ALL
+            .iter()
+            .map(|v| serde_json::to_value(v).expect("AppType always serializes to a string"))
+            .collect();
+        values.extend(
+            LEGACY_APP_TYPE_ALIASES
+                .iter()
+                .map(|alias| serde_json::Value::String((*alias).to_string())),
+        );
+
+        schemars::json_schema!({
+            "type": "string",
+            "enum": values,
+        })
+    }
 }
 
 impl AppType {
@@ -247,4 +284,43 @@ pub(crate) fn nullable_app_config_schema(generator: &mut SchemaGenerator) -> Sch
     let mut schema = generator.subschema_for::<AppConfig>();
     schema.insert("nullable".to_string(), serde_json::Value::Bool(true));
     schema
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression guard for #540: `LEGACY_APP_TYPE_ALIASES` is a hand-maintained mirror of
+    /// the `#[serde(alias = "...")]` attributes on `AppType`'s variants (schemars can't see
+    /// serde aliases, so this list exists to fold them into the generated schema). A typo'd
+    /// or stale entry would make the CRD schema *accept* a value the operator's Deserialize
+    /// then rejects -- the exact failure mode #540 was about, inverted.
+    #[test]
+    fn every_legacy_app_type_alias_deserializes() {
+        for alias in LEGACY_APP_TYPE_ALIASES {
+            let parsed: Result<AppType, _> = serde_json::from_value(serde_json::json!(alias));
+            assert!(
+                parsed.is_ok(),
+                "LEGACY_APP_TYPE_ALIASES entry {alias:?} does not deserialize to a valid \
+                 AppType -- the schema would accept a value the operator rejects"
+            );
+        }
+    }
+
+    /// Guards against the schema silently growing extra or duplicate entries: it must
+    /// contain exactly one value per current variant plus one per legacy alias, no more.
+    #[test]
+    fn schema_enum_length_matches_all_variants_plus_legacy_aliases() {
+        let schema = schemars::schema_for!(AppType);
+        let enum_len = schema
+            .get("enum")
+            .and_then(|v| v.as_array())
+            .expect("AppType schema should have an enum array")
+            .len();
+        assert_eq!(
+            enum_len,
+            AppType::ALL.len() + LEGACY_APP_TYPE_ALIASES.len(),
+            "schema enum length drifted from AppType::ALL + LEGACY_APP_TYPE_ALIASES"
+        );
+    }
 }

@@ -9,6 +9,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased] - ReleaseDate
 
+### Added
+
+- Add `docs/upgrade-1.3.md`, a full 1.2.x → 1.3.x migration guide covering the Overseerr→Seerr
+  rename, the legacy `appConfig.transmission.auth` conflict, `apiKeySecret` requirements for
+  `apiHealthCheck`, and the Transmission download-data self-heal opt-ins.
+
+### Fixed
+
+- Fix `MediaStack` reconcile wedging permanently in an error loop when an app entry renamed from
+  `Overseerr` to `Seerr` — the old child `ServarrApp` was deleted only after trying to apply the
+  new one, which the admission webhook rejected as a duplicate instance (#533).
+- Fix a stale `DEFAULT_IMAGE_OVERSEERR_*` env var (e.g. from a Helm release upgraded with
+  `--reuse-values`) silently driving a `Seerr` app's image with only a startup log line to notice
+  — the operator now publishes a `DeprecatedImageOverride` Warning Event when the fallback is
+  actually in effect (#534).
+- Fix `Seerr` apps unable to write their config after an Overseerr→Seerr migration, because the
+  inherited config volume stayed owned by the old app's uid/gid and Seerr runs as a fixed,
+  non-configurable `1000:1000` — the operator now migrates ownership automatically on first
+  reconcile after the transition (#535).
+- Fix `kubectl apply` of a pre-1.3 manifest spelled `app: Overseerr` being rejected outright by the
+  CRD's structural schema, even though already-stored objects with that spelling kept reconciling
+  fine — the CRD schema now accepts the legacy value too (#540).
+
 ## [1.3.0] - 2026-08-07
 
 Migrates Overseerr support to its successor, Seerr; adds Transmission download-data self-heal and

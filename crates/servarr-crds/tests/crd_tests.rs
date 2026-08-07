@@ -1,6 +1,43 @@
 use serde::Deserialize;
 use servarr_crds::*;
 
+/// Regression test for #540: schemars does not propagate serde `#[serde(alias = ...)]`
+/// annotations into the generated JSON Schema, so the CRD's `app` enum silently dropped
+/// `Overseerr` even though `AppType` still deserializes it. That makes a fresh `kubectl
+/// apply` of a pre-1.3 manifest fail the CRD's structural-schema validation, even though
+/// already-stored objects with `app: Overseerr` keep reconciling fine.
+#[test]
+fn app_type_json_schema_enum_includes_legacy_overseerr_alias() {
+    let schema = schemars::schema_for!(AppType);
+    let enum_values: Vec<&str> = schema
+        .get("enum")
+        .and_then(|v| v.as_array())
+        .expect("AppType schema should have an enum array")
+        .iter()
+        .map(|v| v.as_str().expect("enum values should be strings"))
+        .collect();
+
+    assert!(
+        enum_values.contains(&"Overseerr"),
+        "schema enum {enum_values:?} must include the legacy 'Overseerr' alias so a \
+         kubectl apply of a pre-1.3 manifest isn't rejected outright (#540)"
+    );
+
+    // Every current variant's wire name must still be present -- the schema must not
+    // just be a hardcoded legacy list, it must still track AppType::ALL.
+    for app in AppType::ALL {
+        let wire_name = serde_json::to_value(app)
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(
+            enum_values.contains(&wire_name.as_str()),
+            "schema enum {enum_values:?} is missing current variant '{wire_name}'"
+        );
+    }
+}
+
 #[test]
 fn test_crd_serde_roundtrip_sonarr() {
     let spec = ServarrAppSpec {
