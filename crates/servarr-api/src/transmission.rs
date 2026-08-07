@@ -179,8 +179,7 @@ impl TransmissionClient {
         if let Some(creds) = credentials {
             builder = builder.default_headers({
                 let mut headers = reqwest::header::HeaderMap::new();
-                let encoded = base64_encode(&format!("{}:{}", creds.username(), creds.password()));
-                let mut auth_value = HeaderValue::from_str(&format!("Basic {encoded}"))
+                let mut auth_value = HeaderValue::from_str(&basic_auth_header(creds))
                     .map_err(|_| ApiError::InvalidApiKey)?;
                 // Prevents the credential from appearing in reqwest::Client's Debug output
                 // (which prints default_headers unconditionally) if this client is ever
@@ -335,6 +334,18 @@ impl HealthCheck for TransmissionClient {
         let info = self.session_get().await?;
         Ok(!info.version.is_empty())
     }
+}
+
+/// Build the HTTP `Authorization: Basic` header value for `creds`.
+///
+/// Base64-encodes `username:password`. Extracted from `TransmissionClient::new`
+/// (#505) so the credential encoding is independently testable; the resulting
+/// header value is marked `set_sensitive(true)` at the call site.
+fn basic_auth_header(creds: &BasicCredentials) -> String {
+    format!(
+        "Basic {}",
+        base64_encode(&format!("{}:{}", creds.username(), creds.password()))
+    )
 }
 
 fn base64_encode(input: &str) -> String {
@@ -730,6 +741,34 @@ mod tests {
             let json = serde_json::to_value(&original).unwrap();
             let roundtripped: TorrentInfo = serde_json::from_value(json).unwrap();
             proptest::prop_assert_eq!(original, roundtripped);
+        }
+    }
+
+    // ---- Basic auth header roundtrip (#505) ----
+    //
+    // `.` matches any non-newline char, so arbitrary usernames/passwords are
+    // covered: colons, empty strings, and multibyte unicode alike. The decode
+    // uses the base64 crate's STANDARD engine — an implementation independent of
+    // this module's Base64Writer — so a mirrored encode bug can't pass.
+
+    proptest::proptest! {
+        #[test]
+        fn basic_auth_header_roundtrips_through_base64(
+            username in ".{0,128}",
+            password in ".{0,128}",
+        ) {
+            let creds = BasicCredentials::new(&username, &password);
+            let header = basic_auth_header(&creds);
+            proptest::prop_assert!(header.starts_with("Basic "));
+            let encoded = &header["Basic ".len()..];
+            use base64::Engine;
+            let decoded = base64::engine::general_purpose::STANDARD
+                .decode(encoded)
+                .unwrap();
+            proptest::prop_assert_eq!(
+                format!("{}:{}", creds.username(), creds.password()),
+                String::from_utf8(decoded).unwrap()
+            );
         }
     }
 }
