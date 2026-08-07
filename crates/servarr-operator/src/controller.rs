@@ -1374,8 +1374,13 @@ fn current_condition<'a>(app: &'a ServarrApp, condition_type: &str) -> Option<&'
 
 /// `apiHealthCheck.intervalSeconds` throttle (#506): whether the health poll for
 /// `condition_type` should be skipped because the existing condition's
-/// `lastTransitionTime` still falls inside `interval_seconds` of now. A missing or
-/// unparseable timestamp, or an unset/zero interval, never throttles — the poll runs.
+/// `lastTransitionTime` still falls inside `interval_seconds` of now.
+///
+/// Only a positive health assertion (`status == "True"`) is rate-limited. An error,
+/// `Unknown`, or `False` condition is never throttled, so recovery is re-probed on the
+/// next reconcile instead of being frozen until the interval elapses. A missing or
+/// unparseable timestamp, a future-dated timestamp, or an unset/zero interval never
+/// throttles — the poll runs.
 fn is_health_poll_throttled(
     existing: Option<&Condition>,
     interval_seconds: Option<u32>,
@@ -1385,13 +1390,22 @@ fn is_health_poll_throttled(
     let Some(existing) = existing else {
         return false;
     };
+    if existing.status != "True" {
+        return false;
+    }
     let (Ok(last), Ok(current)) = (
         chrono::DateTime::parse_from_rfc3339(&existing.last_transition_time),
         chrono::DateTime::parse_from_rfc3339(now),
     ) else {
         return false;
     };
-    current < last + chrono::Duration::seconds(i64::from(interval))
+    // Fail open on a future-dated timestamp (clock skew, hand-edit): `current < last`
+    // would otherwise throttle every poll — including at `intervalSeconds: 0` — until
+    // the future passes.
+    if current < last {
+        return false;
+    }
+    current - last < chrono::Duration::seconds(i64::from(interval))
 }
 
 pub(crate) async fn check_api_health(
@@ -5237,6 +5251,62 @@ mod tests {
             last_transition_time: now.clone(),
         };
         assert!(!is_health_poll_throttled(Some(&zero), Some(0), &now));
+    }
+
+    #[test]
+    fn is_health_poll_throttled_does_not_freeze_non_true_conditions() {
+        let now = chrono_now();
+        let recent = (chrono::Utc::now() - chrono::Duration::seconds(30))
+            .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+
+        // A "False" condition (MissingDataDetected, credential-read error) must never be
+        // frozen: re-poll on the next reconcile so recovery is detected promptly instead
+        // of waiting out the interval.
+        let false_cond = Condition {
+            condition_type: condition_types::DOWNLOAD_DATA_HEALTHY.to_string(),
+            status: "False".to_string(),
+            reason: "MissingDataDetected".to_string(),
+            message: "stale torrents still missing".to_string(),
+            last_transition_time: recent.clone(),
+        };
+        assert!(!is_health_poll_throttled(
+            Some(&false_cond),
+            Some(3600),
+            &now
+        ));
+
+        // Same for "Unknown" — never a positive assertion, never rate-limited.
+        let unknown_cond = Condition {
+            condition_type: condition_types::APP_HEALTHY.to_string(),
+            status: "Unknown".to_string(),
+            reason: "ClientBuildError".to_string(),
+            message: "could not reach the API".to_string(),
+            last_transition_time: recent,
+        };
+        assert!(!is_health_poll_throttled(
+            Some(&unknown_cond),
+            Some(3600),
+            &now
+        ));
+    }
+
+    #[test]
+    fn is_health_poll_throttled_fails_open_on_future_timestamp() {
+        let now = chrono_now();
+        let future = (chrono::Utc::now() + chrono::Duration::hours(2))
+            .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        let existing = Condition {
+            condition_type: condition_types::APP_HEALTHY.to_string(),
+            status: "True".to_string(),
+            reason: "Healthy".to_string(),
+            message: "API responded healthy".to_string(),
+            last_transition_time: future,
+        };
+        // A future-dated lastTransitionTime (clock skew, hand-edit) must not freeze the
+        // poll — not even at intervalSeconds: 0, where `current < last` would otherwise
+        // throttle on every reconcile until the future passes.
+        assert!(!is_health_poll_throttled(Some(&existing), Some(0), &now));
+        assert!(!is_health_poll_throttled(Some(&existing), Some(3600), &now));
     }
 
     #[tokio::test]
