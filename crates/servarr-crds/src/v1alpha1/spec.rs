@@ -157,6 +157,27 @@ pub enum AppType {
 }
 
 impl AppType {
+    /// Every app variant, in enum-declaration order. Single source of truth for
+    /// "which apps exist" so callers (defaults validation, env-image-override
+    /// loading) can't drift from the enum.
+    pub const ALL: &'static [AppType] = &[
+        Self::Sonarr,
+        Self::Radarr,
+        Self::Lidarr,
+        Self::Prowlarr,
+        Self::Sabnzbd,
+        Self::Transmission,
+        Self::Tautulli,
+        Self::Seerr,
+        Self::Maintainerr,
+        Self::Jackett,
+        Self::Jellyfin,
+        Self::Plex,
+        Self::SshBastion,
+        Self::Bazarr,
+        Self::Subgen,
+    ];
+
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Sonarr => "sonarr",

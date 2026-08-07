@@ -1,6 +1,6 @@
 use kube::Client;
 use kube::runtime::events::Reporter;
-use servarr_crds::ImageSpec;
+use servarr_crds::{AppType, ImageSpec};
 use std::collections::HashMap;
 use tracing::{info, warn};
 
@@ -73,31 +73,24 @@ impl Context {
 }
 
 /// Read DEFAULT_IMAGE_<APP>_REPO and DEFAULT_IMAGE_<APP>_TAG env vars for each known app.
+///
+/// Driven by [`AppType::ALL`] so the set of apps honored here can never drift
+/// from the enum (the Helm chart emits one env-var pair per `defaultImages`
+/// key, and this must cover every one of them or the override is silently
+/// dropped).
 fn load_image_overrides() -> HashMap<String, ImageSpec> {
-    let apps = [
-        "sonarr",
-        "radarr",
-        "lidarr",
-        "prowlarr",
-        "sabnzbd",
-        "transmission",
-        "tautulli",
-        "seerr",
-        "maintainerr",
-        "jackett",
-    ];
-
     let mut overrides = HashMap::new();
 
-    for app in &apps {
-        let repo_key = format!("DEFAULT_IMAGE_{}_REPO", app.to_uppercase());
-        let tag_key = format!("DEFAULT_IMAGE_{}_TAG", app.to_uppercase());
+    for app in AppType::ALL {
+        let name = app.as_str();
+        let repo_key = format!("DEFAULT_IMAGE_{}_REPO", name.to_uppercase());
+        let tag_key = format!("DEFAULT_IMAGE_{}_TAG", name.to_uppercase());
 
         if let Ok(repo) = std::env::var(&repo_key) {
             let tag = std::env::var(&tag_key).unwrap_or_default();
-            info!(%app, %repo, %tag, "loaded image override from env");
+            info!(%name, %repo, %tag, "loaded image override from env");
             overrides.insert(
-                app.to_string(),
+                name.to_string(),
                 ImageSpec {
                     repository: repo,
                     tag,
@@ -208,6 +201,38 @@ mod tests {
                 assert_eq!(overrides.get("sabnzbd").unwrap().tag, "3.7");
             },
         );
+    }
+
+    #[test]
+    fn load_image_overrides_honors_every_app_type() {
+        // Regression: the app set was once a hardcoded 10-entry list while the
+        // Helm chart emits a DEFAULT_IMAGE_* pair for every `defaultImages` key
+        // (all 15 AppTypes). Apps added later — bazarr, subgen, jellyfin, plex,
+        // ssh-bastion — had their overrides silently dropped. Driven by
+        // AppType::ALL now, so this covers all of them.
+        let mut env = vec![];
+        for app in AppType::ALL {
+            env.push((
+                format!("DEFAULT_IMAGE_{}_REPO", app.as_str().to_uppercase()),
+                Some(format!("registry.internal/{}", app.as_str())),
+            ));
+            env.push((format!("DEFAULT_IMAGE_{}_TAG", app.as_str().to_uppercase()), None));
+        }
+        temp_env::with_vars(env, || {
+            let overrides = load_image_overrides();
+            assert_eq!(
+                overrides.len(),
+                AppType::ALL.len(),
+                "every AppType must be overrideable"
+            );
+            for app in AppType::ALL {
+                let name = app.as_str();
+                let spec = overrides.get(name).unwrap_or_else(|| {
+                    panic!("override missing for {name}");
+                });
+                assert_eq!(spec.repository, format!("registry.internal/{name}"));
+            }
+        });
     }
 
     #[test]

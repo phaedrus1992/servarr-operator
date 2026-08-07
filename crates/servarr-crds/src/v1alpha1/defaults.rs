@@ -117,24 +117,7 @@ impl AppDefaults {
     /// invalid defaults.
     pub fn validate_all() -> Result<(), String> {
         use super::AppType;
-        let all = [
-            AppType::Sonarr,
-            AppType::Radarr,
-            AppType::Lidarr,
-            AppType::Prowlarr,
-            AppType::Sabnzbd,
-            AppType::Transmission,
-            AppType::Tautulli,
-            AppType::Seerr,
-            AppType::Maintainerr,
-            AppType::Jackett,
-            AppType::Jellyfin,
-            AppType::Plex,
-            AppType::SshBastion,
-            AppType::Bazarr,
-            AppType::Subgen,
-        ];
-        let errors: Vec<String> = all
+        let errors: Vec<String> = AppType::ALL
             .iter()
             .filter_map(|app| Self::try_for_app(app).err())
             .collect();
