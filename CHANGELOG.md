@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased] - ReleaseDate
 
+## [1.3.0] - 2026-08-07
+
 Migrates Overseerr support to its successor, Seerr; adds Transmission download-data self-heal and
 fixes the `apiHealthCheck.intervalSeconds` throttle; hardens persistence (a way to intentionally
 drop a default volume, stronger mount-path collision detection); and sweeps the controller/webhook
@@ -363,7 +365,8 @@ to stop leaking raw upstream/Kubernetes errors into tenant-visible status and Ev
   on each `v*` tag.
 
 <!-- next-url -->
-[Unreleased]: https://github.com/phaedrus1992/servarr-operator/compare/v1.2.3...HEAD
+[Unreleased]: https://github.com/phaedrus1992/servarr-operator/compare/v1.3.0...HEAD
+[1.3.0]: https://github.com/phaedrus1992/servarr-operator/compare/v1.2.3...v1.3.0
 [1.2.3]: https://github.com/phaedrus1992/servarr-operator/compare/v1.2.2...v1.2.3
 [1.2.2]: https://github.com/phaedrus1992/servarr-operator/compare/v1.2.1...v1.2.2
 [1.2.1]: https://github.com/phaedrus1992/servarr-operator/compare/v1.2.0...v1.2.1
