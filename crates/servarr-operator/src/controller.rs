@@ -316,6 +316,30 @@ pub async fn reconcile(app: Arc<ServarrApp>, ctx: Arc<Context>) -> Result<Action
         .map_err(Error::AppDefaults)?;
     let deploy_api = Api::<Deployment>::namespaced(client.clone(), &ns);
 
+    // Issue #534: a stale DEFAULT_IMAGE_OVERSEERR_* env var (e.g. from a Helm release
+    // upgraded with --reuse-values) can silently drive this app's image via the legacy
+    // fallback in load_image_overrides. A tracing warn! alone is invisible to a user who
+    // isn't reading operator logs; surface it as a Warning Event too.
+    if ctx.legacy_image_override_apps.contains(app_type) {
+        recorder
+            .publish(
+                &Event {
+                    type_: EventType::Warning,
+                    reason: "DeprecatedImageOverride".into(),
+                    note: Some(format!(
+                        "image resolved via deprecated DEFAULT_IMAGE_OVERSEERR_* env var \
+                         fallback — rename defaultImages.overseerr to defaultImages.{app_type} \
+                         in your Helm values"
+                    )),
+                    action: "BuildDeployment".into(),
+                    secondary: None,
+                },
+                &obj_ref,
+            )
+            .await
+            .map_err(Error::Kube)?;
+    }
+
     // Issue #44: an AppType rename (e.g. Overseerr -> Seerr) changes the
     // `app.kubernetes.io/name` selector label baked into
     // Deployment.spec.selector.matchLabels. That field is immutable on

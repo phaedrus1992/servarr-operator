@@ -60,6 +60,36 @@ fn test_context(client: kube::Client) -> Arc<Context> {
     Arc::new(Context {
         client,
         image_overrides: HashMap::new(),
+        legacy_image_override_apps: std::collections::HashSet::new(),
+        reporter: Reporter {
+            controller: "test-controller".into(),
+            instance: None,
+        },
+        watch_namespace: Some("test".into()),
+    })
+}
+
+/// A context whose "seerr" image override is flagged as coming from the deprecated
+/// `DEFAULT_IMAGE_OVERSEERR_*` fallback -- used to test that reconcile publishes a
+/// Warning Event when that fallback is in effect (#534).
+fn test_context_with_legacy_seerr_override(client: kube::Client) -> Arc<Context> {
+    let mut image_overrides = HashMap::new();
+    image_overrides.insert(
+        "seerr".to_string(),
+        servarr_crds::ImageSpec {
+            repository: "linuxserver/overseerr".into(),
+            tag: "1.35.0".into(),
+            digest: String::new(),
+            pull_policy: "IfNotPresent".into(),
+        },
+    );
+    let mut legacy_image_override_apps = std::collections::HashSet::new();
+    legacy_image_override_apps.insert("seerr".to_string());
+
+    Arc::new(Context {
+        client,
+        image_overrides,
+        legacy_image_override_apps,
         reporter: Reporter {
             controller: "test-controller".into(),
             instance: None,
@@ -450,6 +480,148 @@ async fn test_sonarr_reconcile_basic() {
         action,
         Action::requeue(Duration::from_secs(300)),
         "should requeue after 300 seconds"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Test 1b: Seerr reconcile publishes a Warning Event when the image came from the
+// deprecated DEFAULT_IMAGE_OVERSEERR_* fallback (#534)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_seerr_reconcile_warns_on_legacy_image_override() {
+    let mock_server = MockServer::start().await;
+    let client = mock_client(&mock_server.uri()).await;
+    let ctx = test_context_with_legacy_seerr_override(client);
+
+    let spec = ServarrAppSpec {
+        app: AppType::Seerr,
+        ..Default::default()
+    };
+    let mut app = ServarrApp::new("test-seerr", spec);
+    app.metadata.namespace = Some("test".into());
+    app.metadata.uid = Some("test-uid-seerr".into());
+    app.metadata.resource_version = Some("1".into());
+    app.metadata.generation = Some(1);
+    let app = Arc::new(app);
+
+    Mock::given(method("PATCH"))
+        .and(path("/apis/apps/v1/namespaces/test/deployments/test-seerr"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(deployment_response(
+                "test-seerr",
+                "test",
+                "seerr",
+            )),
+        )
+        .mount(&mock_server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/apis/apps/v1/namespaces/test/deployments/test-seerr"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(deployment_response(
+                "test-seerr",
+                "test",
+                "seerr",
+            )),
+        )
+        .mount(&mock_server)
+        .await;
+
+    Mock::given(method("PATCH"))
+        .and(path("/api/v1/namespaces/test/services/test-seerr"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(service_response("test-seerr", "test")),
+        )
+        .mount(&mock_server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path_regex(
+            r"/api/v1/namespaces/test/persistentvolumeclaims/.*",
+        ))
+        .respond_with(ResponseTemplate::new(404).set_body_json(json!({
+            "apiVersion": "v1",
+            "kind": "Status",
+            "metadata": {},
+            "status": "Failure",
+            "message": "not found",
+            "reason": "NotFound",
+            "code": 404
+        })))
+        .mount(&mock_server)
+        .await;
+
+    Mock::given(method("PATCH"))
+        .and(path_regex(
+            r"/api/v1/namespaces/test/persistentvolumeclaims/.*",
+        ))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(pvc_response("test-seerr-config", "test")),
+        )
+        .mount(&mock_server)
+        .await;
+
+    Mock::given(method("PATCH"))
+        .and(path(
+            "/apis/networking.k8s.io/v1/namespaces/test/networkpolicies/test-seerr",
+        ))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(networkpolicy_response("test-seerr", "test")),
+        )
+        .mount(&mock_server)
+        .await;
+
+    Mock::given(method("PATCH"))
+        .and(path(
+            "/apis/servarr.dev/v1alpha1/namespaces/test/servarrapps/test-seerr/status",
+        ))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(servarrapp_response("test-seerr", "test")),
+        )
+        .mount(&mock_server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/apis/events.k8s.io/v1/namespaces/test/events"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(event_response()))
+        .mount(&mock_server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path(
+            "/apis/servarr.dev/v1alpha1/namespaces/test/servarrapps",
+        ))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(empty_list("servarr.dev/v1alpha1", "ServarrAppList")),
+        )
+        .mount(&mock_server)
+        .await;
+
+    let result = servarr_operator::controller::reconcile(app, ctx).await;
+    assert!(result.is_ok(), "reconcile should succeed, got: {result:?}");
+
+    let requests = mock_server.received_requests().await.unwrap_or_default();
+    let deprecated_override_event = requests.iter().any(|r| {
+        r.method == wiremock::http::Method::POST
+            && r.url.path() == "/apis/events.k8s.io/v1/namespaces/test/events"
+            && serde_json::from_slice::<serde_json::Value>(&r.body)
+                .ok()
+                .and_then(|body| {
+                    body.get("reason")
+                        .and_then(|v| v.as_str())
+                        .map(String::from)
+                })
+                .as_deref()
+                == Some("DeprecatedImageOverride")
+    });
+    assert!(
+        deprecated_override_event,
+        "reconcile should publish a Warning Event with reason DeprecatedImageOverride when \
+         the app's image came from the legacy DEFAULT_IMAGE_OVERSEERR_* fallback (#534), \
+         requests: {requests:?}"
     );
 }
 

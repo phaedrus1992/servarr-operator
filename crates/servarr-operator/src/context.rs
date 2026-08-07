@@ -1,7 +1,7 @@
 use kube::Client;
 use kube::runtime::events::Reporter;
 use servarr_crds::{AppType, ImageSpec};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use tracing::{info, warn};
 
 pub struct Context {
@@ -9,6 +9,12 @@ pub struct Context {
     /// Image overrides loaded from DEFAULT_IMAGE_<APP>_REPO / DEFAULT_IMAGE_<APP>_TAG env vars.
     /// Keys are lowercase app names (e.g. "sonarr", "radarr").
     pub image_overrides: HashMap<String, ImageSpec>,
+    /// Lowercase app names whose `image_overrides` entry came from a deprecated
+    /// pre-rename env var fallback (e.g. `seerr` via `DEFAULT_IMAGE_OVERSEERR_*`) rather
+    /// than an explicit override for the app's current name. Reconcile uses this to
+    /// publish a Warning Event so a stale Helm value can't silently drive the image
+    /// with only a startup log line to notice it (#534).
+    pub legacy_image_override_apps: HashSet<String>,
     /// Reporter identity used when publishing Kubernetes Events.
     pub reporter: Reporter,
     /// The namespace to watch. When `Some`, the operator uses `Api::namespaced()`
@@ -23,7 +29,7 @@ pub struct Context {
 
 impl Context {
     pub fn new(client: Client) -> Self {
-        let image_overrides = load_image_overrides();
+        let (image_overrides, legacy_image_override_apps) = load_image_overrides();
         let reporter = Reporter {
             controller: "servarr-operator".into(),
             instance: std::env::var("POD_NAME").ok(),
@@ -66,6 +72,7 @@ impl Context {
         Self {
             client,
             image_overrides,
+            legacy_image_override_apps,
             reporter,
             watch_namespace,
         }
@@ -78,8 +85,12 @@ impl Context {
 /// from the enum (the Helm chart emits one env-var pair per `defaultImages`
 /// key, and this must cover every one of them or the override is silently
 /// dropped).
-fn load_image_overrides() -> HashMap<String, ImageSpec> {
+///
+/// Returns the overrides plus the subset of app keys whose entry came from a deprecated
+/// pre-rename fallback env var rather than an override for the app's current name.
+fn load_image_overrides() -> (HashMap<String, ImageSpec>, HashSet<String>) {
     let mut overrides = HashMap::new();
+    let mut legacy = HashSet::new();
 
     for app in AppType::ALL {
         let name = app.as_str();
@@ -125,9 +136,10 @@ fn load_image_overrides() -> HashMap<String, ImageSpec> {
                 pull_policy: "IfNotPresent".into(),
             },
         );
+        legacy.insert("seerr".to_string());
     }
 
-    overrides
+    (overrides, legacy)
 }
 
 #[cfg(test)]
@@ -144,7 +156,7 @@ mod tests {
                 ("DEFAULT_IMAGE_SONARR_TAG", Some("4.0")),
             ],
             || {
-                let overrides = load_image_overrides();
+                let (overrides, _legacy) = load_image_overrides();
                 let spec = overrides.get("sonarr").expect("sonarr override missing");
                 assert_eq!(spec.repository, "ghcr.io/custom/sonarr");
                 assert_eq!(spec.tag, "4.0");
@@ -162,7 +174,7 @@ mod tests {
                 ("DEFAULT_IMAGE_RADARR_TAG", None::<&str>),
             ],
             || {
-                let overrides = load_image_overrides();
+                let (overrides, _legacy) = load_image_overrides();
                 let spec = overrides.get("radarr").expect("radarr override missing");
                 assert_eq!(spec.repository, "my-repo/radarr");
                 assert!(spec.tag.is_empty());
@@ -178,7 +190,7 @@ mod tests {
                 ("DEFAULT_IMAGE_LIDARR_TAG", None::<&str>),
             ],
             || {
-                let overrides = load_image_overrides();
+                let (overrides, _legacy) = load_image_overrides();
                 assert!(!overrides.contains_key("lidarr"));
             },
         );
@@ -194,7 +206,7 @@ mod tests {
                 ("DEFAULT_IMAGE_SABNZBD_TAG", Some("3.7")),
             ],
             || {
-                let overrides = load_image_overrides();
+                let (overrides, _legacy) = load_image_overrides();
                 assert!(overrides.contains_key("prowlarr"));
                 assert!(overrides.contains_key("sabnzbd"));
                 assert_eq!(overrides.get("prowlarr").unwrap().tag, "latest");
@@ -222,7 +234,7 @@ mod tests {
             ));
         }
         temp_env::with_vars(env, || {
-            let overrides = load_image_overrides();
+            let (overrides, _legacy) = load_image_overrides();
             assert_eq!(
                 overrides.len(),
                 AppType::ALL.len(),
@@ -251,10 +263,15 @@ mod tests {
                 ("DEFAULT_IMAGE_OVERSEERR_TAG", Some("1.35.0")),
             ],
             || {
-                let overrides = load_image_overrides();
+                let (overrides, legacy) = load_image_overrides();
                 let spec = overrides.get("seerr").expect("seerr override missing");
                 assert_eq!(spec.repository, "registry.internal/mirror/overseerr");
                 assert_eq!(spec.tag, "1.35.0");
+                assert!(
+                    legacy.contains("seerr"),
+                    "seerr must be flagged as using the deprecated overseerr fallback so \
+                     reconcile can surface a Warning Event (#534)"
+                );
             },
         );
     }
@@ -272,10 +289,14 @@ mod tests {
                 ("DEFAULT_IMAGE_OVERSEERR_TAG", Some("1.35.0")),
             ],
             || {
-                let overrides = load_image_overrides();
+                let (overrides, legacy) = load_image_overrides();
                 let spec = overrides.get("seerr").expect("seerr override missing");
                 assert_eq!(spec.repository, "ghcr.io/seerr-team/seerr");
                 assert_eq!(spec.tag, "v3.4.1");
+                assert!(
+                    !legacy.contains("seerr"),
+                    "an explicit DEFAULT_IMAGE_SEERR_* override must not be flagged as legacy"
+                );
             },
         );
     }
@@ -288,7 +309,7 @@ mod tests {
                 ("DEFAULT_IMAGE_NOTANAPP_TAG", Some("1.0")),
             ],
             || {
-                let overrides = load_image_overrides();
+                let (overrides, _legacy) = load_image_overrides();
                 assert!(!overrides.contains_key("notanapp"));
             },
         );
