@@ -424,7 +424,7 @@ impl std::io::Write for Base64Writer<'_> {
 
 #[cfg(test)]
 mod tests {
-    use wiremock::matchers::{header, method, path};
+    use wiremock::matchers::{body_json, body_partial_json, header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     use super::*;
@@ -501,6 +501,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn rpc_call_surfaces_non_success_http_status() {
+        // A non-2xx HTTP status must surface as `ApiResponse` immediately, without
+        // attempting to parse the (non-RPC) body as an RPC response — dropping or
+        // inverting the status check would instead yield `ApiError::Request`.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/transmission/rpc"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("boom"))
+            .mount(&server)
+            .await;
+
+        let client = TransmissionClient::new(&server.uri(), None).unwrap();
+        let result = client.session_get().await;
+        assert!(
+            matches!(result, Err(ApiError::ApiResponse { status: 500, .. })),
+            "expected ApiResponse with status 500, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
     async fn session_set_auth_sends_correct_arguments() {
         let server = MockServer::start().await;
         // First request returns 409 with a session ID
@@ -512,10 +532,22 @@ mod tests {
             .up_to_n_times(1)
             .mount(&server)
             .await;
-        // Retry succeeds
+        // Retry succeeds. The body constraint plus `expect_at_least(1)` prove the
+        // session-set RPC was actually sent with the intended arguments — a call that
+        // is dropped entirely, or that builds the wrong payload, leaves this mock
+        // unmatched and the test fails.
         Mock::given(method("POST"))
             .and(path("/transmission/rpc"))
+            .and(body_partial_json(serde_json::json!({
+                "method": "session-set",
+                "arguments": {
+                    "rpc-authentication-required": true,
+                    "rpc-username": "admin",
+                    "rpc-password": "secret",
+                },
+            })))
             .respond_with(ResponseTemplate::new(200).set_body_json(rpc_ok(serde_json::json!({}))))
+            .expect(1..)
             .mount(&server)
             .await;
 
@@ -610,8 +642,18 @@ mod tests {
     #[tokio::test]
     async fn torrent_get_scopes_request_to_given_ids() {
         let server = MockServer::start().await;
+        // The body constraint proves the request actually carries the `ids` scoping:
+        // without it, a torrent-get whose `ids` are dropped still hits this path-only
+        // mock and the test passes.
         Mock::given(method("POST"))
             .and(path("/transmission/rpc"))
+            .and(body_partial_json(serde_json::json!({
+                "method": "torrent-get",
+                "arguments": {
+                    "fields": ["id", "name"],
+                    "ids": ["hash7"],
+                },
+            })))
             .respond_with(ResponseTemplate::new(200).set_body_json(rpc_ok(serde_json::json!({
                 "torrents": [{"id": 7, "name": "Only Me", "error": 0, "errorString": "", "status": 0}]
             }))))
@@ -623,6 +665,32 @@ mod tests {
             .torrent_get(&["id", "name"], Some(&["hash7"]))
             .await
             .unwrap();
+
+        assert_eq!(torrents.len(), 1);
+        assert_eq!(torrents[0].id, 7);
+    }
+
+    #[tokio::test]
+    async fn torrent_get_omits_ids_when_hashes_absent() {
+        // With `None` hashes the `ids` key must be absent from the request entirely:
+        // Transmission treats an absent `ids` as "all torrents", while `"ids": null`
+        // would be rejected. The exact `body_json` match fails if any stray `ids`
+        // key appears.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/transmission/rpc"))
+            .and(body_json(serde_json::json!({
+                "method": "torrent-get",
+                "arguments": { "fields": ["id", "name"] },
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(rpc_ok(serde_json::json!({
+                "torrents": [{"id": 7, "name": "Only Me", "error": 0, "errorString": "", "status": 0}]
+            }))))
+            .mount(&server)
+            .await;
+
+        let client = TransmissionClient::new(&server.uri(), None).unwrap();
+        let torrents = client.torrent_get(&["id", "name"], None).await.unwrap();
 
         assert_eq!(torrents.len(), 1);
         assert_eq!(torrents[0].id, 7);
