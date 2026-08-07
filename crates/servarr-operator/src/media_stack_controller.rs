@@ -180,6 +180,34 @@ pub async fn reconcile(stack: Arc<MediaStack>, ctx: Arc<Context>) -> Result<Acti
         .collect();
 
     let sa_api = Api::<ServarrApp>::namespaced(client.clone(), &ns);
+
+    // Cleanup orphaned children BEFORE applying desired children. A renamed app (e.g.
+    // Overseerr -> Seerr) produces a new child name whose normalized `spec.app` collides
+    // with the stale orphan's under the admission webhook's duplicate-instance check.
+    // Deleting the orphan first avoids that collision; deleting it after the apply loop
+    // (as this used to) means every apply is rejected and cleanup is never reached,
+    // permanently wedging the stack (#533).
+    let label_selector = format!("servarr.dev/stack={name}");
+    let existing = sa_api
+        .list(&ListParams::default().labels(&label_selector))
+        .await
+        .map_err(Error::Kube)?;
+
+    for child in &existing {
+        let child_name = child.name_any();
+        if !desired_children.contains(&child_name) {
+            info!(%name, child = %child_name, "deleting orphaned child ServarrApp");
+            if let Err(e) = sa_api.delete(&child_name, &Default::default()).await {
+                warn!(
+                    %name,
+                    child = %child_name,
+                    error = %kube_err_summary(&e),
+                    "failed to delete orphaned child"
+                );
+            }
+        }
+    }
+
     let mut app_statuses: Vec<StackAppStatus> = Vec::new();
     let mut ready_count: i32 = 0;
     let mut current_tier: Option<u8> = None;
@@ -324,28 +352,6 @@ pub async fn reconcile(stack: Arc<MediaStack>, ctx: Arc<Context>) -> Result<Acti
                 enabled: false,
                 bypassed: false,
             });
-        }
-    }
-
-    // Cleanup orphaned children
-    let label_selector = format!("servarr.dev/stack={name}");
-    let existing = sa_api
-        .list(&ListParams::default().labels(&label_selector))
-        .await
-        .map_err(Error::Kube)?;
-
-    for child in &existing {
-        let child_name = child.name_any();
-        if !desired_children.contains(&child_name) {
-            info!(%name, child = %child_name, "deleting orphaned child ServarrApp");
-            if let Err(e) = sa_api.delete(&child_name, &Default::default()).await {
-                warn!(
-                    %name,
-                    child = %child_name,
-                    error = %kube_err_summary(&e),
-                    "failed to delete orphaned child"
-                );
-            }
         }
     }
 

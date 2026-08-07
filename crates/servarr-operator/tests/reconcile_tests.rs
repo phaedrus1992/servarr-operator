@@ -1394,6 +1394,166 @@ async fn test_media_stack_reconcile_orphan_cleanup() {
 }
 
 // ---------------------------------------------------------------------------
+// Test 9b: MediaStack orphan cleanup runs BEFORE applying children (#533)
+// ---------------------------------------------------------------------------
+
+/// Regression test for #533: when a stack app is renamed (e.g. Overseerr -> Seerr), the old
+/// child ServarrApp becomes an orphan whose normalized `spec.app` collides with the new
+/// child's under the admission webhook's duplicate-instance check. If the operator applies
+/// the new child before deleting the stale orphan, every apply is rejected and the orphan
+/// cleanup block (which would remove the collision) is never reached -- a permanent
+/// requeue loop. The fix must run orphan cleanup before applying children, so this test
+/// asserts that ordering directly against the mock server's received request log rather
+/// than simulating the webhook rejection itself.
+#[tokio::test]
+async fn test_media_stack_reconcile_orphan_cleanup_runs_before_apply() {
+    let mock_server = MockServer::start().await;
+    let client = mock_client(&mock_server.uri()).await;
+    let ctx = test_context(client);
+
+    // Stack has only Sonarr
+    let stack = Arc::new(make_media_stack("migrate-stack", "test"));
+
+    // PATCH child ServarrApp (the real one)
+    Mock::given(method("PATCH"))
+        .and(path(
+            "/apis/servarr.dev/v1alpha1/namespaces/test/servarrapps/migrate-stack-sonarr",
+        ))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(servarrapp_response("migrate-stack-sonarr", "test")),
+        )
+        .mount(&mock_server)
+        .await;
+
+    // GET child ServarrApp (real child, ready)
+    Mock::given(method("GET"))
+        .and(path(
+            "/apis/servarr.dev/v1alpha1/namespaces/test/servarrapps/migrate-stack-sonarr",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json({
+            let mut resp = servarrapp_response("migrate-stack-sonarr", "test");
+            resp["status"] = json!({
+                "ready": true,
+                "readyReplicas": 1,
+                "observedGeneration": 1,
+                "conditions": []
+            });
+            resp
+        }))
+        .mount(&mock_server)
+        .await;
+
+    // GET ServarrApps by label returns the real child AND a stale orphan from a rename
+    Mock::given(method("GET"))
+        .and(path(
+            "/apis/servarr.dev/v1alpha1/namespaces/test/servarrapps",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "apiVersion": "servarr.dev/v1alpha1",
+            "kind": "ServarrAppList",
+            "metadata": {},
+            "items": [
+                {
+                    "apiVersion": "servarr.dev/v1alpha1",
+                    "kind": "ServarrApp",
+                    "metadata": {
+                        "name": "migrate-stack-sonarr",
+                        "namespace": "test",
+                        "uid": "sa-uid-real",
+                        "resourceVersion": "200"
+                    },
+                    "spec": { "app": "Sonarr" }
+                },
+                {
+                    "apiVersion": "servarr.dev/v1alpha1",
+                    "kind": "ServarrApp",
+                    "metadata": {
+                        "name": "migrate-stack-old-radarr",
+                        "namespace": "test",
+                        "uid": "sa-uid-orphan",
+                        "resourceVersion": "201"
+                    },
+                    "spec": { "app": "Radarr" }
+                }
+            ]
+        })))
+        .mount(&mock_server)
+        .await;
+
+    // DELETE the orphaned child
+    Mock::given(method("DELETE"))
+        .and(path(
+            "/apis/servarr.dev/v1alpha1/namespaces/test/servarrapps/migrate-stack-old-radarr",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "apiVersion": "servarr.dev/v1alpha1",
+            "kind": "ServarrApp",
+            "metadata": {
+                "name": "migrate-stack-old-radarr",
+                "namespace": "test",
+                "uid": "sa-uid-orphan",
+                "resourceVersion": "201"
+            }
+        })))
+        .expect(1)
+        .mount(&mock_server)
+        .await;
+
+    // PATCH MediaStack status
+    Mock::given(method("PATCH"))
+        .and(path(
+            "/apis/servarr.dev/v1alpha1/namespaces/test/mediastacks/migrate-stack/status",
+        ))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(mediastack_response("migrate-stack", "test")),
+        )
+        .mount(&mock_server)
+        .await;
+
+    // GET MediaStack list (for gauge)
+    Mock::given(method("GET"))
+        .and(path(
+            "/apis/servarr.dev/v1alpha1/namespaces/test/mediastacks",
+        ))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(empty_list("servarr.dev/v1alpha1", "MediaStackList")),
+        )
+        .mount(&mock_server)
+        .await;
+
+    let result = servarr_operator::media_stack_controller::reconcile(stack, ctx).await;
+    assert!(result.is_ok(), "reconcile should succeed, got: {result:?}");
+
+    let requests = mock_server.received_requests().await.unwrap_or_default();
+    let delete_orphan_idx = requests
+        .iter()
+        .position(|r| {
+            r.method == wiremock::http::Method::DELETE
+                && r.url
+                    .path()
+                    .ends_with("/servarrapps/migrate-stack-old-radarr")
+        })
+        .expect("orphan DELETE request should have been sent");
+    let patch_child_idx = requests
+        .iter()
+        .position(|r| {
+            r.method == wiremock::http::Method::PATCH
+                && r.url.path().ends_with("/servarrapps/migrate-stack-sonarr")
+        })
+        .expect("child PATCH request should have been sent");
+
+    assert!(
+        delete_orphan_idx < patch_child_idx,
+        "orphan cleanup (DELETE at request #{delete_orphan_idx}) must run before applying \
+         children (PATCH at request #{patch_child_idx}) -- otherwise a webhook \
+         duplicate-instance rejection on the apply call aborts reconcile before cleanup ever \
+         runs, permanently wedging the stack (issue #533)"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Helper: DynamicObject response for Gateway API resources
 // ---------------------------------------------------------------------------
 
