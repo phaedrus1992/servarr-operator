@@ -1,24 +1,24 @@
-# Overseerr — media request management
+# Seerr — media request management
 apiVersion: servarr.dev/v1alpha1
 kind: ServarrApp
 metadata:
-  name: overseerr
+  name: seerr
 spec:
-  app: Overseerr
+  app: Seerr
 ---
-# Overseerr with auto-sync to discovered Sonarr/Radarr instances
+# Seerr with auto-sync to discovered Sonarr/Radarr instances
 apiVersion: servarr.dev/v1alpha1
 kind: ServarrApp
 metadata:
-  name: overseerr
+  name: seerr
 spec:
-  app: Overseerr
-  apiKeySecret: overseerr-api-key
-  overseerrSync:
+  app: Seerr
+  apiKeySecret: seerr-api-key
+  seerrSync:
     enabled: true
     autoRemove: true
   appConfig:
-    Overseerr:
+    seerr:
       sonarr:
         profileId: 1
         profileName: "HD-1080p"

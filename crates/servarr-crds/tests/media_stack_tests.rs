@@ -15,7 +15,7 @@ fn test_tier_assignment() {
     assert_eq!(AppType::Radarr.tier(), 2);
     assert_eq!(AppType::Lidarr.tier(), 2);
     assert_eq!(AppType::Tautulli.tier(), 3);
-    assert_eq!(AppType::Overseerr.tier(), 3);
+    assert_eq!(AppType::Seerr.tier(), 3);
     assert_eq!(AppType::Maintainerr.tier(), 3);
     assert_eq!(AppType::Prowlarr.tier(), 3);
     assert_eq!(AppType::Jackett.tier(), 3);
@@ -65,7 +65,7 @@ fn test_child_name_without_instance() {
         pod_annotations: None,
         gpu: None,
         prowlarr_sync: None,
-        overseerr_sync: None,
+        seerr_sync: None,
         bazarr_sync: None,
         subgen_sync: None,
         maintainerr_sync: None,
@@ -104,7 +104,7 @@ fn test_child_name_with_instance() {
         pod_annotations: None,
         gpu: None,
         prowlarr_sync: None,
-        overseerr_sync: None,
+        seerr_sync: None,
         bazarr_sync: None,
         subgen_sync: None,
         maintainerr_sync: None,
@@ -146,7 +146,7 @@ fn minimal_stack_app(app: AppType) -> StackApp {
         pod_annotations: None,
         gpu: None,
         prowlarr_sync: None,
-        overseerr_sync: None,
+        seerr_sync: None,
         bazarr_sync: None,
         subgen_sync: None,
         maintainerr_sync: None,
@@ -373,7 +373,7 @@ fn test_media_stack_serde_roundtrip() {
                 pod_annotations: None,
                 gpu: None,
                 prowlarr_sync: None,
-                overseerr_sync: None,
+                seerr_sync: None,
                 bazarr_sync: None,
                 subgen_sync: None,
                 admin_credentials: None,
@@ -407,7 +407,7 @@ fn test_media_stack_serde_roundtrip() {
                 pod_annotations: None,
                 gpu: None,
                 prowlarr_sync: None,
-                overseerr_sync: None,
+                seerr_sync: None,
                 bazarr_sync: None,
                 subgen_sync: None,
                 admin_credentials: None,
@@ -613,8 +613,8 @@ fn test_expand_split4k_invalid_app_type() {
 }
 
 #[test]
-fn test_expand_split4k_invalid_overseerr() {
-    let mut app = minimal_stack_app(AppType::Overseerr);
+fn test_expand_split4k_invalid_seerr() {
+    let mut app = minimal_stack_app(AppType::Seerr);
     app.split4k = Some(true);
 
     let result = app.expand("media", "default", None, None);
@@ -685,7 +685,7 @@ fn test_split4k_valid_only_sonarr_radarr() {
     assert!(minimal_stack_app(AppType::Radarr).split4k_valid());
     assert!(!minimal_stack_app(AppType::Lidarr).split4k_valid());
     assert!(!minimal_stack_app(AppType::Prowlarr).split4k_valid());
-    assert!(!minimal_stack_app(AppType::Overseerr).split4k_valid());
+    assert!(!minimal_stack_app(AppType::Seerr).split4k_valid());
     assert!(!minimal_stack_app(AppType::Transmission).split4k_valid());
     assert!(!minimal_stack_app(AppType::Plex).split4k_valid());
 }

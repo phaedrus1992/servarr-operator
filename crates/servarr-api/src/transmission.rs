@@ -120,25 +120,66 @@ impl DeleteLocalData {
     }
 }
 
+/// Basic-auth username/password pair for a [`TransmissionClient`].
+///
+/// One indivisible credential: a half-set state (username without password, or
+/// vice-versa) is unrepresentable, so a client built from it can never silently
+/// degrade to anonymous the way the old two-`Option<&str>` signature could (#505).
+#[derive(Clone, PartialEq, Eq)]
+pub struct BasicCredentials {
+    username: String,
+    password: String,
+}
+
+// Manual Debug: the derived form would print the password in cleartext if a caller
+// debug-formats the value (e.g. `tracing::debug!(?creds, ...)`). The username stays
+// visible for debuggability; the secret half is redacted.
+impl std::fmt::Debug for BasicCredentials {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BasicCredentials")
+            .field("username", &self.username)
+            .field("password", &"[REDACTED]")
+            .finish()
+    }
+}
+
+impl BasicCredentials {
+    /// Build credentials from a fully-provided username/password pair.
+    pub fn new(username: &str, password: &str) -> Self {
+        Self {
+            username: username.to_string(),
+            password: password.to_string(),
+        }
+    }
+
+    /// The username half of the credential pair.
+    pub fn username(&self) -> &str {
+        &self.username
+    }
+
+    /// The password half of the credential pair.
+    pub fn password(&self) -> &str {
+        &self.password
+    }
+}
+
 impl TransmissionClient {
     /// Create a new Transmission RPC client.
     ///
     /// `base_url` should be the root URL (e.g. `http://transmission:9091`).
-    /// For authenticated instances, pass `username` and `password`.
-    pub fn new(
-        base_url: &str,
-        username: Option<&str>,
-        password: Option<&str>,
-    ) -> Result<Self, ApiError> {
+    /// Pass `Some(credentials)` for authenticated instances, `None` for
+    /// auth-disabled ones. Half-set credentials are unrepresentable: the pair is
+    /// built by the caller at the point where they decide how to handle a partial
+    /// read, so the constructor itself never has to guess (#505).
+    pub fn new(base_url: &str, credentials: Option<&BasicCredentials>) -> Result<Self, ApiError> {
         let mut rpc_url = Url::parse(base_url)?;
         rpc_url.set_path(RPC_PATH);
 
         let mut builder = reqwest::Client::builder();
-        if let (Some(user), Some(pass)) = (username, password) {
+        if let Some(creds) = credentials {
             builder = builder.default_headers({
                 let mut headers = reqwest::header::HeaderMap::new();
-                let credentials = base64_encode(&format!("{user}:{pass}"));
-                let mut auth_value = HeaderValue::from_str(&format!("Basic {credentials}"))
+                let mut auth_value = HeaderValue::from_str(&basic_auth_header(creds))
                     .map_err(|_| ApiError::InvalidApiKey)?;
                 // Prevents the credential from appearing in reqwest::Client's Debug output
                 // (which prints default_headers unconditionally) if this client is ever
@@ -295,6 +336,18 @@ impl HealthCheck for TransmissionClient {
     }
 }
 
+/// Build the HTTP `Authorization: Basic` header value for `creds`.
+///
+/// Base64-encodes `username:password`. Extracted from `TransmissionClient::new`
+/// (#505) so the credential encoding is independently testable; the resulting
+/// header value is marked `set_sensitive(true)` at the call site.
+fn basic_auth_header(creds: &BasicCredentials) -> String {
+    format!(
+        "Basic {}",
+        base64_encode(&format!("{}:{}", creds.username(), creds.password()))
+    )
+}
+
 fn base64_encode(input: &str) -> String {
     use std::io::Write;
     let mut buf = Vec::new();
@@ -371,13 +424,57 @@ impl std::io::Write for Base64Writer<'_> {
 
 #[cfg(test)]
 mod tests {
-    use wiremock::matchers::{method, path};
+    use wiremock::matchers::{body_json, body_partial_json, header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     use super::*;
 
     fn rpc_ok(result: serde_json::Value) -> serde_json::Value {
         serde_json::json!({"result": "success", "arguments": result})
+    }
+
+    #[tokio::test]
+    async fn new_with_credentials_sends_basic_auth_header() {
+        // The mock only matches when the request carries the expected Basic-auth header,
+        // so a client built with `Some(credentials)` must send it — proving the pair
+        // flows into the request rather than being dropped (#505).
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/transmission/rpc"))
+            .and(header("Authorization", "Basic dXNlcjpwYXNz"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(rpc_ok(serde_json::json!({
+                    "version": "3.00"
+                }))),
+            )
+            .mount(&server)
+            .await;
+
+        let creds = BasicCredentials::new("user", "pass");
+        let client = TransmissionClient::new(&server.uri(), Some(&creds)).unwrap();
+        client.session_get().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn new_without_credentials_is_anonymous() {
+        // A client built with `None` must not carry an Authorization header: against a
+        // server that requires one, the request goes unmatched and fails instead of
+        // silently succeeding unauthenticated (#505).
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/transmission/rpc"))
+            .and(header("Authorization", "Basic dXNlcjpwYXNz"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(rpc_ok(serde_json::json!({
+                    "version": "3.00"
+                }))),
+            )
+            .mount(&server)
+            .await;
+
+        let client = TransmissionClient::new(&server.uri(), None).unwrap();
+        let result = client.session_get().await;
+        assert!(result.is_err(), "anonymous client must not authenticate");
     }
 
     #[tokio::test]
@@ -395,11 +492,31 @@ mod tests {
             .mount(&server)
             .await;
 
-        let client = TransmissionClient::new(&server.uri(), None, None).unwrap();
+        let client = TransmissionClient::new(&server.uri(), None).unwrap();
         let result = client.torrent_verify(&["hash1"]).await;
         assert!(
             matches!(result, Err(ApiError::OperationFailed { .. })),
             "expected OperationFailed, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn rpc_call_surfaces_non_success_http_status() {
+        // A non-2xx HTTP status must surface as `ApiResponse` immediately, without
+        // attempting to parse the (non-RPC) body as an RPC response — dropping or
+        // inverting the status check would instead yield `ApiError::Request`.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/transmission/rpc"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("boom"))
+            .mount(&server)
+            .await;
+
+        let client = TransmissionClient::new(&server.uri(), None).unwrap();
+        let result = client.session_get().await;
+        assert!(
+            matches!(result, Err(ApiError::ApiResponse { status: 500, .. })),
+            "expected ApiResponse with status 500, got {result:?}"
         );
     }
 
@@ -415,14 +532,26 @@ mod tests {
             .up_to_n_times(1)
             .mount(&server)
             .await;
-        // Retry succeeds
+        // Retry succeeds. The body constraint plus `expect_at_least(1)` prove the
+        // session-set RPC was actually sent with the intended arguments — a call that
+        // is dropped entirely, or that builds the wrong payload, leaves this mock
+        // unmatched and the test fails.
         Mock::given(method("POST"))
             .and(path("/transmission/rpc"))
+            .and(body_partial_json(serde_json::json!({
+                "method": "session-set",
+                "arguments": {
+                    "rpc-authentication-required": true,
+                    "rpc-username": "admin",
+                    "rpc-password": "secret",
+                },
+            })))
             .respond_with(ResponseTemplate::new(200).set_body_json(rpc_ok(serde_json::json!({}))))
+            .expect(1..)
             .mount(&server)
             .await;
 
-        let client = TransmissionClient::new(&server.uri(), None, None).unwrap();
+        let client = TransmissionClient::new(&server.uri(), None).unwrap();
         client.session_set_auth("admin", "secret").await.unwrap();
     }
 
@@ -443,7 +572,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let client = TransmissionClient::new(&server.uri(), None, None).unwrap();
+        let client = TransmissionClient::new(&server.uri(), None).unwrap();
         let info = client.session_get().await.unwrap();
         assert!(info.version.starts_with("3.00"));
     }
@@ -462,7 +591,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let client = TransmissionClient::new(&server.uri(), None, None).unwrap();
+        let client = TransmissionClient::new(&server.uri(), None).unwrap();
         let torrents = client
             .torrent_get(&["id", "name", "error", "errorString", "status"], None)
             .await
@@ -495,7 +624,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let client = TransmissionClient::new(&server.uri(), None, None).unwrap();
+        let client = TransmissionClient::new(&server.uri(), None).unwrap();
         let torrents = client
             .torrent_get(
                 &["id", "name", "error", "errorString", "status", "hashString"],
@@ -513,19 +642,55 @@ mod tests {
     #[tokio::test]
     async fn torrent_get_scopes_request_to_given_ids() {
         let server = MockServer::start().await;
+        // The body constraint proves the request actually carries the `ids` scoping:
+        // without it, a torrent-get whose `ids` are dropped still hits this path-only
+        // mock and the test passes.
         Mock::given(method("POST"))
             .and(path("/transmission/rpc"))
+            .and(body_partial_json(serde_json::json!({
+                "method": "torrent-get",
+                "arguments": {
+                    "fields": ["id", "name"],
+                    "ids": ["hash7"],
+                },
+            })))
             .respond_with(ResponseTemplate::new(200).set_body_json(rpc_ok(serde_json::json!({
                 "torrents": [{"id": 7, "name": "Only Me", "error": 0, "errorString": "", "status": 0}]
             }))))
             .mount(&server)
             .await;
 
-        let client = TransmissionClient::new(&server.uri(), None, None).unwrap();
+        let client = TransmissionClient::new(&server.uri(), None).unwrap();
         let torrents = client
             .torrent_get(&["id", "name"], Some(&["hash7"]))
             .await
             .unwrap();
+
+        assert_eq!(torrents.len(), 1);
+        assert_eq!(torrents[0].id, 7);
+    }
+
+    #[tokio::test]
+    async fn torrent_get_omits_ids_when_hashes_absent() {
+        // With `None` hashes the `ids` key must be absent from the request entirely:
+        // Transmission treats an absent `ids` as "all torrents", while `"ids": null`
+        // would be rejected. The exact `body_json` match fails if any stray `ids`
+        // key appears.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/transmission/rpc"))
+            .and(body_json(serde_json::json!({
+                "method": "torrent-get",
+                "arguments": { "fields": ["id", "name"] },
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(rpc_ok(serde_json::json!({
+                "torrents": [{"id": 7, "name": "Only Me", "error": 0, "errorString": "", "status": 0}]
+            }))))
+            .mount(&server)
+            .await;
+
+        let client = TransmissionClient::new(&server.uri(), None).unwrap();
+        let torrents = client.torrent_get(&["id", "name"], None).await.unwrap();
 
         assert_eq!(torrents.len(), 1);
         assert_eq!(torrents[0].id, 7);
@@ -540,7 +705,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let client = TransmissionClient::new(&server.uri(), None, None).unwrap();
+        let client = TransmissionClient::new(&server.uri(), None).unwrap();
         client.torrent_verify(&["hash1", "hash2"]).await.unwrap();
     }
 
@@ -553,7 +718,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let client = TransmissionClient::new(&server.uri(), None, None).unwrap();
+        let client = TransmissionClient::new(&server.uri(), None).unwrap();
         client
             .torrent_remove(&["hash1"], DeleteLocalData::No)
             .await
@@ -566,7 +731,7 @@ mod tests {
         // never reaches the network when `ids` is empty (an absent `ids` key would mean
         // "all torrents" to Transmission, so this must short-circuit, not RPC-call).
         let server = MockServer::start().await;
-        let client = TransmissionClient::new(&server.uri(), None, None).unwrap();
+        let client = TransmissionClient::new(&server.uri(), None).unwrap();
         client
             .torrent_remove(&[], DeleteLocalData::No)
             .await
@@ -610,6 +775,24 @@ mod tests {
         assert_eq!(base64_encode("user:pass"), "dXNlcjpwYXNz");
     }
 
+    #[test]
+    fn basic_credentials_debug_redacts_password() {
+        let creds = BasicCredentials::new("admin", "hunter2");
+        let rendered = format!("{creds:?}");
+        assert!(
+            rendered.contains("admin"),
+            "username stays visible: {rendered}"
+        );
+        assert!(
+            !rendered.contains("hunter2"),
+            "password must never appear in Debug output: {rendered}"
+        );
+        assert!(
+            rendered.contains("[REDACTED]"),
+            "redaction marker present: {rendered}"
+        );
+    }
+
     // ---- TorrentInfo roundtrip (#501) ----
 
     proptest::proptest! {
@@ -626,6 +809,34 @@ mod tests {
             let json = serde_json::to_value(&original).unwrap();
             let roundtripped: TorrentInfo = serde_json::from_value(json).unwrap();
             proptest::prop_assert_eq!(original, roundtripped);
+        }
+    }
+
+    // ---- Basic auth header roundtrip (#505) ----
+    //
+    // `.` matches any non-newline char, so arbitrary usernames/passwords are
+    // covered: colons, empty strings, and multibyte unicode alike. The decode
+    // uses the base64 crate's STANDARD engine — an implementation independent of
+    // this module's Base64Writer — so a mirrored encode bug can't pass.
+
+    proptest::proptest! {
+        #[test]
+        fn basic_auth_header_roundtrips_through_base64(
+            username in ".{0,128}",
+            password in ".{0,128}",
+        ) {
+            let creds = BasicCredentials::new(&username, &password);
+            let header = basic_auth_header(&creds);
+            proptest::prop_assert!(header.starts_with("Basic "));
+            let encoded = &header["Basic ".len()..];
+            use base64::Engine;
+            let decoded = base64::engine::general_purpose::STANDARD
+                .decode(encoded)
+                .unwrap();
+            proptest::prop_assert_eq!(
+                format!("{}:{}", creds.username(), creds.password()),
+                String::from_utf8(decoded).unwrap()
+            );
         }
     }
 }

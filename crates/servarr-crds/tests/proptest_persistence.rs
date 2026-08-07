@@ -270,7 +270,7 @@ fn arb_app_type() -> impl Strategy<Value = AppType> {
         Just(AppType::Sabnzbd),
         Just(AppType::Transmission),
         Just(AppType::Tautulli),
-        Just(AppType::Overseerr),
+        Just(AppType::Seerr),
         Just(AppType::Maintainerr),
         Just(AppType::Jackett),
         Just(AppType::Jellyfin),

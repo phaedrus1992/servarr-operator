@@ -372,7 +372,7 @@ fn validate_app_config_match(spec: &ServarrAppSpec, errors: &mut Vec<String>) {
                 | (AppType::Sabnzbd, AppConfig::Sabnzbd(_))
                 | (AppType::Prowlarr, AppConfig::Prowlarr(_))
                 | (AppType::SshBastion, AppConfig::SshBastion(_))
-                | (AppType::Overseerr, AppConfig::Overseerr(_))
+                | (AppType::Seerr, AppConfig::Seerr(_))
                 | (AppType::Lidarr, AppConfig::Lidarr(_))
         );
         if !valid {
@@ -881,9 +881,9 @@ mod tests {
     }
 
     #[test]
-    fn app_config_match_overseerr_ok() {
-        let mut spec = minimal_spec(AppType::Overseerr);
-        spec.app_config = Some(AppConfig::Overseerr(Box::default()));
+    fn app_config_match_seerr_ok() {
+        let mut spec = minimal_spec(AppType::Seerr);
+        spec.app_config = Some(AppConfig::Seerr(Box::default()));
         let mut errors = Vec::new();
         validate_app_config_match(&spec, &mut errors);
         assert!(errors.is_empty());

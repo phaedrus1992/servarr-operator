@@ -1,7 +1,7 @@
 use servarr_api::HealthCheck;
 use servarr_api::{
-    ApiError, AppKind, HttpClient, JellyfinClient, OverseerrClient, PlexClient, ProwlarrClient,
-    SabnzbdClient, SecretError, ServarrClient, TransmissionClient,
+    ApiError, AppKind, BasicCredentials, HttpClient, JellyfinClient, PlexClient, ProwlarrClient,
+    SabnzbdClient, SecretError, SeerrClient, ServarrClient, TransmissionClient,
 };
 use wiremock::matchers::{method, path, path_regex};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -176,20 +176,22 @@ mod transmission_client {
 
     #[test]
     fn new_constructs_without_credentials() {
-        let client = TransmissionClient::new("http://localhost:9091", None, None);
+        let client = TransmissionClient::new("http://localhost:9091", None);
         assert!(client.is_ok());
     }
 
     #[test]
     fn new_constructs_with_credentials() {
-        let client =
-            TransmissionClient::new("http://localhost:9091", Some("admin"), Some("secret"));
+        let client = TransmissionClient::new(
+            "http://localhost:9091",
+            Some(&BasicCredentials::new("admin", "secret")),
+        );
         assert!(client.is_ok());
     }
 
     #[test]
     fn new_rejects_invalid_url() {
-        let result = TransmissionClient::new("not a url", None, None);
+        let result = TransmissionClient::new("not a url", None);
         assert!(result.is_err());
     }
 
@@ -226,7 +228,7 @@ mod transmission_client {
             .mount(&server)
             .await;
 
-        let client = TransmissionClient::new(&server.uri(), None, None).unwrap();
+        let client = TransmissionClient::new(&server.uri(), None).unwrap();
         let info = client.session_get().await.unwrap();
         assert_eq!(info.version, "4.0.5");
         assert_eq!(info.rpc_version, 18);
@@ -252,7 +254,7 @@ mod transmission_client {
             .mount(&server)
             .await;
 
-        let client = TransmissionClient::new(&server.uri(), None, None).unwrap();
+        let client = TransmissionClient::new(&server.uri(), None).unwrap();
         let stats = client.session_stats().await.unwrap();
         assert_eq!(stats.active_torrent_count, 3);
         assert_eq!(stats.paused_torrent_count, 1);
@@ -276,7 +278,7 @@ mod transmission_client {
             .mount(&server)
             .await;
 
-        let client = TransmissionClient::new(&server.uri(), None, None).unwrap();
+        let client = TransmissionClient::new(&server.uri(), None).unwrap();
         assert!(client.is_healthy().await.unwrap());
     }
 
@@ -295,7 +297,7 @@ mod transmission_client {
             .mount(&server)
             .await;
 
-        let client = TransmissionClient::new(&server.uri(), None, None).unwrap();
+        let client = TransmissionClient::new(&server.uri(), None).unwrap();
         assert!(!client.is_healthy().await.unwrap());
     }
 }
@@ -1103,10 +1105,10 @@ mod servarr_client_multi_kind {
 }
 
 // ---------------------------------------------------------------------------
-// OverseerrClient integration tests via wiremock
+// SeerrClient integration tests via wiremock
 // ---------------------------------------------------------------------------
 
-mod overseerr_client {
+mod seerr_client {
     use super::*;
 
     fn make_sonarr_settings_json() -> serde_json::Value {
@@ -1156,7 +1158,7 @@ mod overseerr_client {
             .mount(&server)
             .await;
 
-        let client = OverseerrClient::new(&server.uri(), "test-key");
+        let client = SeerrClient::new(&server.uri(), "test-key");
         let result = client.list_sonarr().await.unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].name, "Sonarr Main");
@@ -1188,7 +1190,7 @@ mod overseerr_client {
             true,
         );
 
-        let client = OverseerrClient::new(&server.uri(), "test-key");
+        let client = SeerrClient::new(&server.uri(), "test-key");
         let result = client.create_sonarr(settings).await.unwrap();
         assert_eq!(result.name, "Sonarr Main");
         assert_eq!(result.id, Some(1.0));
@@ -1207,7 +1209,7 @@ mod overseerr_client {
             .mount(&server)
             .await;
 
-        let client = OverseerrClient::new(&server.uri(), "test-key");
+        let client = SeerrClient::new(&server.uri(), "test-key");
         let result = client.list_radarr().await.unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].name, "Radarr Main");
@@ -1239,7 +1241,7 @@ mod overseerr_client {
             true,
         );
 
-        let client = OverseerrClient::new(&server.uri(), "test-key");
+        let client = SeerrClient::new(&server.uri(), "test-key");
         let result = client.create_radarr(settings).await.unwrap();
         assert_eq!(result.name, "Radarr Main");
         assert_eq!(result.id, Some(1.0));
@@ -1255,7 +1257,7 @@ mod overseerr_client {
             .mount(&server)
             .await;
 
-        let client = OverseerrClient::new(&server.uri(), "test-key");
+        let client = SeerrClient::new(&server.uri(), "test-key");
         let result = client.delete_sonarr(5).await;
         assert!(result.is_ok());
     }
@@ -1270,7 +1272,7 @@ mod overseerr_client {
             .mount(&server)
             .await;
 
-        let client = OverseerrClient::new(&server.uri(), "test-key");
+        let client = SeerrClient::new(&server.uri(), "test-key");
         let result = client.delete_radarr(3).await;
         assert!(result.is_ok());
     }
@@ -1299,7 +1301,7 @@ mod overseerr_client {
             true,
         );
 
-        let client = OverseerrClient::new(&server.uri(), "test-key");
+        let client = SeerrClient::new(&server.uri(), "test-key");
         let result = client.update_sonarr(2, settings).await.unwrap();
         assert_eq!(result.name, "Sonarr Main");
     }
@@ -1328,7 +1330,7 @@ mod overseerr_client {
             true,
         );
 
-        let client = OverseerrClient::new(&server.uri(), "test-key");
+        let client = SeerrClient::new(&server.uri(), "test-key");
         let result = client.update_radarr(4, settings).await.unwrap();
         assert_eq!(result.name, "Radarr Main");
     }

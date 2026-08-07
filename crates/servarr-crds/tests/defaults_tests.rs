@@ -434,7 +434,7 @@ fn security_profile_custom_has_custom_type() {
 }
 
 // ---------------------------------------------------------------------------
-// ProwlarrSyncSpec::default and OverseerrSyncSpec::default
+// ProwlarrSyncSpec::default and SeerrSyncSpec::default
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -446,8 +446,8 @@ fn prowlarr_sync_spec_default_values() {
 }
 
 #[test]
-fn overseerr_sync_spec_default_values() {
-    let spec = OverseerrSyncSpec::default();
+fn seerr_sync_spec_default_values() {
+    let spec = SeerrSyncSpec::default();
     assert!(!spec.enabled);
     assert!(spec.namespace_scope.is_none());
     assert!(spec.auto_remove);
@@ -641,7 +641,6 @@ fn subgen_has_higher_memory_for_whisper_inference() {
         "Subgen should request 512Mi"
     );
 }
-
 /// An admin who explicitly tombstones a default volume via
 /// `removedDefaultVolumes` must have it actually removed — not silently
 /// restored by the very safety net #367 added (#376).
@@ -926,4 +925,20 @@ fn resolve_persistence_collision_message_names_operator_reserved_mount() {
         err.contains("watch-nfs"),
         "error should name the user's own entry, got: {err}"
     );
+}
+
+#[test]
+fn seerr_defaults_use_fixed_uid_gid_and_app_config_mount_path() {
+    let defaults = AppDefaults::try_for_app(&AppType::Seerr).unwrap();
+    assert_eq!(defaults.uid, 1000);
+    assert_eq!(defaults.gid, 1000);
+    assert_eq!(defaults.security.user, 1000);
+    assert_eq!(defaults.security.group, 1000);
+    let config_vol = defaults
+        .persistence
+        .volumes
+        .iter()
+        .find(|v| v.name == "config")
+        .expect("seerr defaults must have a config volume");
+    assert_eq!(config_vol.mount_path, "/app/config");
 }

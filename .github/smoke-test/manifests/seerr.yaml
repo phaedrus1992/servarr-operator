@@ -1,6 +1,6 @@
 apiVersion: servarr.dev/v1alpha1
 kind: ServarrApp
 metadata:
-  name: overseerr
+  name: seerr
 spec:
-  app: Overseerr
+  app: Seerr

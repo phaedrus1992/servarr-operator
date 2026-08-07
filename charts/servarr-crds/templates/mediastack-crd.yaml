@@ -96,7 +96,7 @@ spec:
                       - Sabnzbd
                       - Transmission
                       - Tautulli
-                      - Overseerr
+                      - Seerr
                       - Maintainerr
                       - Jackett
                       - Jellyfin
@@ -117,128 +117,12 @@ spec:
                       - required:
                         - sshBastion
                       - required:
-                        - overseerr
+                        - seerr
                       - required:
                         - lidarr
                       properties:
                         lidarr:
                           description: Configuration for the Lidarr application.
-                          type: object
-                        overseerr:
-                          description: |-
-                            Overseerr integration configuration.
-
-                            Provides default Sonarr and Radarr server settings used when the operator
-                            auto-registers discovered instances in Overseerr.
-                          properties:
-                            radarr:
-                              description: Default Radarr server settings for Overseerr registration.
-                              nullable: true
-                              properties:
-                                enableSeasonFolders:
-                                  description: Enable season folders (Sonarr only).
-                                  nullable: true
-                                  type: boolean
-                                fourK:
-                                  description: 4K variant overrides (used when the server is a 4K instance).
-                                  nullable: true
-                                  properties:
-                                    enableSeasonFolders:
-                                      description: Enable season folders for the 4K Sonarr instance.
-                                      nullable: true
-                                      type: boolean
-                                    minimumAvailability:
-                                      description: Minimum availability for the 4K Radarr instance.
-                                      nullable: true
-                                      type: string
-                                    profileId:
-                                      description: Quality profile ID for the 4K instance.
-                                      format: double
-                                      type: number
-                                    profileName:
-                                      description: Quality profile name for the 4K instance.
-                                      type: string
-                                    rootFolder:
-                                      description: Root folder path for the 4K instance (e.g. "/movies4k").
-                                      type: string
-                                  required:
-                                  - profileId
-                                  - profileName
-                                  - rootFolder
-                                  type: object
-                                minimumAvailability:
-                                  description: Minimum availability for Radarr (e.g. "released"). Ignored for Sonarr.
-                                  nullable: true
-                                  type: string
-                                profileId:
-                                  description: Quality profile ID to set as active in Overseerr.
-                                  format: double
-                                  type: number
-                                profileName:
-                                  description: Quality profile name.
-                                  type: string
-                                rootFolder:
-                                  description: Root folder path (e.g. "/movies", "/tv").
-                                  type: string
-                              required:
-                              - profileId
-                              - profileName
-                              - rootFolder
-                              type: object
-                            sonarr:
-                              description: Default Sonarr server settings for Overseerr registration.
-                              nullable: true
-                              properties:
-                                enableSeasonFolders:
-                                  description: Enable season folders (Sonarr only).
-                                  nullable: true
-                                  type: boolean
-                                fourK:
-                                  description: 4K variant overrides (used when the server is a 4K instance).
-                                  nullable: true
-                                  properties:
-                                    enableSeasonFolders:
-                                      description: Enable season folders for the 4K Sonarr instance.
-                                      nullable: true
-                                      type: boolean
-                                    minimumAvailability:
-                                      description: Minimum availability for the 4K Radarr instance.
-                                      nullable: true
-                                      type: string
-                                    profileId:
-                                      description: Quality profile ID for the 4K instance.
-                                      format: double
-                                      type: number
-                                    profileName:
-                                      description: Quality profile name for the 4K instance.
-                                      type: string
-                                    rootFolder:
-                                      description: Root folder path for the 4K instance (e.g. "/movies4k").
-                                      type: string
-                                  required:
-                                  - profileId
-                                  - profileName
-                                  - rootFolder
-                                  type: object
-                                minimumAvailability:
-                                  description: Minimum availability for Radarr (e.g. "released"). Ignored for Sonarr.
-                                  nullable: true
-                                  type: string
-                                profileId:
-                                  description: Quality profile ID to set as active in Overseerr.
-                                  format: double
-                                  type: number
-                                profileName:
-                                  description: Quality profile name.
-                                  type: string
-                                rootFolder:
-                                  description: Root folder path (e.g. "/movies", "/tv").
-                                  type: string
-                              required:
-                              - profileId
-                              - profileName
-                              - rootFolder
-                              type: object
                           type: object
                         prowlarr:
                           properties:
@@ -283,6 +167,122 @@ spec:
                                 Installs compression tools (tar, gzip, bzip2, xz, zstd) and adds
                                 a post-processing script.
                               type: boolean
+                          type: object
+                        seerr:
+                          description: |-
+                            Seerr integration configuration.
+
+                            Provides default Sonarr and Radarr server settings used when the operator
+                            auto-registers discovered instances in Seerr.
+                          properties:
+                            radarr:
+                              description: Default Radarr server settings for Seerr registration.
+                              nullable: true
+                              properties:
+                                enableSeasonFolders:
+                                  description: Enable season folders (Sonarr only).
+                                  nullable: true
+                                  type: boolean
+                                fourK:
+                                  description: 4K variant overrides (used when the server is a 4K instance).
+                                  nullable: true
+                                  properties:
+                                    enableSeasonFolders:
+                                      description: Enable season folders for the 4K Sonarr instance.
+                                      nullable: true
+                                      type: boolean
+                                    minimumAvailability:
+                                      description: Minimum availability for the 4K Radarr instance.
+                                      nullable: true
+                                      type: string
+                                    profileId:
+                                      description: Quality profile ID for the 4K instance.
+                                      format: double
+                                      type: number
+                                    profileName:
+                                      description: Quality profile name for the 4K instance.
+                                      type: string
+                                    rootFolder:
+                                      description: Root folder path for the 4K instance (e.g. "/movies4k").
+                                      type: string
+                                  required:
+                                  - profileId
+                                  - profileName
+                                  - rootFolder
+                                  type: object
+                                minimumAvailability:
+                                  description: Minimum availability for Radarr (e.g. "released"). Ignored for Sonarr.
+                                  nullable: true
+                                  type: string
+                                profileId:
+                                  description: Quality profile ID to set as active in Seerr.
+                                  format: double
+                                  type: number
+                                profileName:
+                                  description: Quality profile name.
+                                  type: string
+                                rootFolder:
+                                  description: Root folder path (e.g. "/movies", "/tv").
+                                  type: string
+                              required:
+                              - profileId
+                              - profileName
+                              - rootFolder
+                              type: object
+                            sonarr:
+                              description: Default Sonarr server settings for Seerr registration.
+                              nullable: true
+                              properties:
+                                enableSeasonFolders:
+                                  description: Enable season folders (Sonarr only).
+                                  nullable: true
+                                  type: boolean
+                                fourK:
+                                  description: 4K variant overrides (used when the server is a 4K instance).
+                                  nullable: true
+                                  properties:
+                                    enableSeasonFolders:
+                                      description: Enable season folders for the 4K Sonarr instance.
+                                      nullable: true
+                                      type: boolean
+                                    minimumAvailability:
+                                      description: Minimum availability for the 4K Radarr instance.
+                                      nullable: true
+                                      type: string
+                                    profileId:
+                                      description: Quality profile ID for the 4K instance.
+                                      format: double
+                                      type: number
+                                    profileName:
+                                      description: Quality profile name for the 4K instance.
+                                      type: string
+                                    rootFolder:
+                                      description: Root folder path for the 4K instance (e.g. "/movies4k").
+                                      type: string
+                                  required:
+                                  - profileId
+                                  - profileName
+                                  - rootFolder
+                                  type: object
+                                minimumAvailability:
+                                  description: Minimum availability for Radarr (e.g. "released"). Ignored for Sonarr.
+                                  nullable: true
+                                  type: string
+                                profileId:
+                                  description: Quality profile ID to set as active in Seerr.
+                                  format: double
+                                  type: number
+                                profileName:
+                                  description: Quality profile name.
+                                  type: string
+                                rootFolder:
+                                  description: Root folder path (e.g. "/movies", "/tv").
+                                  type: string
+                              required:
+                              - profileId
+                              - profileName
+                              - rootFolder
+                              type: object
                           type: object
                         sshBastion:
                           properties:
@@ -572,10 +572,10 @@ spec:
                       type: string
                     maintainerrSync:
                       description: |-
-                        Sync spec for Maintainerr → Sonarr/Radarr/Overseerr/Tautulli/Plex integration.
+                        Sync spec for Maintainerr → Sonarr/Radarr/Seerr/Tautulli/Plex integration.
 
                         When enabled on a Maintainerr-type ServarrApp, the operator discovers
-                        Sonarr, Radarr, Overseerr, Tautulli, and Plex instances in the target
+                        Sonarr, Radarr, Seerr, Tautulli, and Plex instances in the target
                         namespace and registers them in Maintainerr for media management.
                       nullable: true
                       properties:
@@ -631,28 +631,6 @@ spec:
                           items:
                             type: string
                           type: array
-                      type: object
-                    overseerrSync:
-                      description: |-
-                        Configuration for Overseerr cross-app synchronization.
-
-                        When enabled on an Overseerr-type ServarrApp, the operator discovers
-                        Sonarr/Radarr instances in the target namespace and registers them as
-                        servers in Overseerr with correct `is4k`/`isDefault` flags.
-                      nullable: true
-                      properties:
-                        autoRemove:
-                          default: true
-                          description: Whether to remove servers from Overseerr when their CRs are deleted.
-                          type: boolean
-                        enabled:
-                          default: false
-                          description: Whether Overseerr sync is enabled.
-                          type: boolean
-                        namespaceScope:
-                          description: Namespace to discover apps in. Defaults to the Overseerr CR's namespace.
-                          nullable: true
-                          type: string
                       type: object
                     persistence:
                       nullable: true
@@ -939,6 +917,28 @@ spec:
                           default: 65534
                           format: int64
                           type: integer
+                      type: object
+                    seerrSync:
+                      description: |-
+                        Configuration for Seerr cross-app synchronization.
+
+                        When enabled on a Seerr-type ServarrApp, the operator discovers
+                        Sonarr/Radarr instances in the target namespace and registers them as
+                        servers in Seerr with correct `is4k`/`isDefault` flags.
+                      nullable: true
+                      properties:
+                        autoRemove:
+                          default: true
+                          description: Whether to remove servers from Seerr when their CRs are deleted.
+                          type: boolean
+                        enabled:
+                          default: false
+                          description: Whether Seerr sync is enabled.
+                          type: boolean
+                        namespaceScope:
+                          description: Namespace to discover apps in. Defaults to the Seerr CR's namespace.
+                          nullable: true
+                          type: string
                       type: object
                     service:
                       nullable: true

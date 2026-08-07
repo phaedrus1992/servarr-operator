@@ -122,7 +122,7 @@ fn make_media_stack(name: &str, ns: &str) -> MediaStack {
             pod_annotations: None,
             gpu: None,
             prowlarr_sync: None,
-            overseerr_sync: None,
+            seerr_sync: None,
             bazarr_sync: None,
             subgen_sync: None,
             maintainerr_sync: None,
@@ -145,7 +145,7 @@ fn make_media_stack(name: &str, ns: &str) -> MediaStack {
 // ---------------------------------------------------------------------------
 
 /// Minimal deployment JSON response with readyReplicas for status checks.
-fn deployment_response(name: &str, ns: &str) -> serde_json::Value {
+fn deployment_response(name: &str, ns: &str, app_type: &str) -> serde_json::Value {
     json!({
         "apiVersion": "apps/v1",
         "kind": "Deployment",
@@ -156,7 +156,10 @@ fn deployment_response(name: &str, ns: &str) -> serde_json::Value {
             "resourceVersion": "100"
         },
         "spec": {
-            "selector": { "matchLabels": { "app": name } },
+            "selector": { "matchLabels": {
+                "app.kubernetes.io/name": app_type,
+                "app.kubernetes.io/instance": name
+            } },
             "template": {
                 "metadata": { "labels": { "app": name } },
                 "spec": {
@@ -172,6 +175,45 @@ fn deployment_response(name: &str, ns: &str) -> serde_json::Value {
             "replicas": 1,
             "availableReplicas": 1
         }
+    })
+}
+
+/// A Deployment whose selector uses the old, pre-rename label shape — the drift
+/// the delete-then-recreate path exists to fix. `owner_uid` controls whether the
+/// object claims `uid` as its ServarrApp owner (`Some`) or is a foreign name
+/// collision (`None`); the controller must only delete the former.
+fn stale_selector_deployment(name: &str, ns: &str, owner_uid: Option<&str>) -> serde_json::Value {
+    json!({
+        "apiVersion": "apps/v1",
+        "kind": "Deployment",
+        "metadata": {
+            "name": name,
+            "namespace": ns,
+            "uid": "deploy-uid-1",
+            "resourceVersion": "100",
+            "ownerReferences": match owner_uid {
+                Some(uid) => json!([{
+                    "apiVersion": "servarr.dev/v1alpha1",
+                    "kind": "ServarrApp",
+                    "name": name,
+                    "uid": uid
+                }]),
+                None => json!([]),
+            }
+        },
+        "spec": {
+            "selector": { "matchLabels": { "app": name } },
+            "template": {
+                "metadata": { "labels": { "app": name } },
+                "spec": {
+                    "containers": [{
+                        "name": "sonarr",
+                        "image": "ghcr.io/onedr0p/sonarr:latest"
+                    }]
+                }
+            }
+        },
+        "status": { "readyReplicas": 1, "replicas": 1, "availableReplicas": 1 }
     })
 }
 
@@ -293,7 +335,11 @@ async fn test_sonarr_reconcile_basic() {
             "/apis/apps/v1/namespaces/test/deployments/test-sonarr",
         ))
         .respond_with(
-            ResponseTemplate::new(200).set_body_json(deployment_response("test-sonarr", "test")),
+            ResponseTemplate::new(200).set_body_json(deployment_response(
+                "test-sonarr",
+                "test",
+                "sonarr",
+            )),
         )
         .named("patch-deployment")
         .mount(&mock_server)
@@ -305,7 +351,11 @@ async fn test_sonarr_reconcile_basic() {
             "/apis/apps/v1/namespaces/test/deployments/test-sonarr",
         ))
         .respond_with(
-            ResponseTemplate::new(200).set_body_json(deployment_response("test-sonarr", "test")),
+            ResponseTemplate::new(200).set_body_json(deployment_response(
+                "test-sonarr",
+                "test",
+                "sonarr",
+            )),
         )
         .named("get-deployment")
         .mount(&mock_server)
@@ -383,7 +433,7 @@ async fn test_sonarr_reconcile_basic() {
         .mount(&mock_server)
         .await;
 
-    // GET ServarrApps list (for gauge update + prowlarr/overseerr sync checks)
+    // GET ServarrApps list (for gauge update + prowlarr/seerr sync checks)
     Mock::given(method("GET"))
         .and(path(
             "/apis/servarr.dev/v1alpha1/namespaces/test/servarrapps",
@@ -436,8 +486,11 @@ async fn test_sonarr_reconcile_network_policy_disabled() {
             "/apis/apps/v1/namespaces/test/deployments/test-sonarr-nonp",
         ))
         .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_json(deployment_response("test-sonarr-nonp", "test")),
+            ResponseTemplate::new(200).set_body_json(deployment_response(
+                "test-sonarr-nonp",
+                "test",
+                "sonarr",
+            )),
         )
         .mount(&mock_server)
         .await;
@@ -448,8 +501,11 @@ async fn test_sonarr_reconcile_network_policy_disabled() {
             "/apis/apps/v1/namespaces/test/deployments/test-sonarr-nonp",
         ))
         .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_json(deployment_response("test-sonarr-nonp", "test")),
+            ResponseTemplate::new(200).set_body_json(deployment_response(
+                "test-sonarr-nonp",
+                "test",
+                "sonarr",
+            )),
         )
         .mount(&mock_server)
         .await;
@@ -866,7 +922,7 @@ fn make_multi_app_stack(name: &str, ns: &str) -> MediaStack {
                 pod_annotations: None,
                 gpu: None,
                 prowlarr_sync: None,
-                overseerr_sync: None,
+                seerr_sync: None,
                 bazarr_sync: None,
                 subgen_sync: None,
                 maintainerr_sync: None,
@@ -900,7 +956,7 @@ fn make_multi_app_stack(name: &str, ns: &str) -> MediaStack {
                 pod_annotations: None,
                 gpu: None,
                 prowlarr_sync: None,
-                overseerr_sync: None,
+                seerr_sync: None,
                 bazarr_sync: None,
                 subgen_sync: None,
                 maintainerr_sync: None,
@@ -934,7 +990,7 @@ fn make_multi_app_stack(name: &str, ns: &str) -> MediaStack {
                 pod_annotations: None,
                 gpu: None,
                 prowlarr_sync: None,
-                overseerr_sync: None,
+                seerr_sync: None,
                 bazarr_sync: None,
                 subgen_sync: None,
                 maintainerr_sync: None,
@@ -1092,7 +1148,7 @@ async fn test_media_stack_reconcile_disabled_app() {
                 pod_annotations: None,
                 gpu: None,
                 prowlarr_sync: None,
-                overseerr_sync: None,
+                seerr_sync: None,
                 bazarr_sync: None,
                 subgen_sync: None,
                 maintainerr_sync: None,
@@ -1126,7 +1182,7 @@ async fn test_media_stack_reconcile_disabled_app() {
                 pod_annotations: None,
                 gpu: None,
                 prowlarr_sync: None,
-                overseerr_sync: None,
+                seerr_sync: None,
                 bazarr_sync: None,
                 subgen_sync: None,
                 maintainerr_sync: None,
@@ -1430,22 +1486,26 @@ fn secret_response(name: &str, ns: &str) -> serde_json::Value {
 }
 
 /// Mount the common mocks shared by most ServarrApp reconcile tests.
-async fn mount_common_mocks(mock_server: &MockServer, name: &str, ns: &str) {
+async fn mount_common_mocks(mock_server: &MockServer, name: &str, ns: &str, app_type: &str) {
     // PATCH deployment (SSA)
     Mock::given(method("PATCH"))
         .and(path(format!(
             "/apis/apps/v1/namespaces/{ns}/deployments/{name}"
         )))
-        .respond_with(ResponseTemplate::new(200).set_body_json(deployment_response(name, ns)))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(deployment_response(name, ns, app_type)),
+        )
         .mount(mock_server)
         .await;
 
-    // GET deployment (drift check + status)
+    // GET deployment (selector-drift pre-check + template-drift check + status)
     Mock::given(method("GET"))
         .and(path(format!(
             "/apis/apps/v1/namespaces/{ns}/deployments/{name}"
         )))
-        .respond_with(ResponseTemplate::new(200).set_body_json(deployment_response(name, ns)))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(deployment_response(name, ns, app_type)),
+        )
         .mount(mock_server)
         .await;
 
@@ -1554,7 +1614,7 @@ async fn test_transmission_reconcile_creates_configmap() {
     app.metadata.generation = Some(1);
     let app = Arc::new(app);
 
-    mount_common_mocks(&mock_server, "test-transmission", "test").await;
+    mount_common_mocks(&mock_server, "test-transmission", "test", "transmission").await;
 
     // PATCH ConfigMap for Transmission settings (name = app_name = "test-transmission")
     Mock::given(method("PATCH"))
@@ -1614,7 +1674,7 @@ async fn test_gateway_tls_tcproute_and_certificate() {
     app.metadata.generation = Some(1);
     let app = Arc::new(app);
 
-    mount_common_mocks(&mock_server, "test-sonarr-gw", "test").await;
+    mount_common_mocks(&mock_server, "test-sonarr-gw", "test", "sonarr").await;
 
     // TLS enabled forces TCPRoute (not HTTPRoute)
     Mock::given(method("PATCH"))
@@ -1692,7 +1752,7 @@ async fn test_gateway_httproute_only() {
     app.metadata.generation = Some(1);
     let app = Arc::new(app);
 
-    mount_common_mocks(&mock_server, "test-radarr-gw", "test").await;
+    mount_common_mocks(&mock_server, "test-radarr-gw", "test", "radarr").await;
 
     // PATCH HTTPRoute (no TLS, so HTTPRoute not TCPRoute)
     Mock::given(method("PATCH"))
@@ -1757,7 +1817,7 @@ async fn test_ssh_bastion_reconcile() {
     app.metadata.generation = Some(1);
     let app = Arc::new(app);
 
-    mount_common_mocks(&mock_server, "test-bastion", "test").await;
+    mount_common_mocks(&mock_server, "test-bastion", "test", "ssh-bastion").await;
 
     // PATCH authorized-keys Secret
     Mock::given(method("PATCH"))
@@ -1822,7 +1882,7 @@ async fn test_sabnzbd_whitelist_and_tar_unpack() {
     app.metadata.generation = Some(1);
     let app = Arc::new(app);
 
-    mount_common_mocks(&mock_server, "test-sabnzbd", "test").await;
+    mount_common_mocks(&mock_server, "test-sabnzbd", "test", "sabnzbd").await;
 
     // PATCH SABnzbd whitelist ConfigMap (child_name = "test-sabnzbd-sabnzbd-config")
     Mock::given(method("PATCH"))
@@ -1889,7 +1949,7 @@ async fn test_prowlarr_custom_definitions() {
     app.metadata.generation = Some(1);
     let app = Arc::new(app);
 
-    mount_common_mocks(&mock_server, "test-prowlarr", "test").await;
+    mount_common_mocks(&mock_server, "test-prowlarr", "test", "prowlarr").await;
 
     // PATCH Prowlarr definitions ConfigMap (child_name = "test-prowlarr-prowlarr-definitions")
     Mock::given(method("PATCH"))
@@ -1931,8 +1991,11 @@ async fn test_pvc_already_exists_skips_create() {
             "/apis/apps/v1/namespaces/test/deployments/test-sonarr-pvc",
         ))
         .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_json(deployment_response("test-sonarr-pvc", "test")),
+            ResponseTemplate::new(200).set_body_json(deployment_response(
+                "test-sonarr-pvc",
+                "test",
+                "sonarr",
+            )),
         )
         .mount(&mock_server)
         .await;
@@ -1943,8 +2006,11 @@ async fn test_pvc_already_exists_skips_create() {
             "/apis/apps/v1/namespaces/test/deployments/test-sonarr-pvc",
         ))
         .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_json(deployment_response("test-sonarr-pvc", "test")),
+            ResponseTemplate::new(200).set_body_json(deployment_response(
+                "test-sonarr-pvc",
+                "test",
+                "sonarr",
+            )),
         )
         .mount(&mock_server)
         .await;
@@ -2069,7 +2135,7 @@ async fn test_network_policy_config_overrides_disabled_flag() {
     app.metadata.generation = Some(1);
     let app = Arc::new(app);
 
-    mount_common_mocks(&mock_server, "test-sonarr-npc", "test").await;
+    mount_common_mocks(&mock_server, "test-sonarr-npc", "test", "sonarr").await;
 
     // The network policy PATCH mock is in mount_common_mocks. The key
     // assertion here is that reconcile succeeds -- which means the NP
@@ -2102,8 +2168,11 @@ async fn test_deployment_drift_detection() {
             "/apis/apps/v1/namespaces/test/deployments/test-sonarr-drift",
         ))
         .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_json(deployment_response("test-sonarr-drift", "test")),
+            ResponseTemplate::new(200).set_body_json(deployment_response(
+                "test-sonarr-drift",
+                "test",
+                "sonarr",
+            )),
         )
         .named("patch-deployment")
         .expect(2..) // Called at least twice: initial + drift re-apply
@@ -2122,7 +2191,10 @@ async fn test_deployment_drift_detection() {
             "resourceVersion": "100"
         },
         "spec": {
-            "selector": { "matchLabels": { "app": "test-sonarr-drift" } },
+            "selector": { "matchLabels": {
+                "app.kubernetes.io/name": "sonarr",
+                "app.kubernetes.io/instance": "test-sonarr-drift"
+            } },
             "template": {
                 "metadata": { "labels": { "app": "test-sonarr-drift" } },
                 "spec": {
@@ -2238,6 +2310,357 @@ async fn test_deployment_drift_detection() {
 }
 
 // ---------------------------------------------------------------------------
+// Test 18b: Deployment selector drift (immutable field) triggers delete-then-
+// recreate instead of a rejected patch. Regression test for issue #44: an
+// AppType rename changes the app.kubernetes.io/name selector label, and
+// Deployment.spec.selector is immutable on apps/v1 — a live Deployment whose
+// selector no longer matches the desired one must be deleted and recreated,
+// not patched.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_deployment_selector_drift_triggers_delete_then_recreate() {
+    let mock_server = MockServer::start().await;
+    let client = mock_client(&mock_server.uri()).await;
+    let ctx = test_context(client);
+
+    let app = Arc::new(make_sonarr_app("test-sonarr-seldrift", "test"));
+
+    // GET deployment returns a live object whose selector uses the old,
+    // pre-rename label shape — simulating an app whose AppType label value
+    // changed since it was first deployed.
+    let stale_selector_deploy =
+        stale_selector_deployment("test-sonarr-seldrift", "test", Some("test-uid-12345"));
+    Mock::given(method("GET"))
+        .and(path(
+            "/apis/apps/v1/namespaces/test/deployments/test-sonarr-seldrift",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(stale_selector_deploy))
+        .named("get-deployment-stale-selector")
+        .mount(&mock_server)
+        .await;
+
+    // DELETE deployment — must be called exactly once, before the recreate PATCH.
+    Mock::given(method("DELETE"))
+        .and(path(
+            "/apis/apps/v1/namespaces/test/deployments/test-sonarr-seldrift",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "apiVersion": "apps/v1",
+            "kind": "Deployment",
+            "metadata": { "name": "test-sonarr-seldrift", "namespace": "test" }
+        })))
+        .named("delete-deployment")
+        .expect(1)
+        .mount(&mock_server)
+        .await;
+
+    // PATCH deployment (SSA) — recreates it with the current selector.
+    Mock::given(method("PATCH"))
+        .and(path(
+            "/apis/apps/v1/namespaces/test/deployments/test-sonarr-seldrift",
+        ))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(deployment_response(
+                "test-sonarr-seldrift",
+                "test",
+                "sonarr",
+            )),
+        )
+        .named("patch-deployment")
+        .mount(&mock_server)
+        .await;
+
+    Mock::given(method("PATCH"))
+        .and(path(
+            "/api/v1/namespaces/test/services/test-sonarr-seldrift",
+        ))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(service_response("test-sonarr-seldrift", "test")),
+        )
+        .mount(&mock_server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path_regex(
+            r"/api/v1/namespaces/test/persistentvolumeclaims/.*",
+        ))
+        .respond_with(ResponseTemplate::new(404).set_body_json(json!({
+            "apiVersion": "v1",
+            "kind": "Status",
+            "metadata": {},
+            "status": "Failure",
+            "message": "not found",
+            "reason": "NotFound",
+            "code": 404
+        })))
+        .mount(&mock_server)
+        .await;
+
+    Mock::given(method("PATCH"))
+        .and(path_regex(
+            r"/api/v1/namespaces/test/persistentvolumeclaims/.*",
+        ))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(pvc_response("test-sonarr-seldrift-config", "test")),
+        )
+        .mount(&mock_server)
+        .await;
+
+    Mock::given(method("PATCH"))
+        .and(path(
+            "/apis/networking.k8s.io/v1/namespaces/test/networkpolicies/test-sonarr-seldrift",
+        ))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(networkpolicy_response("test-sonarr-seldrift", "test")),
+        )
+        .mount(&mock_server)
+        .await;
+
+    Mock::given(method("PATCH"))
+        .and(path(
+            "/apis/servarr.dev/v1alpha1/namespaces/test/servarrapps/test-sonarr-seldrift/status",
+        ))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(servarrapp_response("test-sonarr-seldrift", "test")),
+        )
+        .mount(&mock_server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/apis/events.k8s.io/v1/namespaces/test/events"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(event_response()))
+        .mount(&mock_server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path(
+            "/apis/servarr.dev/v1alpha1/namespaces/test/servarrapps",
+        ))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(empty_list("servarr.dev/v1alpha1", "ServarrAppList")),
+        )
+        .mount(&mock_server)
+        .await;
+
+    let result = servarr_operator::controller::reconcile(app, ctx).await;
+    assert!(
+        result.is_ok(),
+        "reconcile with selector drift should delete-then-recreate and succeed, got: {result:?}"
+    );
+    assert_eq!(result.unwrap(), Action::requeue(Duration::from_secs(300)));
+    // wiremock's `.expect(1)` on the DELETE mock is verified when `mock_server` drops at the
+    // end of this test — a missing or duplicate DELETE call fails the test at that point.
+}
+
+#[tokio::test]
+async fn test_deployment_get_non_404_error_surfaces() {
+    let mock_server = MockServer::start().await;
+    let client = mock_client(&mock_server.uri()).await;
+    let ctx = test_context(client);
+
+    let app = Arc::new(make_sonarr_app("test-sonarr-geterr", "test"));
+
+    // Pre-deployment finalizer checks list ServarrApps; empty list = no sync to lock onto.
+    Mock::given(method("GET"))
+        .and(path(
+            "/apis/servarr.dev/v1alpha1/namespaces/test/servarrapps",
+        ))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(empty_list("servarr.dev/v1alpha1", "ServarrAppList")),
+        )
+        .mount(&mock_server)
+        .await;
+
+    // A non-404 GET failure on the Deployment must surface as a reconcile error, not be
+    // silently swallowed by the selector-drift pre-check (silent-failure-hunter finding).
+    Mock::given(method("GET"))
+        .and(path(
+            "/apis/apps/v1/namespaces/test/deployments/test-sonarr-geterr",
+        ))
+        .respond_with(ResponseTemplate::new(500).set_body_json(json!({
+            "apiVersion": "v1",
+            "kind": "Status",
+            "metadata": {},
+            "status": "Failure",
+            "message": "internal server error",
+            "reason": "InternalError",
+            "code": 500
+        })))
+        .named("get-deployment-500")
+        .mount(&mock_server)
+        .await;
+
+    // The SSA patch must never run when the pre-check GET fails: the error propagates first.
+    // (Regression guard: the old `if let Ok(existing)` swallowed the 500 and would have
+    // reached this patch, tripping `.expect(0)`.)
+    Mock::given(method("PATCH"))
+        .and(path(
+            "/apis/apps/v1/namespaces/test/deployments/test-sonarr-geterr",
+        ))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(deployment_response(
+                "test-sonarr-geterr",
+                "test",
+                "sonarr",
+            )),
+        )
+        .named("patch-deployment")
+        .expect(0)
+        .mount(&mock_server)
+        .await;
+
+    let result = servarr_operator::controller::reconcile(app, ctx).await;
+    assert!(
+        result.is_err(),
+        "reconcile must propagate a non-404 Deployment GET error, got: {result:?}"
+    );
+}
+
+#[tokio::test]
+async fn test_foreign_deployment_not_deleted_on_selector_mismatch() {
+    let mock_server = MockServer::start().await;
+    let client = mock_client(&mock_server.uri()).await;
+    let ctx = test_context(client);
+
+    let app = Arc::new(make_sonarr_app("test-sonarr-foreign", "test"));
+
+    // GET deployment returns an object with a mismatched selector but NO owner reference
+    // pointing at this ServarrApp (uid "test-uid-12345") — a foreign name collision.
+    // The delete gate must refuse to tear it down (security-audit finding).
+    let foreign_deploy = stale_selector_deployment("test-sonarr-foreign", "test", None);
+    Mock::given(method("GET"))
+        .and(path(
+            "/apis/apps/v1/namespaces/test/deployments/test-sonarr-foreign",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(foreign_deploy))
+        .named("get-deployment-foreign")
+        .mount(&mock_server)
+        .await;
+
+    // The foreign Deployment must NOT be deleted — assert zero DELETE calls.
+    Mock::given(method("DELETE"))
+        .and(path(
+            "/apis/apps/v1/namespaces/test/deployments/test-sonarr-foreign",
+        ))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(deployment_response(
+                "test-sonarr-foreign",
+                "test",
+                "sonarr",
+            )),
+        )
+        .named("delete-deployment-foreign")
+        .expect(0)
+        .mount(&mock_server)
+        .await;
+
+    // Reconcile proceeds to SSA-patch the Deployment (the pre-existing path) and continues.
+    Mock::given(method("PATCH"))
+        .and(path(
+            "/apis/apps/v1/namespaces/test/deployments/test-sonarr-foreign",
+        ))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(deployment_response(
+                "test-sonarr-foreign",
+                "test",
+                "sonarr",
+            )),
+        )
+        .named("patch-deployment")
+        .mount(&mock_server)
+        .await;
+
+    Mock::given(method("PATCH"))
+        .and(path("/api/v1/namespaces/test/services/test-sonarr-foreign"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(service_response("test-sonarr-foreign", "test")),
+        )
+        .mount(&mock_server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path_regex(
+            r"/api/v1/namespaces/test/persistentvolumeclaims/.*",
+        ))
+        .respond_with(ResponseTemplate::new(404).set_body_json(json!({
+            "apiVersion": "v1",
+            "kind": "Status",
+            "metadata": {},
+            "status": "Failure",
+            "message": "not found",
+            "reason": "NotFound",
+            "code": 404
+        })))
+        .mount(&mock_server)
+        .await;
+
+    Mock::given(method("PATCH"))
+        .and(path_regex(
+            r"/api/v1/namespaces/test/persistentvolumeclaims/.*",
+        ))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(pvc_response("test-sonarr-foreign-config", "test")),
+        )
+        .mount(&mock_server)
+        .await;
+
+    Mock::given(method("PATCH"))
+        .and(path(
+            "/apis/networking.k8s.io/v1/namespaces/test/networkpolicies/test-sonarr-foreign",
+        ))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(networkpolicy_response("test-sonarr-foreign", "test")),
+        )
+        .mount(&mock_server)
+        .await;
+
+    Mock::given(method("PATCH"))
+        .and(path(
+            "/apis/servarr.dev/v1alpha1/namespaces/test/servarrapps/test-sonarr-foreign/status",
+        ))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(servarrapp_response("test-sonarr-foreign", "test")),
+        )
+        .mount(&mock_server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/apis/events.k8s.io/v1/namespaces/test/events"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(event_response()))
+        .mount(&mock_server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path(
+            "/apis/servarr.dev/v1alpha1/namespaces/test/servarrapps",
+        ))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(empty_list("servarr.dev/v1alpha1", "ServarrAppList")),
+        )
+        .mount(&mock_server)
+        .await;
+
+    let result = servarr_operator::controller::reconcile(app, ctx).await;
+    assert!(
+        result.is_ok(),
+        "reconcile with a foreign Deployment must not delete it and should succeed, got: {result:?}"
+    );
+    // wiremock's `.expect(0)` on the DELETE mock is verified when `mock_server` drops.
+}
+
+// ---------------------------------------------------------------------------
 // Test 19: TCPRoute via explicit Tcp route_type (no TLS)
 // ---------------------------------------------------------------------------
 
@@ -2270,7 +2693,7 @@ async fn test_gateway_tcp_route_type() {
     app.metadata.generation = Some(1);
     let app = Arc::new(app);
 
-    mount_common_mocks(&mock_server, "test-plex-tcp", "test").await;
+    mount_common_mocks(&mock_server, "test-plex-tcp", "test", "plex").await;
 
     // PATCH TCPRoute (explicit Tcp route_type)
     Mock::given(method("PATCH"))
@@ -2331,7 +2754,7 @@ fn make_nfs_stack(name: &str, ns: &str, nfs: Option<NfsServerSpec>) -> MediaStac
             pod_annotations: None,
             gpu: None,
             prowlarr_sync: None,
-            overseerr_sync: None,
+            seerr_sync: None,
             bazarr_sync: None,
             subgen_sync: None,
             maintainerr_sync: None,

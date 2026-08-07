@@ -62,12 +62,13 @@ security = "linuxserver"
 downloads = false
 probe_path = "/status"
 
-[overseerr]
-repository = "linuxserver/overseerr"
-tag = "1.35.0"
+[seerr]
+repository = "ghcr.io/seerr-team/seerr"
+tag = "v3.4.1"
 port = 5055
-security = "linuxserver"
+security = "nonroot"
 downloads = false
+probe_path = "/api/v1/settings/public"
 
 [maintainerr]
 repository = "ghcr.io/maintainerr/maintainerr"

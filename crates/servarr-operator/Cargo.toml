@@ -66,4 +66,5 @@ http = "1.4.2"
 temp-env = "0.3.6"
 tower = "0.5.3"
 tower-test = "0.4"
+proptest.workspace = true
 

@@ -4127,7 +4127,7 @@ const ALL_APP_TYPES: [AppType; 15] = [
     AppType::Sabnzbd,
     AppType::Transmission,
     AppType::Tautulli,
-    AppType::Overseerr,
+    AppType::Seerr,
     AppType::Maintainerr,
     AppType::Jackett,
     AppType::Jellyfin,

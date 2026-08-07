@@ -625,7 +625,7 @@ open http://sonarr-4k.127.0.0.1.nip.io
 | Radarr 4K | http://radarr-4k.127.0.0.1.nip.io |
 | Lidarr | http://lidarr.127.0.0.1.nip.io |
 | Prowlarr | http://prowlarr.127.0.0.1.nip.io |
-| Overseerr | http://overseerr.127.0.0.1.nip.io |
+| Seerr | http://seerr.127.0.0.1.nip.io |
 | Tautulli | http://tautulli.127.0.0.1.nip.io |
 | Maintainerr | http://maintainerr.127.0.0.1.nip.io |
 

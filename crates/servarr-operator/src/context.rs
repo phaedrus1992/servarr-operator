@@ -1,6 +1,6 @@
 use kube::Client;
 use kube::runtime::events::Reporter;
-use servarr_crds::ImageSpec;
+use servarr_crds::{AppType, ImageSpec};
 use std::collections::HashMap;
 use tracing::{info, warn};
 
@@ -77,31 +77,24 @@ impl Context {
 }
 
 /// Read DEFAULT_IMAGE_<APP>_REPO and DEFAULT_IMAGE_<APP>_TAG env vars for each known app.
+///
+/// Driven by [`AppType::ALL`] so the set of apps honored here can never drift
+/// from the enum (the Helm chart emits one env-var pair per `defaultImages`
+/// key, and this must cover every one of them or the override is silently
+/// dropped).
 fn load_image_overrides() -> HashMap<String, ImageSpec> {
-    let apps = [
-        "sonarr",
-        "radarr",
-        "lidarr",
-        "prowlarr",
-        "sabnzbd",
-        "transmission",
-        "tautulli",
-        "overseerr",
-        "maintainerr",
-        "jackett",
-    ];
-
     let mut overrides = HashMap::new();
 
-    for app in &apps {
-        let repo_key = format!("DEFAULT_IMAGE_{}_REPO", app.to_uppercase());
-        let tag_key = format!("DEFAULT_IMAGE_{}_TAG", app.to_uppercase());
+    for app in AppType::ALL {
+        let name = app.as_str();
+        let repo_key = format!("DEFAULT_IMAGE_{}_REPO", name.to_uppercase());
+        let tag_key = format!("DEFAULT_IMAGE_{}_TAG", name.to_uppercase());
 
         if let Ok(repo) = std::env::var(&repo_key) {
             let tag = std::env::var(&tag_key).unwrap_or_default();
-            info!(%app, %repo, %tag, "loaded image override from env");
+            info!(%name, %repo, %tag, "loaded image override from env");
             overrides.insert(
-                app.to_string(),
+                name.to_string(),
                 ImageSpec {
                     repository: repo,
                     tag,
@@ -110,6 +103,32 @@ fn load_image_overrides() -> HashMap<String, ImageSpec> {
                 },
             );
         }
+    }
+
+    // Issue #44: fall back to the pre-rename DEFAULT_IMAGE_OVERSEERR_* env vars if the new
+    // DEFAULT_IMAGE_SEERR_* ones aren't set. Without this, a Helm release with a lingering
+    // `defaultImages.overseerr` value override renders DEFAULT_IMAGE_OVERSEERR_REPO/TAG (the
+    // chart template emits one env var pair per key in the user's values, regardless of
+    // whether the operator still recognizes that key) — and that override would silently stop
+    // applying after upgrade, falling back to the new default image with no warning.
+    if !overrides.contains_key("seerr")
+        && let Ok(repo) = std::env::var("DEFAULT_IMAGE_OVERSEERR_REPO")
+    {
+        let tag = std::env::var("DEFAULT_IMAGE_OVERSEERR_TAG").unwrap_or_default();
+        warn!(
+            %repo, %tag,
+            "loaded image override from deprecated DEFAULT_IMAGE_OVERSEERR_* env vars — \
+             rename defaultImages.overseerr to defaultImages.seerr in your Helm values"
+        );
+        overrides.insert(
+            "seerr".to_string(),
+            ImageSpec {
+                repository: repo,
+                tag,
+                digest: String::new(),
+                pull_policy: "IfNotPresent".into(),
+            },
+        );
     }
 
     overrides
@@ -184,6 +203,83 @@ mod tests {
                 assert!(overrides.contains_key("sabnzbd"));
                 assert_eq!(overrides.get("prowlarr").unwrap().tag, "latest");
                 assert_eq!(overrides.get("sabnzbd").unwrap().tag, "3.7");
+            },
+        );
+    }
+
+    #[test]
+    fn load_image_overrides_honors_every_app_type() {
+        // Regression: the app set was once a hardcoded 10-entry list while the
+        // Helm chart emits a DEFAULT_IMAGE_* pair for every `defaultImages` key
+        // (all 15 AppTypes). Apps added later — bazarr, subgen, jellyfin, plex,
+        // ssh-bastion — had their overrides silently dropped. Driven by
+        // AppType::ALL now, so this covers all of them.
+        let mut env = vec![];
+        for app in AppType::ALL {
+            env.push((
+                format!("DEFAULT_IMAGE_{}_REPO", app.as_str().to_uppercase()),
+                Some(format!("registry.internal/{}", app.as_str())),
+            ));
+            env.push((
+                format!("DEFAULT_IMAGE_{}_TAG", app.as_str().to_uppercase()),
+                None,
+            ));
+        }
+        temp_env::with_vars(env, || {
+            let overrides = load_image_overrides();
+            assert_eq!(
+                overrides.len(),
+                AppType::ALL.len(),
+                "every AppType must be overrideable"
+            );
+            for app in AppType::ALL {
+                let name = app.as_str();
+                let spec = overrides.get(name).unwrap_or_else(|| {
+                    panic!("override missing for {name}");
+                });
+                assert_eq!(spec.repository, format!("registry.internal/{name}"));
+            }
+        });
+    }
+
+    #[test]
+    fn load_image_overrides_falls_back_to_legacy_overseerr_env_vars() {
+        temp_env::with_vars(
+            [
+                ("DEFAULT_IMAGE_SEERR_REPO", None::<&str>),
+                ("DEFAULT_IMAGE_SEERR_TAG", None::<&str>),
+                (
+                    "DEFAULT_IMAGE_OVERSEERR_REPO",
+                    Some("registry.internal/mirror/overseerr"),
+                ),
+                ("DEFAULT_IMAGE_OVERSEERR_TAG", Some("1.35.0")),
+            ],
+            || {
+                let overrides = load_image_overrides();
+                let spec = overrides.get("seerr").expect("seerr override missing");
+                assert_eq!(spec.repository, "registry.internal/mirror/overseerr");
+                assert_eq!(spec.tag, "1.35.0");
+            },
+        );
+    }
+
+    #[test]
+    fn load_image_overrides_prefers_seerr_env_vars_over_legacy_overseerr_ones() {
+        temp_env::with_vars(
+            [
+                ("DEFAULT_IMAGE_SEERR_REPO", Some("ghcr.io/seerr-team/seerr")),
+                ("DEFAULT_IMAGE_SEERR_TAG", Some("v3.4.1")),
+                (
+                    "DEFAULT_IMAGE_OVERSEERR_REPO",
+                    Some("registry.internal/mirror/overseerr"),
+                ),
+                ("DEFAULT_IMAGE_OVERSEERR_TAG", Some("1.35.0")),
+            ],
+            || {
+                let overrides = load_image_overrides();
+                let spec = overrides.get("seerr").expect("seerr override missing");
+                assert_eq!(spec.repository, "ghcr.io/seerr-team/seerr");
+                assert_eq!(spec.tag, "v3.4.1");
             },
         );
     }

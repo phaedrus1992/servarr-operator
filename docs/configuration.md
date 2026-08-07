@@ -37,7 +37,7 @@
 | `podAnnotations` | `map[string]string` | No | -- |
 | `gpu` | `GpuSpec` | No | -- |
 | `prowlarrSync` | `ProwlarrSyncSpec` | No | -- |
-| `overseerrSync` | `OverseerrSyncSpec` | No | -- |
+| `seerrSync` | `SeerrSyncSpec` | No | -- |
 | `bazarrSync` | `BazarrSyncSpec` | No | -- |
 | `subgenSync` | `SubgenSyncSpec` | No | -- |
 | `maintainerrSync` | `MaintainerrSyncSpec` | No | -- |
@@ -52,7 +52,7 @@
 
 Selects which application this resource manages. The operator uses this to determine default images, ports, security profiles, and volume layouts.
 
-Valid values: `Plex`, `Jellyfin`, `SshBastion`, `Sabnzbd`, `Transmission`, `Sonarr`, `Radarr`, `Lidarr`, `Tautulli`, `Overseerr`, `Maintainerr`, `Prowlarr`, `Jackett`, `Bazarr`, `Subgen`
+Valid values: `Plex`, `Jellyfin`, `SshBastion`, `Sabnzbd`, `Transmission`, `Sonarr`, `Radarr`, `Lidarr`, `Tautulli`, `Seerr`, `Maintainerr`, `Prowlarr`, `Jackett`, `Bazarr`, `Subgen`
 
 ```yaml
 spec:
@@ -578,14 +578,14 @@ spec:
             ...
 ```
 
-#### Variant: `Overseerr`
+#### Variant: `Seerr`
 
 | Sub-field | Type | Default |
 |---|---|---|
-| `sonarr` | `OverseerrServerDefaults` | -- |
-| `radarr` | `OverseerrServerDefaults` | -- |
+| `sonarr` | `SeerrServerDefaults` | -- |
+| `radarr` | `SeerrServerDefaults` | -- |
 
-**OverseerrServerDefaults fields:**
+**SeerrServerDefaults fields:**
 
 | Field | Type | Default |
 |---|---|---|
@@ -594,14 +594,14 @@ spec:
 | `rootFolder` | `string` | -- |
 | `minimumAvailability` | `string` | -- (Radarr only) |
 | `enableSeasonFolders` | `bool` | -- (Sonarr only) |
-| `fourK` | `OverseerrServerDefaults4k` | -- |
+| `fourK` | `SeerrServerDefaults4k` | -- |
 
-The `fourK` sub-object has the same fields as `OverseerrServerDefaults` and is used for 4K instances.
+The `fourK` sub-object has the same fields as `SeerrServerDefaults` and is used for 4K instances.
 
 ```yaml
 spec:
   appConfig:
-    Overseerr:
+    seerr:
       sonarr:
         profileId: 1
         profileName: "HD-1080p"
@@ -732,13 +732,15 @@ spec:
 
 **Type:** `ApiHealthCheckSpec` -- **Optional**
 
-Enables API-level health checking that hits the application's API endpoint (rather than just an HTTP probe). Requires `apiKeySecret` to be set.
+Enables API-level health checking that hits the application's API endpoint (rather than just an HTTP probe). Authentication depends on the app type: Servarr-family apps and SABnzbd require `apiKeySecret` (the probe authenticates with the API key); Transmission uses `adminCredentials` if configured -- no `apiKeySecret` needed; Jellyfin and Plex are probed anonymously. When an app needs an API key but none is set, the probe is skipped with a warning rather than failing the app.
 
 | Sub-field | Type | Default |
 |---|---|---|
 | `enabled` | `bool` | `false` |
 | `intervalSeconds` | `uint32` | `60` (when omitted) |
 | `autoRemoveOrphanedTorrents` | `bool` | `false` |
+
+`intervalSeconds` limits how often a healthy app is re-polled: once a health condition is `True`, further probes are skipped until the interval elapses. Error, `Unknown`, and `False` conditions are re-polled immediately (not throttled), so a failure surfaces right away instead of waiting out the window. Set `intervalSeconds` to `0` to probe on every reconcile.
 
 ```yaml
 spec:
@@ -872,25 +874,25 @@ spec:
 
 ---
 
-### `overseerrSync`
+### `seerrSync`
 
-**Type:** `OverseerrSyncSpec` -- **Optional**
+**Type:** `SeerrSyncSpec` -- **Optional**
 
-Configures Overseerr cross-app synchronization. Only applies to `Overseerr`-type apps. When enabled, the operator discovers Sonarr and Radarr instances in the target namespace and registers them as servers in Overseerr with correct `is4k`/`isDefault` flags.
+Configures Seerr cross-app synchronization. Only applies to `Seerr`-type apps. When enabled, the operator discovers Sonarr and Radarr instances in the target namespace and registers them as servers in Seerr with correct `is4k`/`isDefault` flags.
 
 | Sub-field | Type | Default |
 |---|---|---|
 | `enabled` | `bool` | `false` |
-| `namespaceScope` | `string` | Same namespace as the Overseerr CR |
+| `namespaceScope` | `string` | Same namespace as the Seerr CR |
 | `autoRemove` | `bool` | `true` |
 
-When `autoRemove` is true, servers are removed from Overseerr when their corresponding ServarrApp CRs are deleted.
+When `autoRemove` is true, servers are removed from Seerr when their corresponding ServarrApp CRs are deleted.
 
 ```yaml
 spec:
-  app: Overseerr
-  apiKeySecret: overseerr-api-key
-  overseerrSync:
+  app: Seerr
+  apiKeySecret: seerr-api-key
+  seerrSync:
     enabled: true
     autoRemove: true
 ```
@@ -945,7 +947,7 @@ spec:
 
 **Type:** `MaintainerrSyncSpec` -- **Optional**
 
-Configures Maintainerr cross-app synchronization. Only applies to `Maintainerr`-type apps. When enabled, the operator discovers Sonarr, Radarr, Overseerr, Tautulli, and Plex instances in the target namespace and registers them in Maintainerr. split4k Sonarr/Radarr instances are registered individually. The operator manages Maintainerr's API key automatically -- no `apiKeySecret` is required. Registration is idempotent: already-registered servers are skipped on subsequent reconciles. Sync results are reported via the `MaintainerrSyncReady` status condition.
+Configures Maintainerr cross-app synchronization. Only applies to `Maintainerr`-type apps. When enabled, the operator discovers Sonarr, Radarr, Seerr, Tautulli, and Plex instances in the target namespace and registers them in Maintainerr. split4k Sonarr/Radarr instances are registered individually. The operator manages Maintainerr's API key automatically -- no `apiKeySecret` is required. Registration is idempotent: already-registered servers are skipped on subsequent reconciles. Sync results are reported via the `MaintainerrSyncReady` status condition.
 
 | Sub-field | Type | Default | Description |
 |---|---|---|---|

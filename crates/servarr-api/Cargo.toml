@@ -23,3 +23,7 @@ prowlarr = "0.1.1"
 wiremock.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 proptest = { workspace = true }
+# Test-only independent base64 decoder (already in the workspace graph via
+# servarr-operator) — lets the auth-header roundtrip proptest decode against a
+# separate implementation rather than the module's own Base64Writer.
+base64 = "=0.22.1"

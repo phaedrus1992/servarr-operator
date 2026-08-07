@@ -444,7 +444,7 @@ prop_compose! {
     }
 }
 
-/// Overseerr quality profile IDs are small non-negative integers in practice;
+/// Seerr quality profile IDs are small non-negative integers in practice;
 /// unconstrained `any::<f64>()` generates extreme-magnitude floats that lose
 /// precision across a JSON string round-trip (a `serde_json` float-parsing
 /// edge case, not an `AppConfig` bug), which breaks the roundtrip property
@@ -456,14 +456,14 @@ fn arb_profile_id() -> impl Strategy<Value = f64> {
 
 prop_compose! {
     // Named bindings so the two adjacent `String` slots can't be silently swapped.
-    fn arb_overseerr_server_defaults_4k()(
+    fn arb_seerr_server_defaults_4k()(
         profile_id in arb_profile_id(),
         profile_name in arb_string(),
         root_folder in arb_string(),
         minimum_availability in arb_opt_string(),
         enable_season_folders in arb_opt_bool(),
-    ) -> OverseerrServerDefaults4k {
-        OverseerrServerDefaults4k {
+    ) -> SeerrServerDefaults4k {
+        SeerrServerDefaults4k {
             profile_id,
             profile_name,
             root_folder,
@@ -473,15 +473,15 @@ prop_compose! {
     }
 }
 
-// `OverseerrServerDefaults` is `OverseerrServerDefaults4k` plus an optional
+// `SeerrServerDefaults` is `SeerrServerDefaults4k` plus an optional
 // nested `four_k` override (same 5 leading fields, same names/types/order) —
 // generate the 4k value once and reuse its fields instead of re-listing them.
-fn arb_overseerr_server_defaults() -> impl Strategy<Value = OverseerrServerDefaults> {
+fn arb_seerr_server_defaults() -> impl Strategy<Value = SeerrServerDefaults> {
     (
-        arb_overseerr_server_defaults_4k(),
-        prop::option::of(arb_overseerr_server_defaults_4k()),
+        arb_seerr_server_defaults_4k(),
+        prop::option::of(arb_seerr_server_defaults_4k()),
     )
-        .prop_map(|(base, four_k)| OverseerrServerDefaults {
+        .prop_map(|(base, four_k)| SeerrServerDefaults {
             profile_id: base.profile_id,
             profile_name: base.profile_name,
             root_folder: base.root_folder,
@@ -491,12 +491,12 @@ fn arb_overseerr_server_defaults() -> impl Strategy<Value = OverseerrServerDefau
         })
 }
 
-fn arb_overseerr_config() -> impl Strategy<Value = OverseerrConfig> {
+fn arb_seerr_config() -> impl Strategy<Value = SeerrConfig> {
     (
-        prop::option::of(arb_overseerr_server_defaults()),
-        prop::option::of(arb_overseerr_server_defaults()),
+        prop::option::of(arb_seerr_server_defaults()),
+        prop::option::of(arb_seerr_server_defaults()),
     )
-        .prop_map(|(sonarr, radarr)| OverseerrConfig { sonarr, radarr })
+        .prop_map(|(sonarr, radarr)| SeerrConfig { sonarr, radarr })
 }
 
 fn arb_app_config() -> impl Strategy<Value = AppConfig> {
@@ -505,7 +505,7 @@ fn arb_app_config() -> impl Strategy<Value = AppConfig> {
         arb_sabnzbd_config().prop_map(AppConfig::Sabnzbd),
         arb_prowlarr_config().prop_map(AppConfig::Prowlarr),
         arb_ssh_bastion_config().prop_map(AppConfig::SshBastion),
-        arb_overseerr_config().prop_map(|c| AppConfig::Overseerr(Box::new(c))),
+        arb_seerr_config().prop_map(|c| AppConfig::Seerr(Box::new(c))),
         Just(AppConfig::Lidarr(LidarrConfig {})),
     ]
 }
@@ -674,7 +674,7 @@ fn app_type_serde_roundtrip_all_variants() {
         AppType::Sabnzbd,
         AppType::Transmission,
         AppType::Tautulli,
-        AppType::Overseerr,
+        AppType::Seerr,
         AppType::Maintainerr,
         AppType::Jackett,
         AppType::Jellyfin,

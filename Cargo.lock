@@ -2883,6 +2883,7 @@ dependencies = [
 name = "servarr-api"
 version = "1.2.3"
 dependencies = [
+ "base64 0.22.1",
  "k8s-openapi",
  "kube",
  "lidarr",
@@ -2937,6 +2938,7 @@ dependencies = [
  "md5",
  "overseerr",
  "prometheus",
+ "proptest",
  "rand 0.10.2",
  "serde",
  "serde_json",

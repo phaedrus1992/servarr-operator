@@ -5,7 +5,7 @@ use crate::client::ApiError;
 
 /// Client for the Maintainerr auto-configuration API.
 ///
-/// Maintainerr provides a REST API to auto-configure Sonarr, Radarr, Overseerr,
+/// Maintainerr provides a REST API to auto-configure Sonarr, Radarr, Seerr,
 /// Tautulli, and Plex via POST/PUT endpoints for server settings.
 #[derive(Clone, Debug)]
 pub struct MaintainerrClient {
@@ -33,9 +33,9 @@ struct RadarrAddRequest<'a> {
     api_key: &'a str,
 }
 
-/// Request body for setting Overseerr configuration.
+/// Request body for setting Seerr configuration.
 #[derive(Serialize)]
-struct OverseerrSetRequest<'a> {
+struct SeerrSetRequest<'a> {
     url: &'a str,
     #[serde(rename = "api_key")]
     api_key: &'a str,
@@ -190,12 +190,12 @@ impl MaintainerrClient {
         Self::check_envelope_json(resp).await
     }
 
-    // ===== Overseerr Methods =====
+    // ===== Seerr Methods =====
 
-    /// Set Overseerr configuration.
-    pub async fn set_overseerr(&self, url: &str, api_key: &str) -> Result<(), ApiError> {
-        let endpoint = format!("{}/api/settings/overseerr", self.base_url);
-        let body = OverseerrSetRequest { url, api_key };
+    /// Set Seerr configuration.
+    pub async fn set_seerr(&self, url: &str, api_key: &str) -> Result<(), ApiError> {
+        let endpoint = format!("{}/api/settings/seerr", self.base_url);
+        let body = SeerrSetRequest { url, api_key };
         let resp = self
             .client
             .post(&endpoint)
@@ -622,34 +622,32 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn set_overseerr_calls_correct_endpoint() {
+    async fn set_seerr_calls_correct_endpoint() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/api/settings/overseerr"))
+            .and(path("/api/settings/seerr"))
             .respond_with(ResponseTemplate::new(200))
             .expect(1)
             .mount(&server)
             .await;
 
         let client = MaintainerrClient::new(&server.uri(), "test-key").expect("should construct");
-        let result = client
-            .set_overseerr("http://overseerr:5055", "overseerr-key")
-            .await;
+        let result = client.set_seerr("http://seerr:5055", "seerr-key").await;
 
         assert!(result.is_ok());
     }
 
     #[tokio::test]
-    async fn set_overseerr_returns_error_on_failure() {
+    async fn set_seerr_returns_error_on_failure() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/api/settings/overseerr"))
+            .and(path("/api/settings/seerr"))
             .respond_with(ResponseTemplate::new(400).set_body_string("Invalid URL"))
             .mount(&server)
             .await;
 
         let client = MaintainerrClient::new(&server.uri(), "test-key").expect("should construct");
-        let err = client.set_overseerr("invalid", "key").await.unwrap_err();
+        let err = client.set_seerr("invalid", "key").await.unwrap_err();
 
         match err {
             ApiError::ApiResponse { status, .. } => assert_eq!(status, 400),

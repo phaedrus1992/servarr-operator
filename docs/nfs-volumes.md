@@ -29,7 +29,7 @@ cluster default is used), the operator:
 | SABnzbd, Transmission | `/movies`, `/tv`, `/music`, `/movies-4k`, `/tv-4k` |
 | All other apps | — (no automatic mounts) |
 
-Mounts are injected read-write.  Apps not listed above (Prowlarr, Overseerr,
+Mounts are injected read-write.  Apps not listed above (Prowlarr, Seerr,
 Maintainerr, etc.) receive no automatic mounts; add them explicitly via
 `persistence.nfsMounts` if needed.
 
@@ -176,7 +176,7 @@ instance to a separate NFS directory on the server side:
 | `media-radarr` | `/movies` | `/nfsshare/movies` |
 | `media-radarr-4k` | `/movies` | `/nfsshare/movies-4k` |
 
-This lets Overseerr target the standard and 4K instances independently without
+This lets Seerr target the standard and 4K instances independently without
 any special per-instance Sonarr/Radarr configuration.
 
 To use different mount paths for the 4K instances, add explicit overrides via
