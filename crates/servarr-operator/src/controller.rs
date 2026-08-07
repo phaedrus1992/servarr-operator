@@ -5309,6 +5309,65 @@ mod tests {
         assert!(!is_health_poll_throttled(Some(&existing), Some(3600), &now));
     }
 
+    // Property tests for the throttle's documented invariants (see is_health_poll_throttled):
+    // if a poll is throttled, the condition is a positive "True" assertion whose
+    // lastTransitionTime is parseable, not in the future, and inside the interval window;
+    // the function never panics on arbitrary (CRD/attacker-shaped) input.
+    mod throttle_proptests {
+        use super::*;
+        use proptest::prelude::*;
+
+        proptest! {
+            #[test]
+            fn only_throttles_healthy_within_window(
+                status in proptest::sample::select(&["True", "False", "Unknown"]),
+                offset_secs in -7_200i64..=7_200i64,
+                interval in 0u32..=3_600u32,
+            ) {
+                let now = chrono::Utc::now();
+                let last = (now + chrono::Duration::seconds(offset_secs))
+                    .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+                let now_str = now.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+                let existing = Condition {
+                    condition_type: condition_types::APP_HEALTHY.to_string(),
+                    status: status.to_string(),
+                    reason: "Healthy".to_string(),
+                    message: "proptest".to_string(),
+                    last_transition_time: last,
+                };
+                let throttled = is_health_poll_throttled(Some(&existing), Some(interval), &now_str);
+                if throttled {
+                    prop_assert_eq!(status, "True", "only a positive health assertion is rate-limited");
+                    prop_assert!(interval > 0, "interval 0 must never throttle");
+                    prop_assert!(offset_secs <= 0, "future-dated timestamp must not throttle");
+                    prop_assert!(
+                        -offset_secs < i64::from(interval),
+                        "throttled condition must fall inside the interval window"
+                    );
+                }
+            }
+
+            #[test]
+            fn never_panics_on_arbitrary_input(
+                last in "\\PC*",
+                now in "\\PC*",
+                status in "\\PC*",
+                interval in 0u32..=u32::MAX,
+            ) {
+                let existing = Condition {
+                    condition_type: "AppHealthy".to_string(),
+                    status,
+                    reason: "r".to_string(),
+                    message: "m".to_string(),
+                    last_transition_time: last,
+                };
+                // Garbage status strings and timestamps must fail open, not panic.
+                let _ = is_health_poll_throttled(Some(&existing), Some(interval), &now);
+                let _ = is_health_poll_throttled(None, Some(interval), &now);
+            }
+        }
+    }
+
     #[tokio::test]
     async fn check_api_health_throttles_within_interval_seconds() {
         let mock_server = MockServer::start().await;
