@@ -633,7 +633,8 @@ pub async fn reconcile(app: Arc<ServarrApp>, ctx: Arc<Context>) -> Result<Action
         check_api_health(client, &app, transmission_access.as_ref()).await;
 
     // Admin credential sync via live API (SABnzbd, Transmission, Jellyfin, Tautulli, Seerr)
-    let admin_creds_condition = sync_admin_credentials(client, &app).await;
+    let admin_creds_condition =
+        sync_admin_credentials(client, &app, transmission_access.as_ref()).await;
     // If sync failed (app not ready yet), requeue sooner than the default 300s so
     // credentials are applied once the app becomes healthy.
     let admin_creds_pending = admin_creds_condition
@@ -975,7 +976,11 @@ async fn patch_admin_credentials_checksum(
 /// This function handles the remaining apps via their respective APIs.
 ///
 /// This is idempotent and safe to call on every reconcile cycle.
-async fn sync_admin_credentials(client: &Client, app: &ServarrApp) -> Option<Condition> {
+async fn sync_admin_credentials(
+    client: &Client,
+    app: &ServarrApp,
+    transmission_access: Option<&Result<TransmissionAccess, String>>,
+) -> Option<Condition> {
     let ns = app.namespace().unwrap_or_else(|| "default".into());
     let ns = ns.as_str();
     let ac = app.spec.admin_credentials.as_ref()?;
@@ -1073,7 +1078,7 @@ async fn sync_admin_credentials(client: &Client, app: &ServarrApp) -> Option<Con
             // auth is already enabled (e.g., by LSIO or a previous reconcile) and our
             // credentials should already be correct; confirm by fetching session info.
             info!(app = %app.name_any(), url = %base_url, "admin-credentials: syncing Transmission RPC auth");
-            match servarr_api::TransmissionClient::new(&base_url, None, None) {
+            match servarr_api::TransmissionClient::new(&base_url, None) {
                 Ok(c_no_auth) => match c_no_auth.session_set_auth(&username, &password).await {
                     Ok(()) => {
                         info!(app = %app.name_any(), "admin-credentials: Transmission session-set succeeded (auth now enabled)");
@@ -1081,10 +1086,11 @@ async fn sync_admin_credentials(client: &Client, app: &ServarrApp) -> Option<Con
                     }
                     Err(servarr_api::ApiError::ApiResponse { status: 401, .. }) => {
                         info!(app = %app.name_any(), "admin-credentials: Transmission auth already enabled, verifying credentials");
-                        match servarr_api::TransmissionClient::new(
+                        match transmission_verify_client(
+                            transmission_access,
                             &base_url,
-                            Some(&username),
-                            Some(&password),
+                            &username,
+                            &password,
                         ) {
                             Ok(c_auth) => c_auth
                                 .session_get()
@@ -1230,6 +1236,26 @@ async fn sync_admin_credentials(client: &Client, app: &ServarrApp) -> Option<Con
     })
 }
 
+/// Choose the Transmission client for `sync_admin_credentials`'s 401→verify fallback.
+/// Reuses the shared per-reconcile client when it is authenticated (credential sync and the
+/// health checks read the same adminCredentials secret, so its session-ID cache is already
+/// warm), avoiding a redundant handshake; otherwise builds a fresh authenticated client from
+/// the just-read credentials (#508).
+fn transmission_verify_client(
+    transmission_access: Option<&Result<TransmissionAccess, String>>,
+    base_url: &str,
+    username: &str,
+    password: &str,
+) -> Result<servarr_api::TransmissionClient, servarr_api::ApiError> {
+    match transmission_access {
+        Some(Ok(access)) if !access.credentials_incomplete => Ok(access.client.clone()),
+        _ => servarr_api::TransmissionClient::new(
+            base_url,
+            Some(&servarr_api::BasicCredentials::new(username, password)),
+        ),
+    }
+}
+
 /// Base URL for `app`'s in-cluster Service, honoring `spec.service`/the app-type default port.
 fn resolve_service_base_url(app: &ServarrApp, ns: &str) -> Result<String, String> {
     let app_name = servarr_resources::common::service_name(app);
@@ -1286,6 +1312,10 @@ fn transmission_health_check_enabled(app: &ServarrApp) -> bool {
 const TRANSMISSION_CLIENT_UNRESOLVED: &str =
     "Transmission client was not resolved for this reconcile";
 
+/// Default for `apiHealthCheck.intervalSeconds` when omitted — matches the documented
+/// contract "Defaults to 60" (#506).
+const DEFAULT_HEALTH_CHECK_INTERVAL_SECONDS: u32 = 60;
+
 /// Transmission client + admin-credential state resolved once per reconcile pass and shared
 /// between `check_api_health`'s Transmission arm and `check_download_client_health` — both gate
 /// on the same `apiHealthCheck.enabled` flag, so building this independently in each would mean
@@ -1318,13 +1348,64 @@ async fn resolve_transmission_access(
     // unauthenticated on the strength of an unrelated coincidence (both `None`).
     let credentials_incomplete =
         app.spec.admin_credentials.is_some() && !(tx_user.is_some() && tx_pass.is_some());
-    let tx_client =
-        servarr_api::TransmissionClient::new(base_url, tx_user.as_deref(), tx_pass.as_deref())
-            .map_err(|e| e.log_summary())?;
+    // Half-set credentials are unrepresentable: build the Basic-auth pair only when both
+    // halves are present, else degrade to an anonymous client. `credentials_incomplete`
+    // above still records the partial-read case so the destructive path can fail closed (#505).
+    let tx_credentials = match (tx_user.as_deref(), tx_pass.as_deref()) {
+        (Some(u), Some(p)) => Some(servarr_api::BasicCredentials::new(u, p)),
+        _ => None,
+    };
+    let tx_client = servarr_api::TransmissionClient::new(base_url, tx_credentials.as_ref())
+        .map_err(|e| e.log_summary())?;
     Ok(TransmissionAccess {
         client: tx_client,
         credentials_incomplete,
     })
+}
+
+/// Return the app's current status condition of `condition_type`, if any.
+fn current_condition<'a>(app: &'a ServarrApp, condition_type: &str) -> Option<&'a Condition> {
+    app.status.as_ref().and_then(|s| {
+        s.conditions
+            .iter()
+            .find(|c| c.condition_type == condition_type)
+    })
+}
+
+/// `apiHealthCheck.intervalSeconds` throttle (#506): whether the health poll for
+/// `condition_type` should be skipped because the existing condition's
+/// `lastTransitionTime` still falls inside `interval_seconds` of now.
+///
+/// Only a positive health assertion (`status == "True"`) is rate-limited. An error,
+/// `Unknown`, or `False` condition is never throttled, so recovery is re-probed on the
+/// next reconcile instead of being frozen until the interval elapses. A missing or
+/// unparseable timestamp, a future-dated timestamp, or an unset/zero interval never
+/// throttles — the poll runs.
+fn is_health_poll_throttled(
+    existing: Option<&Condition>,
+    interval_seconds: Option<u32>,
+    now: &str,
+) -> bool {
+    let interval = interval_seconds.unwrap_or(DEFAULT_HEALTH_CHECK_INTERVAL_SECONDS);
+    let Some(existing) = existing else {
+        return false;
+    };
+    if existing.status != "True" {
+        return false;
+    }
+    let (Ok(last), Ok(current)) = (
+        chrono::DateTime::parse_from_rfc3339(&existing.last_transition_time),
+        chrono::DateTime::parse_from_rfc3339(now),
+    ) else {
+        return false;
+    };
+    // Fail open on a future-dated timestamp (clock skew, hand-edit): `current < last`
+    // would otherwise throttle every poll — including at `intervalSeconds: 0` — until
+    // the future passes.
+    if current < last {
+        return false;
+    }
+    current - last < chrono::Duration::seconds(i64::from(interval))
 }
 
 pub(crate) async fn check_api_health(
@@ -1334,30 +1415,34 @@ pub(crate) async fn check_api_health(
 ) -> (Option<Condition>, Option<Condition>) {
     let ns = app.namespace().unwrap_or_else(|| "default".into());
     let ns = ns.as_str();
-    let _health_check = match app.spec.api_health_check.as_ref() {
+    let health_check = match app.spec.api_health_check.as_ref() {
         Some(hc) if hc.enabled => hc,
         _ => return (None, None),
     };
-    let secret_name = match app.spec.api_key_secret.as_deref() {
-        Some(s) => s,
-        None => return (None, None),
-    };
 
     let now = chrono_now();
-    let api_key = match servarr_api::read_secret_key(client, ns, secret_name, "api-key").await {
-        Ok(k) => k,
-        Err(e) => {
-            warn!(error = %e.log_summary(), "failed to read API key secret");
-            let cond = Condition {
-                condition_type: condition_types::APP_HEALTHY.to_string(),
-                status: "Unknown".to_string(),
-                reason: "SecretReadError".to_string(),
-                message: e.public_summary(),
-                last_transition_time: now,
-            };
-            return (Some(cond), None);
-        }
-    };
+
+    // `intervalSeconds` throttle (#506): while the existing APP_HEALTHY condition is still
+    // inside its poll window, skip the API probe entirely. The existing health AND update
+    // conditions are kept frozen, so the throttle doesn't erase the update-available signal
+    // from status between polls.
+    let existing_health = current_condition(app, condition_types::APP_HEALTHY);
+    if is_health_poll_throttled(existing_health, health_check.interval_seconds, &now) {
+        // A skip is intentional (rate-limit window), but it must be observable — otherwise a
+        // stale health status looks indistinguishable from a healthy app that's just idle.
+        debug!(
+            app = %app.name_any(),
+            condition = condition_types::APP_HEALTHY,
+            interval_seconds = health_check
+                .interval_seconds
+                .unwrap_or(DEFAULT_HEALTH_CHECK_INTERVAL_SECONDS),
+            "api health poll throttled inside intervalSeconds window; keeping existing condition"
+        );
+        return (
+            existing_health.cloned(),
+            current_condition(app, condition_types::UPDATE_AVAILABLE).cloned(),
+        );
+    }
 
     let base_url = match resolve_service_base_url(app, ns) {
         Ok(u) => u,
@@ -1380,6 +1465,14 @@ pub(crate) async fn check_api_health(
             let Some(app_kind) = app_type_to_kind(&app.spec.app) else {
                 return (None, None);
             };
+            // These arms authenticate with an API key, so apiKeySecret is still required
+            // here — unlike the Transmission/Jellyfin/Plex arms below, which depend only on
+            // apiHealthCheck.enabled (#509).
+            let api_key = match resolve_health_api_key(client, ns, app, &now).await {
+                Ok(Some(k)) => k,
+                Ok(None) => return (None, None),
+                Err(cond) => return (Some(cond), None),
+            };
             match servarr_api::ServarrClient::new(&base_url, &api_key, app_kind) {
                 Ok(c) => {
                     let h = c.is_healthy().await.map_err(|e| e.log_summary());
@@ -1389,13 +1482,22 @@ pub(crate) async fn check_api_health(
                 Err(e) => (Err(e.log_summary()), None),
             }
         }
-        AppType::Sabnzbd => match servarr_api::SabnzbdClient::new(&base_url, &api_key) {
-            Ok(c) => {
-                let h = c.is_healthy().await.map_err(|e| e.log_summary());
-                (h, None)
+        AppType::Sabnzbd => {
+            // SABnzbd also authenticates with an API key, so apiKeySecret is required here
+            // too (#509).
+            let api_key = match resolve_health_api_key(client, ns, app, &now).await {
+                Ok(Some(k)) => k,
+                Ok(None) => return (None, None),
+                Err(cond) => return (Some(cond), None),
+            };
+            match servarr_api::SabnzbdClient::new(&base_url, &api_key) {
+                Ok(c) => {
+                    let h = c.is_healthy().await.map_err(|e| e.log_summary());
+                    (h, None)
+                }
+                Err(e) => (Err(e.log_summary()), None),
             }
-            Err(e) => (Err(e.log_summary()), None),
-        },
+        }
         AppType::Transmission => match transmission_access {
             Some(Ok(access)) => {
                 let h = access
@@ -1448,6 +1550,42 @@ pub(crate) async fn check_api_health(
     };
 
     (Some(health_cond), update_cond)
+}
+
+/// Resolve the API key for the health-check arms that authenticate with one (Sonarr/Radarr/
+/// Lidarr/Prowlarr/Sabnzbd). Returns `Ok(Some(key))` on success, `Ok(None)` when no
+/// apiKeySecret is configured (caller reports no health condition, preserving the pre-#509
+/// behavior for these app types), or `Err(cond)` when the Secret read failed (caller reports
+/// an Unknown APP_HEALTHY condition).
+async fn resolve_health_api_key(
+    client: &Client,
+    ns: &str,
+    app: &ServarrApp,
+    now: &str,
+) -> Result<Option<String>, Condition> {
+    let Some(secret_name) = app.spec.api_key_secret.as_deref() else {
+        // Reachable only when apiHealthCheck.enabled is set (check_api_health gates on it),
+        // so the probe is silently skipped due to a config gap. Surface it: an enabled health
+        // check that can never authenticate is a misconfiguration, not an idle app.
+        warn!(
+            app = %app.name_any(),
+            "apiHealthCheck is enabled but apiKeySecret is unset; skipping the API health probe"
+        );
+        return Ok(None);
+    };
+    match servarr_api::read_secret_key(client, ns, secret_name, "api-key").await {
+        Ok(k) => Ok(Some(k)),
+        Err(e) => {
+            warn!(error = %e.log_summary(), "failed to read API key secret");
+            Err(Condition {
+                condition_type: condition_types::APP_HEALTHY.to_string(),
+                status: "Unknown".to_string(),
+                reason: "SecretReadError".to_string(),
+                message: e.public_summary(),
+                last_transition_time: now.to_string(),
+            })
+        }
+    }
 }
 
 async fn check_update_available(
@@ -1559,11 +1697,34 @@ async fn check_download_client_health(
     if app.spec.app != AppType::Transmission {
         return None;
     }
-    let auto_remove = match app.spec.api_health_check.as_ref() {
-        Some(hc) if hc.enabled => hc.auto_remove_orphaned_torrents,
+    let health_check = match app.spec.api_health_check.as_ref() {
+        Some(hc) if hc.enabled => hc,
         _ => return None,
     };
     let now = chrono_now();
+
+    // `intervalSeconds` throttle (#506): while the existing DOWNLOAD_DATA_HEALTHY condition
+    // is still inside its poll window, skip the self-heal pass entirely. This is the fix the
+    // throttle primarily exists for — a user setting `intervalSeconds: 3600` next to
+    // `autoRemoveOrphanedTorrents: true` expects the destructive torrent-remove check at most
+    // hourly, not on every reconcile.
+    let existing_download = current_condition(app, condition_types::DOWNLOAD_DATA_HEALTHY);
+    if is_health_poll_throttled(existing_download, health_check.interval_seconds, &now) {
+        // A skip is intentional (rate-limit window), but it must be observable — otherwise the
+        // self-heal pass pausing (including destructive torrent-remove checks) looks like a
+        // hang. This branch returns before the access match, so a broken client/credential
+        // surfaced here would otherwise be invisible until the window elapses.
+        debug!(
+            app = %app.name_any(),
+            condition = condition_types::DOWNLOAD_DATA_HEALTHY,
+            interval_seconds = health_check
+                .interval_seconds
+                .unwrap_or(DEFAULT_HEALTH_CHECK_INTERVAL_SECONDS),
+            "download client health poll throttled inside intervalSeconds window; keeping existing condition"
+        );
+        return existing_download.cloned();
+    }
+    let auto_remove = health_check.auto_remove_orphaned_torrents;
 
     let access = match transmission_access {
         Some(Ok(a)) => a,
@@ -4284,7 +4445,7 @@ fn json_is_subset(desired: &serde_json::Value, actual: &serde_json::Value) -> bo
 mod tests {
     use super::*;
     use serde_json::json;
-    use wiremock::matchers::{body_json, body_partial_json, method, path};
+    use wiremock::matchers::{body_json, body_partial_json, header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     // ---- Error::log_summary ----
@@ -4460,7 +4621,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let client = servarr_api::TransmissionClient::new(&mock_server.uri(), None, None).unwrap();
+        let client = servarr_api::TransmissionClient::new(&mock_server.uri(), None).unwrap();
         let settled = poll_until_settled(&client, &["hash-1"]).await;
         assert_eq!(settled.len(), 1);
         assert_eq!(settled[0].status, 0);
@@ -4480,7 +4641,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let client = servarr_api::TransmissionClient::new(&mock_server.uri(), None, None).unwrap();
+        let client = servarr_api::TransmissionClient::new(&mock_server.uri(), None).unwrap();
         let settled = poll_until_settled(&client, &["hash-1"]).await;
         assert!(
             settled.is_empty(),
@@ -4532,7 +4693,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let client = servarr_api::TransmissionClient::new(&mock_server.uri(), None, None).unwrap();
+        let client = servarr_api::TransmissionClient::new(&mock_server.uri(), None).unwrap();
         let stale = vec![torrent(1, 3, "no data found")];
         let outcome = remediate_stale_torrents(&client, &stale, true).await;
 
@@ -4580,7 +4741,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let client = servarr_api::TransmissionClient::new(&mock_server.uri(), None, None).unwrap();
+        let client = servarr_api::TransmissionClient::new(&mock_server.uri(), None).unwrap();
         let stale = vec![torrent(1, 3, "no data found")];
         let outcome = remediate_stale_torrents(&client, &stale, false).await;
 
@@ -4628,7 +4789,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let client = servarr_api::TransmissionClient::new(&mock_server.uri(), None, None).unwrap();
+        let client = servarr_api::TransmissionClient::new(&mock_server.uri(), None).unwrap();
         let stale = vec![torrent(1, 3, "no data found")];
         let outcome = remediate_stale_torrents(&client, &stale, true).await;
 
@@ -4655,7 +4816,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let client = servarr_api::TransmissionClient::new(&mock_server.uri(), None, None).unwrap();
+        let client = servarr_api::TransmissionClient::new(&mock_server.uri(), None).unwrap();
         let mut t = torrent(1, 3, "no data found");
         t.status = 2; // already verifying
         let outcome = remediate_stale_torrents(&client, &[t], true).await;
@@ -4911,6 +5072,658 @@ mod tests {
             Some("NoStaleData".to_string()),
             "expected the shared client's torrent-get to succeed with no stale torrents"
         );
+    }
+
+    // ---- check_api_health: apiKeySecret is only required by the arms that use it (#509) ----
+
+    #[tokio::test]
+    async fn transmission_health_check_without_api_key_secret_reports_healthy() {
+        let mock_server = MockServer::start().await;
+        let client = build_mock_client(&mock_server.uri()).await;
+        mount_event_post_mock(&mock_server).await;
+
+        // adminCredentials secret — lets resolve_transmission_access build an authenticated
+        // client. Deliberately no apiKeySecret: the Transmission arm must depend only on
+        // apiHealthCheck.enabled (#509).
+        mount_secret_mock(
+            &mock_server,
+            "test",
+            "tx-admin-creds",
+            json!({"username": "YWRtaW4=", "password": "c2VjcmV0"}),
+        )
+        .await;
+        Mock::given(method("POST"))
+            .and(path("/transmission/rpc"))
+            .and(body_partial_json(
+                serde_json::json!({"method": "session-get"}),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "result": "success",
+                "arguments": {"version": "4.0.0"}
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let mut app = make_test_app("my-transmission", "test", AppType::Transmission);
+        app.spec.api_health_check = Some(servarr_crds::ApiHealthCheckSpec {
+            enabled: true,
+            interval_seconds: None,
+            auto_remove_orphaned_torrents: false,
+        });
+        app.spec.admin_credentials = Some(servarr_crds::AdminCredentialsSpec {
+            secret_name: "tx-admin-creds".into(),
+        });
+        // No api_key_secret set.
+
+        let access = resolve_transmission_access(&client, &app, "test", &mock_server.uri()).await;
+        assert!(access.is_ok(), "expected access to resolve, got {access:?}");
+
+        let (health_cond, _update_cond) = check_api_health(&client, &app, Some(&access)).await;
+        assert_eq!(
+            health_cond.map(|c| c.status),
+            Some("True".to_string()),
+            "Transmission must get an APP_HEALTHY condition without apiKeySecret (#509)"
+        );
+    }
+
+    #[tokio::test]
+    async fn servarr_health_check_without_api_key_secret_reports_nothing() {
+        let mock_server = MockServer::start().await;
+        let client = build_mock_client(&mock_server.uri()).await;
+
+        let mut app = make_test_app("my-sonarr", "test", AppType::Sonarr);
+        app.spec.api_health_check = Some(servarr_crds::ApiHealthCheckSpec {
+            enabled: true,
+            interval_seconds: None,
+            auto_remove_orphaned_torrents: false,
+        });
+        // No api_key_secret set.
+
+        let (health_cond, _update_cond) = check_api_health(&client, &app, None).await;
+        assert_eq!(
+            health_cond.map(|c| c.status),
+            None,
+            "Sonarr still requires apiKeySecret for a health condition (#509 preserves this)"
+        );
+    }
+
+    // ---- transmission_verify_client reuses the shared client (#508) ----
+
+    #[tokio::test]
+    async fn transmission_verify_client_reuses_shared_client() {
+        let mock_server = MockServer::start().await;
+        let client = build_mock_client(&mock_server.uri()).await;
+
+        mount_secret_mock(
+            &mock_server,
+            "test",
+            "tx-admin-creds",
+            json!({"username": "YWRtaW4=", "password": "c2VjcmV0"}),
+        )
+        .await;
+        // The session-ID handshake fires exactly once, when the shared client is primed. If
+        // the verify client were built fresh, it would handshake a second time and this
+        // `.expect(1)` would fail when the mock server is checked on drop (#508).
+        Mock::given(method("POST"))
+            .and(path("/transmission/rpc"))
+            .respond_with(
+                ResponseTemplate::new(409)
+                    .append_header("X-Transmission-Session-Id", "sess-shared"),
+            )
+            .up_to_n_times(1)
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+        // session-get only succeeds when it echoes the shared client's cached session ID — a
+        // fresh client would send no header and fail to match, so this proves the verify path
+        // returned the shared client (#508).
+        Mock::given(method("POST"))
+            .and(path("/transmission/rpc"))
+            .and(body_partial_json(
+                serde_json::json!({"method": "session-get"}),
+            ))
+            .and(header("X-Transmission-Session-Id", "sess-shared"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "result": "success",
+                "arguments": {"version": "4.0.0"}
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let mut app = make_test_app("my-transmission", "test", AppType::Transmission);
+        app.spec.admin_credentials = Some(servarr_crds::AdminCredentialsSpec {
+            secret_name: "tx-admin-creds".into(),
+        });
+
+        let access = resolve_transmission_access(&client, &app, "test", &mock_server.uri()).await;
+        assert!(access.is_ok(), "expected access to resolve, got {access:?}");
+
+        // Prime the shared client's session-ID cache (handshake #1).
+        access.as_ref().unwrap().client.session_get().await.unwrap();
+
+        // The verify client must be the shared client: its session_get reuses the cached
+        // header and succeeds without a second handshake.
+        let verify =
+            transmission_verify_client(Some(&access), &mock_server.uri(), "admin", "secret")
+                .unwrap();
+        verify.session_get().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn transmission_verify_client_builds_fresh_when_access_unusable() {
+        // None, Some(Err(_)), and a credentials_incomplete access all fall through to the
+        // fresh-build arm. Each must yield a client that authenticates with the *argument*
+        // creds (user:pass), not whatever the shared access carried — that is the property
+        // that distinguishes a fresh build from a reuse (#508).
+        let mock_server = MockServer::start().await;
+
+        // session-get only succeeds when the request carries both the handshake's session ID
+        // and the fresh-build creds; a reused shared client (different Authorization header)
+        // or an unprimed fresh client would fail to match.
+        Mock::given(method("POST"))
+            .and(path("/transmission/rpc"))
+            .and(body_partial_json(
+                serde_json::json!({"method": "session-get"}),
+            ))
+            .and(header("X-Transmission-Session-Id", "sess-fresh"))
+            .and(header("Authorization", "Basic dXNlcjpwYXNz"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "result": "success",
+                "arguments": {"version": "4.0.0"}
+            })))
+            .mount(&mock_server)
+            .await;
+        // One handshake per fresh client built below (3 total); the session-get mock above is
+        // mounted first and its header constraints route the retries there, not here.
+        Mock::given(method("POST"))
+            .and(path("/transmission/rpc"))
+            .respond_with(
+                ResponseTemplate::new(409).append_header("X-Transmission-Session-Id", "sess-fresh"),
+            )
+            .up_to_n_times(3)
+            .mount(&mock_server)
+            .await;
+
+        // None -> fresh build.
+        let none_client =
+            transmission_verify_client(None, &mock_server.uri(), "user", "pass").unwrap();
+        none_client.session_get().await.unwrap();
+
+        // Some(Err(_)) -> fresh build.
+        let broken_access: Result<TransmissionAccess, String> = Err("kube: broken".to_string());
+        let err_client =
+            transmission_verify_client(Some(&broken_access), &mock_server.uri(), "user", "pass")
+                .unwrap();
+        err_client.session_get().await.unwrap();
+
+        // credentials_incomplete -> fresh build (never a reuse of the unauthenticated shared
+        // client, which must stay untrusted on the health path).
+        let incomplete = TransmissionAccess {
+            client: servarr_api::TransmissionClient::new(&mock_server.uri(), None).unwrap(),
+            credentials_incomplete: true,
+        };
+        let incomplete_client =
+            transmission_verify_client(Some(&Ok(incomplete)), &mock_server.uri(), "user", "pass")
+                .unwrap();
+        incomplete_client.session_get().await.unwrap();
+    }
+
+    // ---- apiHealthCheck.intervalSeconds throttle (#506) ----
+
+    #[test]
+    fn is_health_poll_throttled_within_interval() {
+        let now = chrono_now();
+        let recent = (chrono::Utc::now() - chrono::Duration::seconds(30))
+            .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        let existing = Condition {
+            condition_type: condition_types::APP_HEALTHY.to_string(),
+            status: "True".to_string(),
+            reason: "Healthy".to_string(),
+            message: "API responded healthy".to_string(),
+            last_transition_time: recent,
+        };
+        assert!(is_health_poll_throttled(Some(&existing), Some(60), &now));
+    }
+
+    #[test]
+    fn is_health_poll_throttled_outside_interval() {
+        let now = chrono_now();
+        let stale = (chrono::Utc::now() - chrono::Duration::seconds(120))
+            .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        let existing = Condition {
+            condition_type: condition_types::APP_HEALTHY.to_string(),
+            status: "True".to_string(),
+            reason: "Healthy".to_string(),
+            message: "API responded healthy".to_string(),
+            last_transition_time: stale,
+        };
+        assert!(!is_health_poll_throttled(Some(&existing), Some(60), &now));
+    }
+
+    #[test]
+    fn is_health_poll_throttled_defaults_to_60_seconds_when_omitted() {
+        let now = chrono_now();
+        let within_default = (chrono::Utc::now() - chrono::Duration::seconds(30))
+            .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        let existing = Condition {
+            condition_type: condition_types::APP_HEALTHY.to_string(),
+            status: "True".to_string(),
+            reason: "Healthy".to_string(),
+            message: "API responded healthy".to_string(),
+            last_transition_time: within_default,
+        };
+        // interval omitted → default 60s window, so a 30s-old condition is still throttled.
+        assert!(is_health_poll_throttled(Some(&existing), None, &now));
+    }
+
+    #[test]
+    fn is_health_poll_throttled_never_throttles_without_existing_or_bad_timestamp() {
+        let now = chrono_now();
+        assert!(!is_health_poll_throttled(None, Some(60), &now));
+
+        let bad = Condition {
+            condition_type: condition_types::APP_HEALTHY.to_string(),
+            status: "True".to_string(),
+            reason: "Healthy".to_string(),
+            message: "API responded healthy".to_string(),
+            last_transition_time: "not-a-timestamp".to_string(),
+        };
+        assert!(!is_health_poll_throttled(Some(&bad), Some(60), &now));
+
+        // intervalSeconds: 0 means "poll on every reconcile" — never throttled.
+        let zero = Condition {
+            condition_type: condition_types::APP_HEALTHY.to_string(),
+            status: "True".to_string(),
+            reason: "Healthy".to_string(),
+            message: "API responded healthy".to_string(),
+            last_transition_time: now.clone(),
+        };
+        assert!(!is_health_poll_throttled(Some(&zero), Some(0), &now));
+    }
+
+    #[test]
+    fn is_health_poll_throttled_does_not_freeze_non_true_conditions() {
+        let now = chrono_now();
+        let recent = (chrono::Utc::now() - chrono::Duration::seconds(30))
+            .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+
+        // A "False" condition (MissingDataDetected, credential-read error) must never be
+        // frozen: re-poll on the next reconcile so recovery is detected promptly instead
+        // of waiting out the interval.
+        let false_cond = Condition {
+            condition_type: condition_types::DOWNLOAD_DATA_HEALTHY.to_string(),
+            status: "False".to_string(),
+            reason: "MissingDataDetected".to_string(),
+            message: "stale torrents still missing".to_string(),
+            last_transition_time: recent.clone(),
+        };
+        assert!(!is_health_poll_throttled(
+            Some(&false_cond),
+            Some(3600),
+            &now
+        ));
+
+        // Same for "Unknown" — never a positive assertion, never rate-limited.
+        let unknown_cond = Condition {
+            condition_type: condition_types::APP_HEALTHY.to_string(),
+            status: "Unknown".to_string(),
+            reason: "ClientBuildError".to_string(),
+            message: "could not reach the API".to_string(),
+            last_transition_time: recent,
+        };
+        assert!(!is_health_poll_throttled(
+            Some(&unknown_cond),
+            Some(3600),
+            &now
+        ));
+    }
+
+    #[test]
+    fn is_health_poll_throttled_fails_open_on_future_timestamp() {
+        let now = chrono_now();
+        let future = (chrono::Utc::now() + chrono::Duration::hours(2))
+            .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        let existing = Condition {
+            condition_type: condition_types::APP_HEALTHY.to_string(),
+            status: "True".to_string(),
+            reason: "Healthy".to_string(),
+            message: "API responded healthy".to_string(),
+            last_transition_time: future,
+        };
+        // A future-dated lastTransitionTime (clock skew, hand-edit) must not freeze the
+        // poll — not even at intervalSeconds: 0, where `current < last` would otherwise
+        // throttle on every reconcile until the future passes.
+        assert!(!is_health_poll_throttled(Some(&existing), Some(0), &now));
+        assert!(!is_health_poll_throttled(Some(&existing), Some(3600), &now));
+    }
+
+    // Property tests for the throttle's documented invariants (see is_health_poll_throttled):
+    // if a poll is throttled, the condition is a positive "True" assertion whose
+    // lastTransitionTime is parseable, not in the future, and inside the interval window;
+    // the function never panics on arbitrary (CRD/attacker-shaped) input.
+    mod throttle_proptests {
+        use super::*;
+        use proptest::prelude::*;
+
+        proptest! {
+            #[test]
+            fn only_throttles_healthy_within_window(
+                status in proptest::sample::select(&["True", "False", "Unknown"]),
+                offset_secs in -7_200i64..=7_200i64,
+                interval in 0u32..=3_600u32,
+            ) {
+                let now = chrono::Utc::now();
+                let last = (now + chrono::Duration::seconds(offset_secs))
+                    .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+                let now_str = now.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+                let existing = Condition {
+                    condition_type: condition_types::APP_HEALTHY.to_string(),
+                    status: status.to_string(),
+                    reason: "Healthy".to_string(),
+                    message: "proptest".to_string(),
+                    last_transition_time: last,
+                };
+                let throttled = is_health_poll_throttled(Some(&existing), Some(interval), &now_str);
+                if throttled {
+                    prop_assert_eq!(status, "True", "only a positive health assertion is rate-limited");
+                    prop_assert!(interval > 0, "interval 0 must never throttle");
+                    prop_assert!(offset_secs <= 0, "future-dated timestamp must not throttle");
+                    prop_assert!(
+                        -offset_secs < i64::from(interval),
+                        "throttled condition must fall inside the interval window"
+                    );
+                }
+            }
+
+            #[test]
+            fn never_panics_on_arbitrary_input(
+                last in "\\PC*",
+                now in "\\PC*",
+                status in "\\PC*",
+                interval in 0u32..=u32::MAX,
+            ) {
+                let existing = Condition {
+                    condition_type: "AppHealthy".to_string(),
+                    status,
+                    reason: "r".to_string(),
+                    message: "m".to_string(),
+                    last_transition_time: last,
+                };
+                // Garbage status strings and timestamps must fail open, not panic.
+                let _ = is_health_poll_throttled(Some(&existing), Some(interval), &now);
+                let _ = is_health_poll_throttled(None, Some(interval), &now);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn check_api_health_throttles_within_interval_seconds() {
+        let mock_server = MockServer::start().await;
+        let client = build_mock_client(&mock_server.uri()).await;
+
+        mount_secret_mock(
+            &mock_server,
+            "test",
+            "tx-admin-creds",
+            json!({"username": "YWRtaW4=", "password": "c2VjcmV0"}),
+        )
+        .await;
+        // If the throttle is broken, the health probe would hit session-get — the
+        // `.expect(0)` fails the mock server verify and catches the regression.
+        Mock::given(method("POST"))
+            .and(path("/transmission/rpc"))
+            .and(body_partial_json(
+                serde_json::json!({"method": "session-get"}),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "result": "success",
+                "arguments": {"version": "4.0.0"}
+            })))
+            .expect(0)
+            .mount(&mock_server)
+            .await;
+
+        let mut app = make_test_app("my-transmission", "test", AppType::Transmission);
+        app.spec.api_health_check = Some(servarr_crds::ApiHealthCheckSpec {
+            enabled: true,
+            interval_seconds: Some(3600),
+            auto_remove_orphaned_torrents: false,
+        });
+        app.spec.admin_credentials = Some(servarr_crds::AdminCredentialsSpec {
+            secret_name: "tx-admin-creds".into(),
+        });
+
+        // Existing APP_HEALTHY condition from a poll moments ago — still inside the 3600s
+        // window, so the probe must be skipped and the condition reused unchanged.
+        let recent = chrono_now();
+        app.status = Some(ServarrAppStatus {
+            ready: true,
+            ready_replicas: 1,
+            observed_generation: 1,
+            conditions: vec![Condition {
+                condition_type: condition_types::APP_HEALTHY.to_string(),
+                status: "True".to_string(),
+                reason: "Healthy".to_string(),
+                message: "API responded healthy".to_string(),
+                last_transition_time: recent.clone(),
+            }],
+            backup_status: None,
+        });
+
+        let access = resolve_transmission_access(&client, &app, "test", &mock_server.uri()).await;
+        assert!(access.is_ok(), "expected access to resolve, got {access:?}");
+
+        let (health_cond, update_cond) = check_api_health(&client, &app, Some(&access)).await;
+        assert_eq!(
+            health_cond.map(|c| c.last_transition_time),
+            Some(recent),
+            "throttled poll must reuse the existing APP_HEALTHY condition unchanged"
+        );
+        assert!(
+            update_cond.is_none(),
+            "no existing update condition to preserve, so none is reported"
+        );
+        mock_server.verify().await;
+    }
+
+    #[tokio::test]
+    async fn check_api_health_polls_when_interval_elapsed() {
+        let mock_server = MockServer::start().await;
+        let client = build_mock_client(&mock_server.uri()).await;
+
+        mount_secret_mock(
+            &mock_server,
+            "test",
+            "tx-admin-creds",
+            json!({"username": "YWRtaW4=", "password": "c2VjcmV0"}),
+        )
+        .await;
+        Mock::given(method("POST"))
+            .and(path("/transmission/rpc"))
+            .and(body_partial_json(
+                serde_json::json!({"method": "session-get"}),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "result": "success",
+                "arguments": {"version": "4.0.0"}
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let mut app = make_test_app("my-transmission", "test", AppType::Transmission);
+        app.spec.api_health_check = Some(servarr_crds::ApiHealthCheckSpec {
+            enabled: true,
+            interval_seconds: Some(3600),
+            auto_remove_orphaned_torrents: false,
+        });
+        app.spec.admin_credentials = Some(servarr_crds::AdminCredentialsSpec {
+            secret_name: "tx-admin-creds".into(),
+        });
+
+        // Existing condition from 2 hours ago — outside the 3600s window, so the poll runs.
+        let stale = (chrono::Utc::now() - chrono::Duration::hours(2))
+            .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        app.status = Some(ServarrAppStatus {
+            ready: true,
+            ready_replicas: 1,
+            observed_generation: 1,
+            conditions: vec![Condition {
+                condition_type: condition_types::APP_HEALTHY.to_string(),
+                status: "True".to_string(),
+                reason: "Healthy".to_string(),
+                message: "API responded healthy".to_string(),
+                last_transition_time: stale.clone(),
+            }],
+            backup_status: None,
+        });
+
+        let access = resolve_transmission_access(&client, &app, "test", &mock_server.uri()).await;
+        assert!(access.is_ok(), "expected access to resolve, got {access:?}");
+
+        let (health_cond, _update_cond) = check_api_health(&client, &app, Some(&access)).await;
+        let health = health_cond.expect("elapsed interval must re-run the health poll");
+        assert_eq!(health.status, "True");
+        assert_ne!(
+            health.last_transition_time, stale,
+            "poll must produce a fresh condition, not reuse the stale one"
+        );
+        mock_server.verify().await;
+    }
+
+    #[tokio::test]
+    async fn check_download_client_health_throttles_within_interval_seconds() {
+        let mock_server = MockServer::start().await;
+        let client = build_mock_client(&mock_server.uri()).await;
+
+        mount_secret_mock(
+            &mock_server,
+            "test",
+            "tx-admin-creds",
+            json!({"username": "YWRtaW4=", "password": "c2VjcmV0"}),
+        )
+        .await;
+        // If the throttle is broken, the destructive self-heal would run torrent-get — the
+        // `.expect(0)` fails the mock server verify and catches the regression.
+        Mock::given(method("POST"))
+            .and(path("/transmission/rpc"))
+            .and(body_partial_json(
+                serde_json::json!({"method": "torrent-get"}),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "result": "success",
+                "arguments": {"torrents": []}
+            })))
+            .expect(0)
+            .mount(&mock_server)
+            .await;
+
+        let mut app = make_test_app("my-transmission", "test", AppType::Transmission);
+        app.spec.api_health_check = Some(servarr_crds::ApiHealthCheckSpec {
+            enabled: true,
+            interval_seconds: Some(3600),
+            auto_remove_orphaned_torrents: true, // the destructive opt-in must be throttled too
+        });
+        app.spec.admin_credentials = Some(servarr_crds::AdminCredentialsSpec {
+            secret_name: "tx-admin-creds".into(),
+        });
+
+        let recent = chrono_now();
+        app.status = Some(ServarrAppStatus {
+            ready: true,
+            ready_replicas: 1,
+            observed_generation: 1,
+            conditions: vec![Condition {
+                condition_type: condition_types::DOWNLOAD_DATA_HEALTHY.to_string(),
+                status: "True".to_string(),
+                reason: "NoStaleData".to_string(),
+                message: "No torrents reporting missing data".to_string(),
+                last_transition_time: recent.clone(),
+            }],
+            backup_status: None,
+        });
+
+        let recorder = Recorder::new(client.clone(), "test".into());
+        let obj_ref = app.object_ref(&());
+
+        // transmission_access is deliberately None here — the throttle must skip the pass
+        // before it is ever consulted.
+        let cond = check_download_client_health(&app, &recorder, &obj_ref, None).await;
+        assert_eq!(
+            cond.map(|c| c.last_transition_time),
+            Some(recent),
+            "throttled self-heal must reuse the existing DOWNLOAD_DATA_HEALTHY condition unchanged"
+        );
+        mock_server.verify().await;
+    }
+
+    #[tokio::test]
+    async fn check_download_client_health_polls_when_interval_elapsed() {
+        let mock_server = MockServer::start().await;
+        let client = build_mock_client(&mock_server.uri()).await;
+
+        mount_secret_mock(
+            &mock_server,
+            "test",
+            "tx-admin-creds",
+            json!({"username": "YWRtaW4=", "password": "c2VjcmV0"}),
+        )
+        .await;
+        Mock::given(method("POST"))
+            .and(path("/transmission/rpc"))
+            .and(body_partial_json(
+                serde_json::json!({"method": "torrent-get"}),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "result": "success",
+                "arguments": {"torrents": []}
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let mut app = make_test_app("my-transmission", "test", AppType::Transmission);
+        app.spec.api_health_check = Some(servarr_crds::ApiHealthCheckSpec {
+            enabled: true,
+            interval_seconds: Some(3600),
+            auto_remove_orphaned_torrents: true,
+        });
+        app.spec.admin_credentials = Some(servarr_crds::AdminCredentialsSpec {
+            secret_name: "tx-admin-creds".into(),
+        });
+
+        // Existing condition from 2 hours ago — outside the 3600s window, so the pass runs.
+        let stale = (chrono::Utc::now() - chrono::Duration::hours(2))
+            .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        app.status = Some(ServarrAppStatus {
+            ready: true,
+            ready_replicas: 1,
+            observed_generation: 1,
+            conditions: vec![Condition {
+                condition_type: condition_types::DOWNLOAD_DATA_HEALTHY.to_string(),
+                status: "True".to_string(),
+                reason: "NoStaleData".to_string(),
+                message: "No torrents reporting missing data".to_string(),
+                last_transition_time: stale.clone(),
+            }],
+            backup_status: None,
+        });
+
+        let recorder = Recorder::new(client.clone(), "test".into());
+        let obj_ref = app.object_ref(&());
+
+        let access = resolve_transmission_access(&client, &app, "test", &mock_server.uri()).await;
+        assert!(access.is_ok(), "expected access to resolve, got {access:?}");
+
+        let cond = check_download_client_health(&app, &recorder, &obj_ref, Some(&access)).await;
+        let cond = cond.expect("elapsed interval must re-run the self-heal pass");
+        assert_eq!(cond.status, "True");
+        assert_eq!(cond.reason, "NoStaleData");
+        assert_ne!(
+            cond.last_transition_time, stale,
+            "self-heal must produce a fresh condition, not reuse the stale one"
+        );
+        mock_server.verify().await;
     }
 
     // ---- json_is_subset ----

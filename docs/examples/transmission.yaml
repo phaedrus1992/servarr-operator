@@ -48,3 +48,29 @@ spec:
         ratio-limit-enabled: true
         ratio-limit: 2.0
         download-queue-size: 10
+---
+# Transmission with API health checking and torrent self-heal
+#
+# apiHealthCheck: probes the Transmission RPC API. No apiKeySecret is required --
+#                 auth comes from adminCredentials. enabled: true also turns on
+#                 detection of torrents whose on-disk data has gone missing;
+#                 autoRemoveOrphanedTorrents: true additionally removes a torrent's
+#                 bookkeeping entry once verify confirms the data is gone (on-disk
+#                 files are never deleted). See docs/configuration.md.
+apiVersion: servarr.dev/v1alpha1
+kind: ServarrApp
+metadata:
+  name: transmission
+spec:
+  app: Transmission
+  persistence:
+    volumes:
+      - name: downloads
+        mountPath: /downloads
+        size: 100Gi
+  adminCredentials:
+    secretName: transmission-credentials
+  apiHealthCheck:
+    enabled: true
+    intervalSeconds: 60
+    autoRemoveOrphanedTorrents: true

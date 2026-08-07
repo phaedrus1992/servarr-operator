@@ -714,13 +714,15 @@ spec:
 
 **Type:** `ApiHealthCheckSpec` -- **Optional**
 
-Enables API-level health checking that hits the application's API endpoint (rather than just an HTTP probe). Requires `apiKeySecret` to be set.
+Enables API-level health checking that hits the application's API endpoint (rather than just an HTTP probe). Authentication depends on the app type: Servarr-family apps and SABnzbd require `apiKeySecret` (the probe authenticates with the API key); Transmission uses `adminCredentials` if configured -- no `apiKeySecret` needed; Jellyfin and Plex are probed anonymously. When an app needs an API key but none is set, the probe is skipped with a warning rather than failing the app.
 
 | Sub-field | Type | Default |
 |---|---|---|
 | `enabled` | `bool` | `false` |
 | `intervalSeconds` | `uint32` | `60` (when omitted) |
 | `autoRemoveOrphanedTorrents` | `bool` | `false` |
+
+`intervalSeconds` limits how often a healthy app is re-polled: once a health condition is `True`, further probes are skipped until the interval elapses. Error, `Unknown`, and `False` conditions are re-polled immediately (not throttled), so a failure surfaces right away instead of waiting out the window. Set `intervalSeconds` to `0` to probe on every reconcile.
 
 ```yaml
 spec:
