@@ -166,6 +166,7 @@ kubectl get pods
 ## Documentation
 
 - [Installation](docs/installation.md) -- prerequisites, Helm values, upgrade, and uninstall
+- [Upgrading from 1.2.x to 1.3.x](docs/upgrade-1.3.md) -- version-specific migration steps
 - [Configuration](docs/configuration.md) -- full CRD field reference
 - [Examples](docs/examples.md) -- working YAML for every app type
 - [Networking](docs/networking.md) -- services, Gateway API, TLS, and NetworkPolicy
