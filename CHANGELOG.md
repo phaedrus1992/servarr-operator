@@ -47,6 +47,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   secret and builds the Transmission RPC client once per reconcile instead of once per health
   check, halving Secret reads and session-ID handshakes for Transmission apps with both the
   general API health check and the download-client self-heal check enabled (#499).
+- Enforce `apiHealthCheck.intervalSeconds`, which was documented but never read: a healthy
+  (`True`) health condition is re-polled only after the interval elapses, while error, `Unknown`,
+  and `False` conditions re-poll immediately and `intervalSeconds: 0` probes on every reconcile
+  (#506).
+- Drop the unused `apiKeySecret` requirement from the Transmission API health check: the probe
+  now authenticates with `adminCredentials` when configured, so `app: Transmission` CRs no longer
+  need an `apiKeySecret` just to enable health checking or the download-data self-heal (#509).
 
 ### Security
 
@@ -85,6 +92,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Fix half-set Transmission credentials silently producing an unauthenticated client:
+  `TransmissionClient::new` now errors when only one of username/password is present, and the
+  health-check path reuses the resolved adminCredentials client instead of falling back to a
+  partially authenticated one on the destructive download-health pass (#505, #508).
 - Fix status conditions always reporting HTTP status 0 for Sonarr/Radarr/Lidarr/Prowlarr/
   Overseerr API errors instead of the real upstream status (#406).
 - Fix ~60 call sites across the controller writing raw Kubernetes API errors, secret-read
