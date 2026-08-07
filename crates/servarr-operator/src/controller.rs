@@ -1564,6 +1564,13 @@ async fn resolve_health_api_key(
     now: &str,
 ) -> Result<Option<String>, Option<Condition>> {
     let Some(secret_name) = app.spec.api_key_secret.as_deref() else {
+        // Reachable only when apiHealthCheck.enabled is set (check_api_health gates on it),
+        // so the probe is silently skipped due to a config gap. Surface it: an enabled health
+        // check that can never authenticate is a misconfiguration, not an idle app.
+        warn!(
+            app = %app.name_any(),
+            "apiHealthCheck is enabled but apiKeySecret is unset; skipping the API health probe"
+        );
         return Ok(None);
     };
     match servarr_api::read_secret_key(client, ns, secret_name, "api-key").await {
