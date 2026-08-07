@@ -35,7 +35,7 @@ spec:
         mountPath: /downloads
         size: 100Gi
   appConfig:
-    Transmission:
+    transmission:
       auth:
         secretName: transmission-credentials
       peerPort:

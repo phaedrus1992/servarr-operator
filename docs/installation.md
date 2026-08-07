@@ -251,7 +251,7 @@ Default container images for each managed application. These are used when a
 | radarr | `linuxserver/radarr` | `6.0.4` |
 | lidarr | `linuxserver/lidarr` | `2.9.6` |
 | tautulli | `linuxserver/tautulli` | `2.16.0` |
-| overseerr | `linuxserver/overseerr` | `1.34.0` |
+| seerr | `ghcr.io/seerr-team/seerr` | `v3.4.1` |
 | maintainerr | `ghcr.io/jorenn92/maintainerr` | `2.19.0` |
 | prowlarr | `linuxserver/prowlarr` | `2.3.0` |
 | jackett | `linuxserver/jackett` | `0.24.988` |

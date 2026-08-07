@@ -20,6 +20,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Update default Overseerr image `linuxserver/overseerr:1.35.0` -> `ghcr.io/seerr-team/seerr:v3.4.1`
+  (repository moved). Overseerr is unmaintained (upstream archived 2026-02-15); its team merged
+  with Jellyseerr to form **Seerr**, the actively maintained successor. `AppType::Overseerr` is
+  renamed to `AppType::Seerr` — existing `ServarrApp`/`MediaStack` CRs spelled `app: Overseerr` (or
+  `overseerrSync`) keep reconciling via a backward-compat alias, but a fresh `kubectl apply` of an
+  old manifest still spelled that way will be rejected: the generated CRD schema's `enum` list only
+  includes `Seerr`, since `schemars` doesn't propagate serde aliases into the schema it emits.
+  Update `app: Overseerr` to `app: Seerr` (and `overseerrSync` to `seerrSync`) in any manifest you
+  re-apply. Existing deployments upgrade in place with no data migration needed: Seerr detects an
+  inherited Overseerr database on first boot and migrates it automatically, and the operator now
+  mounts the app's `config` volume at `/app/config` (was `/config`) and runs it as a fixed UID/GID
+  1000 (Seerr's image runs as a non-configurable `node` user, unlike the LinuxServer image it
+  replaces). Take a PVC snapshot before upgrading an existing Overseerr app, per the usual guidance
+  for any operator-managed change that replaces a running deployment — see `docs/backup-restore.md`.
+  The `OverseerrSyncReady` status condition and `OverseerrSync`/`OverseerrCleanup` Event reasons are
+  renamed to `SeerrSyncReady`/`SeerrSync`/`SeerrCleanup` — update any `kubectl wait
+  --for=condition=...` gate or event-reason alert that references the old names. Because
+  `Deployment.spec.selector` is immutable and its `app.kubernetes.io/name` label value changes with
+  the rename, the operator recreates (not patches) an existing Overseerr app's Deployment the first
+  time it reconciles after upgrade — a one-time pod restart, not a crash loop. If you set a Helm
+  `defaultImages.overseerr` override, rename it to `defaultImages.seerr` — the operator still reads
+  the old `DEFAULT_IMAGE_OVERSEERR_REPO`/`_TAG` env vars as a fallback (with a startup warning) so
+  the override doesn't silently stop applying, but that fallback is not permanent (#44).
 - Reduce Transmission health-check overhead: the operator now resolves the adminCredentials
   secret and builds the Transmission RPC client once per reconcile instead of once per health
   check, halving Secret reads and session-ID handshakes for Transmission apps with both the

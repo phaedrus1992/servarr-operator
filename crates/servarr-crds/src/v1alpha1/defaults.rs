@@ -89,6 +89,21 @@ impl AppDefaults {
             // Issue #138: Maintainerr needs higher memory for large library scans
             defaults.resources = elevated_workload_resources();
         }
+        if matches!(app, super::AppType::Seerr) {
+            // Issue #44: Seerr's image runs as a fixed `node` user (UID/GID 1000, not
+            // configurable via PUID/PGID like the LinuxServer image it replaces), and
+            // expects its config volume at /app/config, not /config.
+            defaults.uid = 1000;
+            defaults.gid = 1000;
+            defaults.security = SecurityProfile::non_root(1000, 1000);
+            let config_vol = defaults
+                .persistence
+                .volumes
+                .iter_mut()
+                .find(|v| v.name == "config")
+                .ok_or_else(|| "Seerr defaults must have a 'config' volume".to_string())?;
+            config_vol.mount_path = "/app/config".to_string();
+        }
         Ok(defaults)
     }
 
@@ -102,24 +117,7 @@ impl AppDefaults {
     /// invalid defaults.
     pub fn validate_all() -> Result<(), String> {
         use super::AppType;
-        let all = [
-            AppType::Sonarr,
-            AppType::Radarr,
-            AppType::Lidarr,
-            AppType::Prowlarr,
-            AppType::Sabnzbd,
-            AppType::Transmission,
-            AppType::Tautulli,
-            AppType::Overseerr,
-            AppType::Maintainerr,
-            AppType::Jackett,
-            AppType::Jellyfin,
-            AppType::Plex,
-            AppType::SshBastion,
-            AppType::Bazarr,
-            AppType::Subgen,
-        ];
-        let errors: Vec<String> = all
+        let errors: Vec<String> = AppType::ALL
             .iter()
             .filter_map(|app| Self::try_for_app(app).err())
             .collect();

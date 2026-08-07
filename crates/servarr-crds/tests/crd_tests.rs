@@ -1,3 +1,4 @@
+use serde::Deserialize;
 use servarr_crds::*;
 
 #[test]
@@ -126,7 +127,7 @@ fn test_crd_serde_roundtrip_all_fields() {
         )])),
         gpu: None,
         prowlarr_sync: None,
-        overseerr_sync: None,
+        seerr_sync: None,
         bazarr_sync: None,
         subgen_sync: None,
         maintainerr_sync: None,
@@ -154,7 +155,7 @@ fn test_defaults_for_all_app_types() {
         AppType::Sabnzbd,
         AppType::Transmission,
         AppType::Tautulli,
-        AppType::Overseerr,
+        AppType::Seerr,
         AppType::Maintainerr,
         AppType::Jackett,
         AppType::Jellyfin,
@@ -208,7 +209,7 @@ fn test_config_only_apps() {
     let config_only = vec![
         AppType::Prowlarr,
         AppType::Tautulli,
-        AppType::Overseerr,
+        AppType::Seerr,
         AppType::Jackett,
         AppType::Maintainerr,
         AppType::Jellyfin,
@@ -447,6 +448,79 @@ fn test_smoke_test_manifests_match_crd() {
     );
 }
 
+/// Same intent as [`test_smoke_test_manifests_match_crd`], for `docs/examples/*.yaml`.
+///
+/// These docs examples had no schema validation at all before this test: issue #44's rename
+/// caught `docs/examples/overseerr.yaml`'s `appConfig` key spelled `Overseerr` (capitalized),
+/// which never actually matched the `#[serde(rename_all = "camelCase")]` wire form (lowercase
+/// `overseerr`) and would have failed to apply. Multi-document files (`---`-separated) are
+/// supported since several examples show more than one variant in one file.
+#[test]
+fn test_docs_examples_match_crd() {
+    let examples_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent() // crates/
+        .unwrap()
+        .parent() // repo root
+        .unwrap()
+        .join("docs/examples");
+
+    assert!(
+        examples_dir.is_dir(),
+        "docs examples dir missing: {}",
+        examples_dir.display()
+    );
+
+    let mut count = 0;
+    for entry in std::fs::read_dir(&examples_dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().and_then(|e| e.to_str()) != Some("yaml") {
+            continue;
+        }
+        let contents = std::fs::read_to_string(&path).unwrap();
+        for doc in serde_yaml::Deserializer::from_str(&contents) {
+            let doc = serde_yaml::Value::deserialize(doc).unwrap_or_else(|e| {
+                panic!("{}: invalid YAML document: {e}", path.display());
+            });
+            let kind = doc
+                .get("kind")
+                .and_then(|k| k.as_str())
+                .unwrap_or("ServarrApp");
+            if matches!(kind, "Secret" | "ConfigMap" | "ServiceAccount") {
+                continue;
+            }
+            let Some(spec) = doc.get("spec") else {
+                continue;
+            };
+            let spec_json = serde_json::to_value(spec).unwrap();
+            match kind {
+                "MediaStack" => {
+                    let result: Result<MediaStackSpec, _> = serde_json::from_value(spec_json);
+                    assert!(
+                        result.is_ok(),
+                        "{}: spec does not match MediaStackSpec: {}",
+                        path.display(),
+                        result.unwrap_err()
+                    );
+                }
+                _ => {
+                    let result: Result<ServarrAppSpec, _> = serde_json::from_value(spec_json);
+                    assert!(
+                        result.is_ok(),
+                        "{}: spec does not match ServarrAppSpec: {}",
+                        path.display(),
+                        result.unwrap_err()
+                    );
+                }
+            }
+            count += 1;
+        }
+    }
+    assert!(
+        count >= 16,
+        "expected at least 16 docs example documents, found {count}"
+    );
+}
+
 #[test]
 fn test_status_serde() {
     let status = ServarrAppStatus {
@@ -468,4 +542,134 @@ fn test_status_serde() {
     assert!(deserialized.ready);
     assert_eq!(deserialized.ready_replicas, 1);
     assert_eq!(deserialized.conditions.len(), 1);
+}
+
+#[test]
+fn app_type_deserializes_legacy_overseerr_spelling() {
+    let parsed: AppType = serde_json::from_str("\"Overseerr\"").unwrap();
+    assert_eq!(parsed, AppType::Seerr);
+}
+
+#[test]
+fn app_type_serializes_as_seerr() {
+    let json = serde_json::to_string(&AppType::Seerr).unwrap();
+    assert_eq!(json, "\"Seerr\"");
+}
+
+#[test]
+fn seerr_sync_field_deserializes_legacy_overseerr_sync_spelling() {
+    let spec = ServarrAppSpec {
+        app: AppType::Seerr,
+        seerr_sync: Some(SeerrSyncSpec {
+            enabled: true,
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let json = serde_json::to_string(&spec).unwrap();
+    // Simulate a CR persisted before the rename: same JSON, but with the old field name.
+    let legacy_json = json.replace("\"seerrSync\"", "\"overseerrSync\"");
+    assert!(
+        legacy_json.contains("overseerrSync"),
+        "test setup: legacy_json should contain the old field name"
+    );
+    let deserialized: ServarrAppSpec = serde_json::from_str(&legacy_json).unwrap();
+    assert!(deserialized.seerr_sync.is_some());
+    assert!(deserialized.seerr_sync.unwrap().enabled);
+}
+
+// ── Property test: AppConfig::Seerr legacy "overseerr" discriminator ──
+//
+// The AppConfig enum renames the Overseerr variant to Seerr with
+// #[serde(alias = "overseerr")]. For any generated Seerr config, feeding the
+// old discriminator through deserialization must reproduce the new one.
+
+mod app_config_seerr_alias {
+    use proptest::prelude::*;
+    use servarr_crds::*;
+
+    /// Quality profile IDs are small integers, so generate an f64 from an i32:
+    /// NaN/Inf would serialize as JSON null and not round-trip, and serde_json's
+    /// float parser is off-by-one-ULP for some values above 2^52 (reproduced
+    /// with 7.37e15). i32 magnitudes round-trip exactly — keep it deterministic.
+    fn finite_f64() -> impl Strategy<Value = f64> {
+        any::<i32>().prop_map(|v| v as f64)
+    }
+
+    fn seerr_server_defaults_4k() -> impl Strategy<Value = SeerrServerDefaults4k> {
+        (
+            finite_f64(),
+            any::<String>(),
+            any::<String>(),
+            proptest::option::of(any::<String>()),
+            proptest::option::of(any::<bool>()),
+        )
+            .prop_map(
+                |(
+                    profile_id,
+                    profile_name,
+                    root_folder,
+                    minimum_availability,
+                    enable_season_folders,
+                )| SeerrServerDefaults4k {
+                    profile_id,
+                    profile_name,
+                    root_folder,
+                    minimum_availability,
+                    enable_season_folders,
+                },
+            )
+    }
+
+    fn seerr_server_defaults() -> impl Strategy<Value = SeerrServerDefaults> {
+        (
+            finite_f64(),
+            any::<String>(),
+            any::<String>(),
+            proptest::option::of(any::<String>()),
+            proptest::option::of(any::<bool>()),
+            proptest::option::of(seerr_server_defaults_4k()),
+        )
+            .prop_map(
+                |(
+                    profile_id,
+                    profile_name,
+                    root_folder,
+                    minimum_availability,
+                    enable_season_folders,
+                    four_k,
+                )| SeerrServerDefaults {
+                    profile_id,
+                    profile_name,
+                    root_folder,
+                    minimum_availability,
+                    enable_season_folders,
+                    four_k,
+                },
+            )
+    }
+
+    fn seerr_config() -> impl Strategy<Value = SeerrConfig> {
+        (
+            proptest::option::of(seerr_server_defaults()),
+            proptest::option::of(seerr_server_defaults()),
+        )
+            .prop_map(|(sonarr, radarr)| SeerrConfig { sonarr, radarr })
+    }
+
+    proptest! {
+        #[test]
+        fn seerr_app_config_deserializes_legacy_overseerr_discriminator(config in seerr_config()) {
+            let canonical = AppConfig::Seerr(Box::new(config));
+            let json = serde_json::to_string(&canonical).unwrap();
+            // Simulate a CR persisted before the rename: the old "overseerr" discriminator.
+            let legacy_json = json.replace("\"Seerr\"", "\"overseerr\"");
+            let parsed: AppConfig = serde_json::from_str(&legacy_json).unwrap();
+            let reserialized = serde_json::to_string(&parsed).unwrap();
+            prop_assert_eq!(
+                reserialized, json,
+                "deserializing the legacy overseerr discriminator must reproduce the Seerr form"
+            );
+        }
+    }
 }

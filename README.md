@@ -18,7 +18,7 @@ networking, backups, and cross-app integration.
 | Radarr | Movie management | 7878 | 2 - Media Managers |
 | Lidarr | Music management | 8686 | 2 - Media Managers |
 | Tautulli | Plex monitoring | 8181 | 3 - Ancillary |
-| Overseerr | Media requests | 5055 | 3 - Ancillary |
+| Seerr | Media requests | 5055 | 3 - Ancillary |
 | Maintainerr | Media cleanup | 6246 | 3 - Ancillary |
 | Prowlarr | Indexer manager | 9696 | 3 - Ancillary |
 | Jackett | Indexer proxy | 9117 | 3 - Ancillary |
@@ -99,7 +99,7 @@ spec:
 - **Restore** -- annotation-triggered restore from any backup
 - **Cross-app sync** -- Prowlarr automatically discovers and registers Sonarr/Radarr/Lidarr instances
 - **Split 4K** -- `split4k: true` on Sonarr/Radarr in a MediaStack automatically creates paired standard and 4K instances
-- **Overseerr sync** -- Overseerr automatically discovers and registers Sonarr/Radarr servers with correct 4K flags
+- **Seerr sync** -- Seerr automatically discovers and registers Sonarr/Radarr servers with correct 4K flags
 - **Bazarr sync** -- Bazarr automatically discovers and registers Sonarr/Radarr instances for subtitle management
 - **Subgen sync** -- Subgen automatically wires up to a Jellyfin instance for Whisper AI subtitle generation
 - **App configuration** -- Transmission settings.json, SABnzbd host whitelist, Prowlarr custom indexers

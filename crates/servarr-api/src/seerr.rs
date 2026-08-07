@@ -3,11 +3,12 @@ use serde::Serialize;
 use crate::client::ApiError;
 use crate::servarr_v3::SdkResponseStatus;
 
-/// Client for the Overseerr settings API.
+/// Client for the Seerr settings API.
 ///
-/// Wraps the `overseerr` crate to manage Sonarr/Radarr server registrations
-/// in Overseerr for media request routing.
-pub struct OverseerrClient {
+/// Wraps the `overseerr` crate (Seerr kept Overseerr's REST API surface
+/// unchanged) to manage Sonarr/Radarr server registrations in Seerr for
+/// media request routing.
+pub struct SeerrClient {
     config: overseerr::apis::configuration::Configuration,
 }
 
@@ -26,10 +27,10 @@ fn map_err<E: std::fmt::Debug>(e: overseerr::apis::Error<E>) -> ApiError {
     }
 }
 
-impl OverseerrClient {
-    /// Create a new Overseerr API client.
+impl SeerrClient {
+    /// Create a new Seerr API client.
     ///
-    /// `base_url` should be the root URL (e.g. `http://overseerr:5055`).
+    /// `base_url` should be the root URL (e.g. `http://seerr:5055`).
     /// `api_key` is sent as the `X-Api-Key` header.
     pub fn new(base_url: &str, api_key: &str) -> Self {
         let mut config = overseerr::apis::configuration::Configuration::new();
@@ -115,7 +116,7 @@ impl OverseerrClient {
 
     /// Configure local authentication via `PUT /api/v1/auth/local`.
     ///
-    /// Sets the admin username and password for Overseerr's local auth provider.
+    /// Sets the admin username and password for Seerr's local auth provider.
     pub async fn setup_local_auth(&self, username: &str, password: &str) -> Result<(), ApiError> {
         let url = format!("{}/api/v1/auth/local", self.config.base_path);
         let body = LocalAuthRequest { username, password };
@@ -150,8 +151,8 @@ mod tests {
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     #[test]
-    fn overseerr_client_new_constructs() {
-        let client = OverseerrClient::new("http://localhost:5055", "test-key");
+    fn seerr_client_new_constructs() {
+        let client = SeerrClient::new("http://localhost:5055", "test-key");
         assert_eq!(client.config.base_path, "http://localhost:5055");
         assert!(client.config.api_key.is_some());
         let api_key = client.config.api_key.as_ref().unwrap();
@@ -160,8 +161,8 @@ mod tests {
     }
 
     #[test]
-    fn overseerr_client_new_trims_trailing_slash() {
-        let client = OverseerrClient::new("http://localhost:5055/", "key");
+    fn seerr_client_new_trims_trailing_slash() {
+        let client = SeerrClient::new("http://localhost:5055/", "key");
         assert_eq!(client.config.base_path, "http://localhost:5055");
     }
 
@@ -174,7 +175,7 @@ mod tests {
             .expect(1)
             .mount(&server)
             .await;
-        let client = OverseerrClient::new(&server.uri(), "test-key");
+        let client = SeerrClient::new(&server.uri(), "test-key");
         client.setup_local_auth("admin", "pass").await.unwrap();
     }
 
@@ -186,7 +187,7 @@ mod tests {
             .respond_with(ResponseTemplate::new(401).set_body_string("Unauthorized"))
             .mount(&server)
             .await;
-        let client = OverseerrClient::new(&server.uri(), "test-key");
+        let client = SeerrClient::new(&server.uri(), "test-key");
         let err = client.setup_local_auth("admin", "wrong").await.unwrap_err();
         match err {
             ApiError::ApiResponse { status, .. } => assert_eq!(status, 401),

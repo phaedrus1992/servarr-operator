@@ -146,8 +146,8 @@ pub struct StackApp {
     pub gpu: Option<GpuSpec>,
     #[serde(default)]
     pub prowlarr_sync: Option<ProwlarrSyncSpec>,
-    #[serde(default)]
-    pub overseerr_sync: Option<OverseerrSyncSpec>,
+    #[serde(default, alias = "overseerrSync")]
+    pub seerr_sync: Option<SeerrSyncSpec>,
     #[serde(default)]
     pub bazarr_sync: Option<BazarrSyncSpec>,
     #[serde(default)]
@@ -332,7 +332,7 @@ impl StackApp {
             pod_annotations,
             gpu: self.gpu.clone(),
             prowlarr_sync: self.prowlarr_sync.clone(),
-            overseerr_sync: self.overseerr_sync.clone(),
+            seerr_sync: self.seerr_sync.clone(),
             bazarr_sync: self.bazarr_sync.clone(),
             subgen_sync: self.subgen_sync.clone(),
             maintainerr_sync: self.maintainerr_sync.clone(),

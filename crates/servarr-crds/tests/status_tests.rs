@@ -282,7 +282,7 @@ fn condition_types_constants_are_correct() {
     assert_eq!(condition_types::BAZARR_SYNC_READY, "BazarrSyncReady");
     assert_eq!(condition_types::SUBGEN_SYNC_READY, "SubgenSyncReady");
     assert_eq!(condition_types::PROWLARR_SYNC_READY, "ProwlarrSyncReady");
-    assert_eq!(condition_types::OVERSEERR_SYNC_READY, "OverseerrSyncReady");
+    assert_eq!(condition_types::SEERR_SYNC_READY, "SeerrSyncReady");
     assert_eq!(condition_types::RESTORE_READY, "RestoreReady");
 }
 
@@ -398,9 +398,9 @@ fn new_sync_condition_types_survive_serde_roundtrip() {
                 "2025-06-01T00:00:03Z",
             ),
             Condition::fail(
-                condition_types::OVERSEERR_SYNC_READY,
+                condition_types::SEERR_SYNC_READY,
                 "SyncFailed",
-                "Overseerr unreachable",
+                "Seerr unreachable",
                 "2025-06-01T00:00:04Z",
             ),
         ],
@@ -429,10 +429,7 @@ fn new_sync_condition_types_survive_serde_roundtrip() {
         types.contains(&"ProwlarrSyncReady"),
         "ProwlarrSyncReady missing"
     );
-    assert!(
-        types.contains(&"OverseerrSyncReady"),
-        "OverseerrSyncReady missing"
-    );
+    assert!(types.contains(&"SeerrSyncReady"), "SeerrSyncReady missing");
 
     let bazarr = deserialized
         .conditions
