@@ -1,7 +1,7 @@
 use servarr_api::HealthCheck;
 use servarr_api::{
-    ApiError, AppKind, HttpClient, JellyfinClient, PlexClient, ProwlarrClient, SabnzbdClient,
-    SecretError, SeerrClient, ServarrClient, TransmissionClient,
+    ApiError, AppKind, BasicCredentials, HttpClient, JellyfinClient, PlexClient, ProwlarrClient,
+    SabnzbdClient, SecretError, SeerrClient, ServarrClient, TransmissionClient,
 };
 use wiremock::matchers::{method, path, path_regex};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -176,20 +176,22 @@ mod transmission_client {
 
     #[test]
     fn new_constructs_without_credentials() {
-        let client = TransmissionClient::new("http://localhost:9091", None, None);
+        let client = TransmissionClient::new("http://localhost:9091", None);
         assert!(client.is_ok());
     }
 
     #[test]
     fn new_constructs_with_credentials() {
-        let client =
-            TransmissionClient::new("http://localhost:9091", Some("admin"), Some("secret"));
+        let client = TransmissionClient::new(
+            "http://localhost:9091",
+            Some(&BasicCredentials::new("admin", "secret")),
+        );
         assert!(client.is_ok());
     }
 
     #[test]
     fn new_rejects_invalid_url() {
-        let result = TransmissionClient::new("not a url", None, None);
+        let result = TransmissionClient::new("not a url", None);
         assert!(result.is_err());
     }
 
@@ -226,7 +228,7 @@ mod transmission_client {
             .mount(&server)
             .await;
 
-        let client = TransmissionClient::new(&server.uri(), None, None).unwrap();
+        let client = TransmissionClient::new(&server.uri(), None).unwrap();
         let info = client.session_get().await.unwrap();
         assert_eq!(info.version, "4.0.5");
         assert_eq!(info.rpc_version, 18);
@@ -252,7 +254,7 @@ mod transmission_client {
             .mount(&server)
             .await;
 
-        let client = TransmissionClient::new(&server.uri(), None, None).unwrap();
+        let client = TransmissionClient::new(&server.uri(), None).unwrap();
         let stats = client.session_stats().await.unwrap();
         assert_eq!(stats.active_torrent_count, 3);
         assert_eq!(stats.paused_torrent_count, 1);
@@ -276,7 +278,7 @@ mod transmission_client {
             .mount(&server)
             .await;
 
-        let client = TransmissionClient::new(&server.uri(), None, None).unwrap();
+        let client = TransmissionClient::new(&server.uri(), None).unwrap();
         assert!(client.is_healthy().await.unwrap());
     }
 
@@ -295,7 +297,7 @@ mod transmission_client {
             .mount(&server)
             .await;
 
-        let client = TransmissionClient::new(&server.uri(), None, None).unwrap();
+        let client = TransmissionClient::new(&server.uri(), None).unwrap();
         assert!(!client.is_healthy().await.unwrap());
     }
 }
