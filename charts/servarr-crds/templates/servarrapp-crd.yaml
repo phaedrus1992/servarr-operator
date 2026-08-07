@@ -102,6 +102,7 @@ spec:
                 - SshBastion
                 - Bazarr
                 - Subgen
+                - Overseerr
                 type: string
               appConfig:
                 nullable: true

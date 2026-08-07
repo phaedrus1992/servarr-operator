@@ -135,7 +135,7 @@ pub struct ServarrAppSpec {
     pub admin_credentials: Option<AdminCredentialsSpec>,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq, JsonSchema)]
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
 pub enum AppType {
     #[default]
     Sonarr,
@@ -154,6 +154,43 @@ pub enum AppType {
     SshBastion,
     Bazarr,
     Subgen,
+}
+
+/// Legacy serde aliases accepted by `AppType`'s `Deserialize` impl (e.g.
+/// `#[serde(alias = "Overseerr")]` on `Seerr` above) but invisible to schemars, which has no
+/// insight into serde aliases. Without merging these into the generated schema, a fresh
+/// `kubectl apply` of a manifest using a pre-rename spelling is rejected outright by the CRD's
+/// structural schema, even though an already-stored object with that spelling keeps
+/// reconciling fine (#540). Append here whenever a variant gains a new `#[serde(alias = ...)]`.
+const LEGACY_APP_TYPE_ALIASES: &[&str] = &["Overseerr"];
+
+impl JsonSchema for AppType {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "AppType".into()
+    }
+
+    fn inline_schema() -> bool {
+        true
+    }
+
+    fn json_schema(_generator: &mut SchemaGenerator) -> Schema {
+        // Current wire values, derived from `Serialize` so this can't drift from the variant
+        // list -- only the legacy-alias list above needs manual upkeep.
+        let mut values: Vec<serde_json::Value> = Self::ALL
+            .iter()
+            .map(|v| serde_json::to_value(v).expect("AppType always serializes to a string"))
+            .collect();
+        values.extend(
+            LEGACY_APP_TYPE_ALIASES
+                .iter()
+                .map(|alias| serde_json::Value::String((*alias).to_string())),
+        );
+
+        schemars::json_schema!({
+            "type": "string",
+            "enum": values,
+        })
+    }
 }
 
 impl AppType {
