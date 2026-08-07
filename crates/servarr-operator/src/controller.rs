@@ -5670,6 +5670,49 @@ mod tests {
         }
     }
 
+    // ---- shared throttle-test helpers (#518 code-simplifier follow-up) ----
+
+    /// Build a single-condition `ServarrAppStatus` — the shape every throttle test below needs.
+    /// `ready`/`ready_replicas`/`observed_generation` are fixed placeholders, irrelevant to
+    /// throttle behavior; only the condition's own fields vary per test.
+    fn status_with_condition(
+        condition_type: &str,
+        condition_status: &str,
+        reason: &str,
+        message: &str,
+        last_transition_time: String,
+    ) -> ServarrAppStatus {
+        ServarrAppStatus {
+            ready: true,
+            ready_replicas: 1,
+            observed_generation: 1,
+            conditions: vec![Condition {
+                condition_type: condition_type.to_string(),
+                status: condition_status.to_string(),
+                reason: reason.to_string(),
+                message: message.to_string(),
+                last_transition_time,
+            }],
+            backup_status: None,
+        }
+    }
+
+    /// Build a Transmission `ServarrApp` with `apiHealthCheck` (3600s interval) and
+    /// `adminCredentials` (secret `tx-admin-creds`) configured — the app shape every throttle
+    /// test below needs, differing only in `autoRemoveOrphanedTorrents`.
+    fn transmission_app_with_health_check(auto_remove_orphaned_torrents: bool) -> ServarrApp {
+        let mut app = make_test_app("my-transmission", "test", AppType::Transmission);
+        app.spec.api_health_check = Some(servarr_crds::ApiHealthCheckSpec {
+            enabled: true,
+            interval_seconds: Some(3600),
+            auto_remove_orphaned_torrents,
+        });
+        app.spec.admin_credentials = Some(servarr_crds::AdminCredentialsSpec {
+            secret_name: "tx-admin-creds".into(),
+        });
+        app
+    }
+
     #[tokio::test]
     async fn check_api_health_throttles_within_interval_seconds() {
         let mock_server = MockServer::start().await;
@@ -5697,32 +5740,17 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let mut app = make_test_app("my-transmission", "test", AppType::Transmission);
-        app.spec.api_health_check = Some(servarr_crds::ApiHealthCheckSpec {
-            enabled: true,
-            interval_seconds: Some(3600),
-            auto_remove_orphaned_torrents: false,
-        });
-        app.spec.admin_credentials = Some(servarr_crds::AdminCredentialsSpec {
-            secret_name: "tx-admin-creds".into(),
-        });
-
         // Existing APP_HEALTHY condition from a poll moments ago — still inside the 3600s
         // window, so the probe must be skipped and the condition reused unchanged.
         let recent = chrono_now();
-        app.status = Some(ServarrAppStatus {
-            ready: true,
-            ready_replicas: 1,
-            observed_generation: 1,
-            conditions: vec![Condition {
-                condition_type: condition_types::APP_HEALTHY.to_string(),
-                status: "True".to_string(),
-                reason: "Healthy".to_string(),
-                message: "API responded healthy".to_string(),
-                last_transition_time: recent.clone(),
-            }],
-            backup_status: None,
-        });
+        let mut app = transmission_app_with_health_check(false);
+        app.status = Some(status_with_condition(
+            condition_types::APP_HEALTHY,
+            "True",
+            "Healthy",
+            "API responded healthy",
+            recent.clone(),
+        ));
 
         let access = resolve_transmission_access(&client, &app, "test", &mock_server.uri()).await;
         assert!(access.is_ok(), "expected access to resolve, got {access:?}");
@@ -5765,32 +5793,17 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let mut app = make_test_app("my-transmission", "test", AppType::Transmission);
-        app.spec.api_health_check = Some(servarr_crds::ApiHealthCheckSpec {
-            enabled: true,
-            interval_seconds: Some(3600),
-            auto_remove_orphaned_torrents: false,
-        });
-        app.spec.admin_credentials = Some(servarr_crds::AdminCredentialsSpec {
-            secret_name: "tx-admin-creds".into(),
-        });
-
         // Existing condition from 2 hours ago — outside the 3600s window, so the poll runs.
         let stale = (chrono::Utc::now() - chrono::Duration::hours(2))
             .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
-        app.status = Some(ServarrAppStatus {
-            ready: true,
-            ready_replicas: 1,
-            observed_generation: 1,
-            conditions: vec![Condition {
-                condition_type: condition_types::APP_HEALTHY.to_string(),
-                status: "True".to_string(),
-                reason: "Healthy".to_string(),
-                message: "API responded healthy".to_string(),
-                last_transition_time: stale.clone(),
-            }],
-            backup_status: None,
-        });
+        let mut app = transmission_app_with_health_check(false);
+        app.status = Some(status_with_condition(
+            condition_types::APP_HEALTHY,
+            "True",
+            "Healthy",
+            "API responded healthy",
+            stale.clone(),
+        ));
 
         let access = resolve_transmission_access(&client, &app, "test", &mock_server.uri()).await;
         assert!(access.is_ok(), "expected access to resolve, got {access:?}");
@@ -5832,30 +5845,16 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let mut app = make_test_app("my-transmission", "test", AppType::Transmission);
-        app.spec.api_health_check = Some(servarr_crds::ApiHealthCheckSpec {
-            enabled: true,
-            interval_seconds: Some(3600),
-            auto_remove_orphaned_torrents: true, // the destructive opt-in must be throttled too
-        });
-        app.spec.admin_credentials = Some(servarr_crds::AdminCredentialsSpec {
-            secret_name: "tx-admin-creds".into(),
-        });
-
+        // the destructive opt-in (true) must be throttled too
+        let mut app = transmission_app_with_health_check(true);
         let recent = chrono_now();
-        app.status = Some(ServarrAppStatus {
-            ready: true,
-            ready_replicas: 1,
-            observed_generation: 1,
-            conditions: vec![Condition {
-                condition_type: condition_types::DOWNLOAD_DATA_HEALTHY.to_string(),
-                status: "True".to_string(),
-                reason: "NoStaleData".to_string(),
-                message: "No torrents reporting missing data".to_string(),
-                last_transition_time: recent.clone(),
-            }],
-            backup_status: None,
-        });
+        app.status = Some(status_with_condition(
+            condition_types::DOWNLOAD_DATA_HEALTHY,
+            "True",
+            "NoStaleData",
+            "No torrents reporting missing data",
+            recent.clone(),
+        ));
 
         let recorder = Recorder::new(client.clone(), "test".into());
         let obj_ref = app.object_ref(&());
@@ -5901,29 +5900,14 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let mut app = make_test_app("my-transmission", "test", AppType::Transmission);
-        app.spec.api_health_check = Some(servarr_crds::ApiHealthCheckSpec {
-            enabled: true,
-            interval_seconds: Some(3600),
-            auto_remove_orphaned_torrents: true,
-        });
-        app.spec.admin_credentials = Some(servarr_crds::AdminCredentialsSpec {
-            secret_name: "tx-admin-creds".into(),
-        });
-
-        app.status = Some(ServarrAppStatus {
-            ready: true,
-            ready_replicas: 1,
-            observed_generation: 1,
-            conditions: vec![Condition {
-                condition_type: condition_types::DOWNLOAD_DATA_HEALTHY.to_string(),
-                status: "True".to_string(),
-                reason: "NoStaleData".to_string(),
-                message: "No torrents reporting missing data".to_string(),
-                last_transition_time: "not-a-timestamp".to_string(),
-            }],
-            backup_status: None,
-        });
+        let mut app = transmission_app_with_health_check(true);
+        app.status = Some(status_with_condition(
+            condition_types::DOWNLOAD_DATA_HEALTHY,
+            "True",
+            "NoStaleData",
+            "No torrents reporting missing data",
+            "not-a-timestamp".to_string(),
+        ));
 
         let recorder = Recorder::new(client.clone(), "test".into());
         let obj_ref = app.object_ref(&());
@@ -5975,32 +5959,17 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let mut app = make_test_app("my-transmission", "test", AppType::Transmission);
-        app.spec.api_health_check = Some(servarr_crds::ApiHealthCheckSpec {
-            enabled: true,
-            interval_seconds: Some(3600),
-            auto_remove_orphaned_torrents: true,
-        });
-        app.spec.admin_credentials = Some(servarr_crds::AdminCredentialsSpec {
-            secret_name: "tx-admin-creds".into(),
-        });
-
         // Existing condition from 2 hours ago — outside the 3600s window, so the pass runs.
         let stale = (chrono::Utc::now() - chrono::Duration::hours(2))
             .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
-        app.status = Some(ServarrAppStatus {
-            ready: true,
-            ready_replicas: 1,
-            observed_generation: 1,
-            conditions: vec![Condition {
-                condition_type: condition_types::DOWNLOAD_DATA_HEALTHY.to_string(),
-                status: "True".to_string(),
-                reason: "NoStaleData".to_string(),
-                message: "No torrents reporting missing data".to_string(),
-                last_transition_time: stale.clone(),
-            }],
-            backup_status: None,
-        });
+        let mut app = transmission_app_with_health_check(true);
+        app.status = Some(status_with_condition(
+            condition_types::DOWNLOAD_DATA_HEALTHY,
+            "True",
+            "NoStaleData",
+            "No torrents reporting missing data",
+            stale.clone(),
+        ));
 
         let recorder = Recorder::new(client.clone(), "test".into());
         let obj_ref = app.object_ref(&());
@@ -6046,28 +6015,14 @@ mod tests {
         // throttled by a naive time-based gate -- and exactly the case a pod restart produces,
         // since the LSIO base image resets Transmission's auth on every container start
         // regardless of how "fresh" the last successful sync looked.
-        let mut app = make_test_app("my-transmission", "test", AppType::Transmission);
-        app.spec.api_health_check = Some(servarr_crds::ApiHealthCheckSpec {
-            enabled: true,
-            interval_seconds: Some(3600),
-            auto_remove_orphaned_torrents: false,
-        });
-        app.spec.admin_credentials = Some(servarr_crds::AdminCredentialsSpec {
-            secret_name: "tx-admin-creds".into(),
-        });
-        app.status = Some(ServarrAppStatus {
-            ready: true,
-            ready_replicas: 1,
-            observed_generation: 1,
-            conditions: vec![Condition {
-                condition_type: condition_types::ADMIN_CREDENTIALS_CONFIGURED.to_string(),
-                status: "True".to_string(),
-                reason: "Configured".to_string(),
-                message: "Admin credentials applied successfully".to_string(),
-                last_transition_time: chrono_now(),
-            }],
-            backup_status: None,
-        });
+        let mut app = transmission_app_with_health_check(false);
+        app.status = Some(status_with_condition(
+            condition_types::ADMIN_CREDENTIALS_CONFIGURED,
+            "True",
+            "Configured",
+            "Admin credentials applied successfully",
+            chrono_now(),
+        ));
 
         let cond = sync_admin_credentials(&client, &app, None)
             .await
