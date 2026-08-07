@@ -1270,6 +1270,42 @@ fn build_init_containers(
         });
     }
 
+    // Seerr config-volume ownership migration init container (#535). Seerr runs as a
+    // fixed uid/gid (1000:1000, not configurable via PUID/PGID like the LinuxServer image
+    // it may be replacing on an Overseerr->Seerr migration), and unlike Transmission/Bazarr
+    // it has no built-in mechanism to self-chown its config volume. An inherited volume
+    // still owned by the old app's uid/gid leaves Seerr unable to write its config,
+    // crash-looping on permission errors. Conditionally chown only when the top-level
+    // entry isn't already owned by the target uid -- never a blanket chown every reconcile.
+    // Must run as root: the migration requires elevated permission precisely because the
+    // current owner is unknown/mismatched.
+    if matches!(app.spec.app, AppType::Seerr) {
+        let chown_script = format!(
+            "current_uid=$(stat -c '%u' /app/config); \
+             if [ \"$current_uid\" != \"{uid}\" ]; then \
+               echo \"migrating /app/config ownership from uid $current_uid to {uid}:{gid}\"; \
+               chown -R {uid}:{gid} /app/config; \
+             fi"
+        );
+        init.push(Container {
+            name: "migrate-config-ownership".into(),
+            image: Some(image.to_string()),
+            command: Some(vec!["/bin/sh".into(), "-c".into(), chown_script]),
+            security_context: Some(SecurityContext {
+                run_as_user: Some(0),
+                run_as_group: Some(0),
+                run_as_non_root: Some(false),
+                ..Default::default()
+            }),
+            volume_mounts: Some(vec![VolumeMount {
+                name: "config".into(),
+                mount_path: "/app/config".into(),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        });
+    }
+
     init
 }
 
