@@ -1471,7 +1471,7 @@ pub(crate) async fn check_api_health(
             let api_key = match resolve_health_api_key(client, ns, app, &now).await {
                 Ok(Some(k)) => k,
                 Ok(None) => return (None, None),
-                Err(cond) => return (cond, None),
+                Err(cond) => return (Some(cond), None),
             };
             match servarr_api::ServarrClient::new(&base_url, &api_key, app_kind) {
                 Ok(c) => {
@@ -1488,7 +1488,7 @@ pub(crate) async fn check_api_health(
             let api_key = match resolve_health_api_key(client, ns, app, &now).await {
                 Ok(Some(k)) => k,
                 Ok(None) => return (None, None),
-                Err(cond) => return (cond, None),
+                Err(cond) => return (Some(cond), None),
             };
             match servarr_api::SabnzbdClient::new(&base_url, &api_key) {
                 Ok(c) => {
@@ -1562,7 +1562,7 @@ async fn resolve_health_api_key(
     ns: &str,
     app: &ServarrApp,
     now: &str,
-) -> Result<Option<String>, Option<Condition>> {
+) -> Result<Option<String>, Condition> {
     let Some(secret_name) = app.spec.api_key_secret.as_deref() else {
         // Reachable only when apiHealthCheck.enabled is set (check_api_health gates on it),
         // so the probe is silently skipped due to a config gap. Surface it: an enabled health
@@ -1577,13 +1577,13 @@ async fn resolve_health_api_key(
         Ok(k) => Ok(Some(k)),
         Err(e) => {
             warn!(error = %e.log_summary(), "failed to read API key secret");
-            Err(Some(Condition {
+            Err(Condition {
                 condition_type: condition_types::APP_HEALTHY.to_string(),
                 status: "Unknown".to_string(),
                 reason: "SecretReadError".to_string(),
                 message: e.public_summary(),
                 last_transition_time: now.to_string(),
-            }))
+            })
         }
     }
 }
