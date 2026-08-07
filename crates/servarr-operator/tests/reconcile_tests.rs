@@ -174,6 +174,45 @@ fn deployment_response(name: &str, ns: &str, app_type: &str) -> serde_json::Valu
     })
 }
 
+/// A Deployment whose selector uses the old, pre-rename label shape — the drift
+/// the delete-then-recreate path exists to fix. `owner_uid` controls whether the
+/// object claims `uid` as its ServarrApp owner (`Some`) or is a foreign name
+/// collision (`None`); the controller must only delete the former.
+fn stale_selector_deployment(name: &str, ns: &str, owner_uid: Option<&str>) -> serde_json::Value {
+    json!({
+        "apiVersion": "apps/v1",
+        "kind": "Deployment",
+        "metadata": {
+            "name": name,
+            "namespace": ns,
+            "uid": "deploy-uid-1",
+            "resourceVersion": "100",
+            "ownerReferences": match owner_uid {
+                Some(uid) => json!([{
+                    "apiVersion": "servarr.dev/v1alpha1",
+                    "kind": "ServarrApp",
+                    "name": name,
+                    "uid": uid
+                }]),
+                None => json!([]),
+            }
+        },
+        "spec": {
+            "selector": { "matchLabels": { "app": name } },
+            "template": {
+                "metadata": { "labels": { "app": name } },
+                "spec": {
+                    "containers": [{
+                        "name": "sonarr",
+                        "image": "ghcr.io/onedr0p/sonarr:latest"
+                    }]
+                }
+            }
+        },
+        "status": { "readyReplicas": 1, "replicas": 1, "availableReplicas": 1 }
+    })
+}
+
 /// Minimal service JSON response.
 fn service_response(name: &str, ns: &str) -> serde_json::Value {
     json!({
@@ -2248,35 +2287,8 @@ async fn test_deployment_selector_drift_triggers_delete_then_recreate() {
     // GET deployment returns a live object whose selector uses the old,
     // pre-rename label shape — simulating an app whose AppType label value
     // changed since it was first deployed.
-    let stale_selector_deploy = json!({
-        "apiVersion": "apps/v1",
-        "kind": "Deployment",
-        "metadata": {
-            "name": "test-sonarr-seldrift",
-            "namespace": "test",
-            "uid": "deploy-uid-1",
-            "resourceVersion": "100",
-            "ownerReferences": [{
-                "apiVersion": "servarr.dev/v1alpha1",
-                "kind": "ServarrApp",
-                "name": "test-sonarr-seldrift",
-                "uid": "test-uid-12345"
-            }]
-        },
-        "spec": {
-            "selector": { "matchLabels": { "app": "test-sonarr-seldrift" } },
-            "template": {
-                "metadata": { "labels": { "app": "test-sonarr-seldrift" } },
-                "spec": {
-                    "containers": [{
-                        "name": "sonarr",
-                        "image": "ghcr.io/onedr0p/sonarr:latest"
-                    }]
-                }
-            }
-        },
-        "status": { "readyReplicas": 1, "replicas": 1, "availableReplicas": 1 }
-    });
+    let stale_selector_deploy =
+        stale_selector_deployment("test-sonarr-seldrift", "test", Some("test-uid-12345"));
     Mock::given(method("GET"))
         .and(path(
             "/apis/apps/v1/namespaces/test/deployments/test-sonarr-seldrift",
@@ -2480,29 +2492,7 @@ async fn test_foreign_deployment_not_deleted_on_selector_mismatch() {
     // GET deployment returns an object with a mismatched selector but NO owner reference
     // pointing at this ServarrApp (uid "test-uid-12345") — a foreign name collision.
     // The delete gate must refuse to tear it down (security-audit finding).
-    let foreign_deploy = json!({
-        "apiVersion": "apps/v1",
-        "kind": "Deployment",
-        "metadata": {
-            "name": "test-sonarr-foreign",
-            "namespace": "test",
-            "uid": "deploy-uid-foreign",
-            "resourceVersion": "100"
-        },
-        "spec": {
-            "selector": { "matchLabels": { "app": "test-sonarr-foreign" } },
-            "template": {
-                "metadata": { "labels": { "app": "test-sonarr-foreign" } },
-                "spec": {
-                    "containers": [{
-                        "name": "sonarr",
-                        "image": "ghcr.io/onedr0p/sonarr:latest"
-                    }]
-                }
-            }
-        },
-        "status": { "readyReplicas": 1, "replicas": 1, "availableReplicas": 1 }
-    });
+    let foreign_deploy = stale_selector_deployment("test-sonarr-foreign", "test", None);
     Mock::given(method("GET"))
         .and(path(
             "/apis/apps/v1/namespaces/test/deployments/test-sonarr-foreign",
