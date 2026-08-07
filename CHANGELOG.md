@@ -9,22 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased] - ReleaseDate
 
-Overseerr's operator support is migrated to its actively maintained successor, Seerr, with an
-in-place upgrade path for existing apps. Transmission gets a new self-heal pass that detects and
-optionally removes torrents whose on-disk data has gone missing, plus a real fix for the
-`apiHealthCheck.intervalSeconds` throttle: it now actually rate-limits health polling and the
-Transmission self-heal pass as documented, fails closed instead of open when status data is
-corrupt, and its scope is clarified for the one RPC it deliberately doesn't cover. Persistence
-gets a way to intentionally drop a default volume (`removedDefaultVolumes`) and much stronger
-mount-path collision detection, closing gaps that could previously produce an invalid pod spec or
-silently drop a volume like SSH bastion's host keys across an override. The bulk of the remaining
-work is a security-driven sweep: dozens of call sites across the controller and webhook that were
-writing raw upstream API errors, Kubernetes API errors, or secret-read errors straight into
-tenant-visible status conditions and Events — including one path that could have leaked a
-plaintext admin password — are now routed through a compile-time-enforced sanitizer. Finalizer
-cleanup for Prowlarr/Overseerr registrations is also hardened to distinguish a terminal failure
-(already gone, safe to proceed) from a transient one (retry, don't drop the finalizer), and to
-report a failure via a `CleanupFailed` Event instead of only operator logs.
+Migrates Overseerr support to its successor, Seerr; adds Transmission download-data self-heal and
+fixes the `apiHealthCheck.intervalSeconds` throttle; hardens persistence (a way to intentionally
+drop a default volume, stronger mount-path collision detection); and sweeps the controller/webhook
+to stop leaking raw upstream/Kubernetes errors into tenant-visible status and Events.
 
 ### Added
 
