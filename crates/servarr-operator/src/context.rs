@@ -216,7 +216,10 @@ mod tests {
                 format!("DEFAULT_IMAGE_{}_REPO", app.as_str().to_uppercase()),
                 Some(format!("registry.internal/{}", app.as_str())),
             ));
-            env.push((format!("DEFAULT_IMAGE_{}_TAG", app.as_str().to_uppercase()), None));
+            env.push((
+                format!("DEFAULT_IMAGE_{}_TAG", app.as_str().to_uppercase()),
+                None,
+            ));
         }
         temp_env::with_vars(env, || {
             let overrides = load_image_overrides();
