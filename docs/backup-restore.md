@@ -470,3 +470,7 @@ database on first boot and migrates it in place — no manual data export/import
 any operator-managed change that replaces a running deployment, take a PVC snapshot of the app's
 `config` volume first (see [Volume-Level Backups with Velero](#volume-level-backups-with-velero)
 above).
+
+For the full 1.2.x → 1.3.x upgrade path — including `MediaStack` app renames, the Helm
+`defaultImages` key rename, and config-volume ownership — see
+[Upgrading from 1.2.x to 1.3.x](upgrade-1.3.md).

@@ -324,6 +324,10 @@ helm install servarr-operator \
    kubectl rollout status deployment/servarr-operator -n servarr
    ```
 
+Upgrading from a specific release line? See [Upgrading from 1.2.x to 1.3.x](upgrade-1.3.md) for
+version-specific migration steps (manifest renames, Helm value renames, and other upgrade-time
+gotchas beyond the generic steps above).
+
 ## Uninstalling
 
 1. Remove the Helm release:
