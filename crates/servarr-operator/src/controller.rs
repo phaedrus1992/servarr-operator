@@ -5209,6 +5209,65 @@ mod tests {
         verify.session_get().await.unwrap();
     }
 
+    #[tokio::test]
+    async fn transmission_verify_client_builds_fresh_when_access_unusable() {
+        // None, Some(Err(_)), and a credentials_incomplete access all fall through to the
+        // fresh-build arm. Each must yield a client that authenticates with the *argument*
+        // creds (user:pass), not whatever the shared access carried — that is the property
+        // that distinguishes a fresh build from a reuse (#508).
+        let mock_server = MockServer::start().await;
+
+        // session-get only succeeds when the request carries both the handshake's session ID
+        // and the fresh-build creds; a reused shared client (different Authorization header)
+        // or an unprimed fresh client would fail to match.
+        Mock::given(method("POST"))
+            .and(path("/transmission/rpc"))
+            .and(body_partial_json(
+                serde_json::json!({"method": "session-get"}),
+            ))
+            .and(header("X-Transmission-Session-Id", "sess-fresh"))
+            .and(header("Authorization", "Basic dXNlcjpwYXNz"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "result": "success",
+                "arguments": {"version": "4.0.0"}
+            })))
+            .mount(&mock_server)
+            .await;
+        // One handshake per fresh client built below (3 total); the session-get mock above is
+        // mounted first and its header constraints route the retries there, not here.
+        Mock::given(method("POST"))
+            .and(path("/transmission/rpc"))
+            .respond_with(
+                ResponseTemplate::new(409).append_header("X-Transmission-Session-Id", "sess-fresh"),
+            )
+            .up_to_n_times(3)
+            .mount(&mock_server)
+            .await;
+
+        // None -> fresh build.
+        let none_client =
+            transmission_verify_client(None, &mock_server.uri(), "user", "pass").unwrap();
+        none_client.session_get().await.unwrap();
+
+        // Some(Err(_)) -> fresh build.
+        let broken_access: Result<TransmissionAccess, String> = Err("kube: broken".to_string());
+        let err_client =
+            transmission_verify_client(Some(&broken_access), &mock_server.uri(), "user", "pass")
+                .unwrap();
+        err_client.session_get().await.unwrap();
+
+        // credentials_incomplete -> fresh build (never a reuse of the unauthenticated shared
+        // client, which must stay untrusted on the health path).
+        let incomplete = TransmissionAccess {
+            client: servarr_api::TransmissionClient::new(&mock_server.uri(), None).unwrap(),
+            credentials_incomplete: true,
+        };
+        let incomplete_client =
+            transmission_verify_client(Some(&Ok(incomplete)), &mock_server.uri(), "user", "pass")
+                .unwrap();
+        incomplete_client.session_get().await.unwrap();
+    }
+
     // ---- apiHealthCheck.intervalSeconds throttle (#506) ----
 
     #[test]
