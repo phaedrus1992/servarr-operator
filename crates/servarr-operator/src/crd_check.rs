@@ -6,6 +6,7 @@ use k8s_openapi::apiextensions_apiserver::pkg::apis::apiextensions::v1::{
     CustomResourceDefinition, JSONSchemaProps,
 };
 use kube::{Api, Client};
+use servarr_api::k8s::kube_err_summary;
 use tracing::warn;
 
 /// A field this operator expects an installed CRD to publish, identified by its dotted path
@@ -53,7 +54,7 @@ pub async fn check(client: &Client) {
             Err(e) => {
                 warn!(
                     crd = exp.crd_name,
-                    error = %e,
+                    error = %kube_err_summary(&e),
                     "could not read installed CRD to run the startup schema self-check; skipping"
                 );
             }
