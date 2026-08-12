@@ -1715,8 +1715,15 @@ const CHECKING_STATUSES: [i64; 2] = [1, 2];
 /// a `TorrentInfo` with a missing hash defaults to `""` (#500), which would scope subsequent
 /// `torrent-verify`/`torrent-remove`/`torrent-get` calls to an empty-string id instead of failing
 /// loudly.
-const TORRENT_HEALTH_FIELDS: [&str; 6] =
-    ["id", "name", "error", "errorString", "status", "hashString"];
+const TORRENT_HEALTH_FIELDS: [&str; 7] = [
+    "id",
+    "name",
+    "error",
+    "errorString",
+    "status",
+    "hashString",
+    "percentDone",
+];
 
 /// Transmission's `tr_stat` error code for "the torrent has a local I/O problem" (missing or
 /// unreadable data, permissions, etc.). Codes `1`/`2` are tracker warning/error and carry
@@ -1739,11 +1746,13 @@ fn download_health_unknown(reason: &str, message: String, now: &str) -> Conditio
 }
 
 fn is_missing_data_torrent(t: &servarr_api::TorrentInfo) -> bool {
-    // Match on error code 3 (TR_STAT_LOCAL_ERROR) alone. Transmission rewrites the
-    // error message during/after verify (e.g. "no data found" → "no data was found!"),
-    // so substring matching is brittle — error=3 + stopped status is authoritative
-    // enough after a verify to confirm genuinely missing data (#537).
-    t.error == TR_STAT_LOCAL_ERROR
+    // Match on error code 3 (TR_STAT_LOCAL_ERROR) rather than errorString: Transmission
+    // rewrites the message during/after verify (e.g. "no data found" -> "no data was
+    // found!"), so substring matching is brittle (#537). But TR_STAT_LOCAL_ERROR also
+    // covers non-missing-data local I/O problems (permissions, disk-full, read-only
+    // remount) — require percentDone == 0.0 too, so a torrent that's merely stuck on a
+    // transient I/O error isn't misclassified as having lost its data.
+    t.error == TR_STAT_LOCAL_ERROR && t.percent_done == 0.0
 }
 
 fn is_checking(t: &servarr_api::TorrentInfo) -> bool {
@@ -4657,11 +4666,12 @@ mod tests {
             error_string: error_string.to_string(),
             status: 0,
             hash_string: format!("hash-{id}"),
+            percent_done: 0.0,
         }
     }
 
     #[test]
-    fn is_missing_data_torrent_matches_no_data_found_case_insensitively() {
+    fn is_missing_data_torrent_matches_local_error_with_zero_percent_done() {
         let t = torrent(1, 3, "No Data Found! Ensure your drives are connected.");
         assert!(is_missing_data_torrent(&t));
     }
@@ -4686,6 +4696,17 @@ mod tests {
         // torrent's tracker, not the local filesystem. A hostile tracker returning
         // "no data found" in its failure reason must not trigger removal (#483).
         let t = torrent(1, 2, "no data found! (tracker failure reason)");
+        assert!(!is_missing_data_torrent(&t));
+    }
+
+    #[test]
+    fn is_missing_data_torrent_ignores_local_error_with_data_present() {
+        // TR_STAT_LOCAL_ERROR (3) also covers permissions/disk-full/read-only-remount —
+        // not just missing data. A torrent that's mostly/fully downloaded but hit one of
+        // those must not be classified as missing-data (#537 regression: the errorString
+        // conjunct this replaced happened to exclude these too, just for the wrong reason).
+        let mut t = torrent(1, 3, "Permission denied");
+        t.percent_done = 0.97;
         assert!(!is_missing_data_torrent(&t));
     }
 
