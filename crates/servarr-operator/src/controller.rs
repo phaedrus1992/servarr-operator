@@ -1699,18 +1699,13 @@ async fn check_update_available(
     })
 }
 
-/// Substring (matched case-insensitively) Transmission reports in `errorString` when the
-/// on-disk data for a torrent has gone missing — e.g. an external cleanup job deleted files
-/// Transmission still references in its session (#483).
-const MISSING_DATA_ERROR_PATTERN: &str = "no data found";
-
 /// How many times to re-poll a torrent's status after triggering `torrent-verify` before
 /// treating it as "still checking, try again next reconcile" rather than removing it.
-/// Transmission clears the checking status for a genuinely-missing (zero-byte) torrent in
-/// well under a second, so a handful of short polls is enough without blocking reconcile
-/// for a long-running verify of a torrent that turns out to be fine.
-const VERIFY_POLL_ATTEMPTS: u8 = 5;
-const VERIFY_POLL_INTERVAL: Duration = Duration::from_millis(200);
+/// For large batches (hundreds of torrents) the verify itself can take minutes, so the
+/// poll window must cover that (#537). 100 attempts × 500ms = 50s total, enough for
+/// batches of several hundred torrents to complete verification.
+const VERIFY_POLL_ATTEMPTS: u8 = 100;
+const VERIFY_POLL_INTERVAL: Duration = Duration::from_millis(500);
 
 /// Transmission RPC status codes meaning "still hash-checking" (queued-to-verify, verifying).
 const CHECKING_STATUSES: [i64; 2] = [1, 2];
@@ -1744,10 +1739,11 @@ fn download_health_unknown(reason: &str, message: String, now: &str) -> Conditio
 }
 
 fn is_missing_data_torrent(t: &servarr_api::TorrentInfo) -> bool {
+    // Match on error code 3 (TR_STAT_LOCAL_ERROR) alone. Transmission rewrites the
+    // error message during/after verify (e.g. "no data found" → "no data was found!"),
+    // so substring matching is brittle — error=3 + stopped status is authoritative
+    // enough after a verify to confirm genuinely missing data (#537).
     t.error == TR_STAT_LOCAL_ERROR
-        && t.error_string
-            .to_lowercase()
-            .contains(MISSING_DATA_ERROR_PATTERN)
 }
 
 fn is_checking(t: &servarr_api::TorrentInfo) -> bool {
@@ -2051,19 +2047,16 @@ async fn report_stale_torrents(
     // characters, unbounded length — `events.k8s.io/v1` rejects a note over 1024 chars).
     // Report the operator-assigned ids instead; names are available in the operator's own
     // debug log for troubleshooting (#483).
+    //
+    // For large batches the full id list overflows 1024 chars (486 torrents → 2448-char
+    // note). Truncate to first 20 ids + "...and N more" to stay within the limit
+    // regardless of batch size (#538).
     debug!(
         names = ?stale.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(),
         "download-client health: stale torrent names"
     );
     let ids: Vec<i64> = stale.iter().map(|t| t.id).collect();
-    let note = format!(
-        "{} torrent(s) reporting missing data (ids: {ids:?}); {} removed as orphaned, \
-         {} confirmed orphaned but not removed, {} pending verify",
-        stale.len(),
-        outcome.removed.len(),
-        outcome.confirmed_orphaned.len(),
-        outcome.still_pending.len(),
-    );
+    let note = build_stale_torrent_note(&ids, stale.len(), outcome);
     if let Err(e) = recorder
         .publish(
             &Event {
@@ -2079,6 +2072,35 @@ async fn report_stale_torrents(
     {
         warn!(error = %e, "download-client health: failed to publish event");
     }
+}
+
+/// Build the event note for a stale-torrent batch, truncating the id list if necessary
+/// to stay within the 1024-char limit on `events.k8s.io/v1` notes (#538).
+fn build_stale_torrent_note(
+    ids: &[i64],
+    stale_count: usize,
+    outcome: &RemediationOutcome,
+) -> String {
+    const MAX_IDS_SHOWN: usize = 20;
+    let truncated = ids.len().saturating_sub(MAX_IDS_SHOWN);
+    let displayed: Vec<String> = ids
+        .iter()
+        .take(MAX_IDS_SHOWN)
+        .map(|id| id.to_string())
+        .collect();
+    let ids_part = if truncated > 0 {
+        format!("{} ...and {truncated} more", displayed.join(", "))
+    } else {
+        displayed.join(", ")
+    };
+    format!(
+        "{stale_count} torrent(s) reporting missing data (ids: {ids_part}); \
+         {} removed as orphaned, {} confirmed orphaned but not removed, \
+         {} pending verify",
+        outcome.removed.len(),
+        outcome.confirmed_orphaned.len(),
+        outcome.still_pending.len(),
+    )
 }
 
 fn build_download_health_condition(
