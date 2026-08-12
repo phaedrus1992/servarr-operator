@@ -1,6 +1,6 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use servarr_operator::{controller, media_stack_controller, server, telemetry, webhook};
+use servarr_operator::{controller, crd_check, media_stack_controller, server, telemetry, webhook};
 use tracing::{error, info};
 
 const METRICS_PORT: u16 = 8080;
@@ -69,6 +69,10 @@ async fn main() -> Result<()> {
     }
 
     let client = build_client(cli.kubeconfig, cli.context).await?;
+
+    // Best-effort startup diagnostic: warn if the installed CRDs are stale relative to this
+    // operator build (#543). Never blocks startup.
+    crd_check::check(&client).await;
 
     let state = server::ServerState::new();
 
