@@ -94,6 +94,12 @@ pub struct TorrentInfo {
     pub status: i64,
     #[serde(default)]
     pub hash_string: String,
+    /// Fraction of the torrent's data present on disk, `0.0`-`1.0`. Used alongside `error`
+    /// to confirm a `TR_STAT_LOCAL_ERROR` torrent's data is actually gone (`0.0`) rather than
+    /// some other local I/O problem — e.g. a permissions or disk-full error on an otherwise
+    /// complete torrent (#537).
+    #[serde(default)]
+    pub percent_done: f64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -804,8 +810,19 @@ mod tests {
             error_string in ".{0,200}",
             status in proptest::num::i64::ANY,
             hash_string in "[0-9a-f]{0,40}",
+            // Transmission reports a 0.0-1.0 fraction; ANY would generate NaN, which
+            // breaks the equality roundtrip assertion below (NaN != NaN).
+            percent_done in 0.0f64..=1.0,
         ) {
-            let original = TorrentInfo { id, name, error, error_string, status, hash_string };
+            let original = TorrentInfo {
+                id,
+                name,
+                error,
+                error_string,
+                status,
+                hash_string,
+                percent_done,
+            };
             let json = serde_json::to_value(&original).unwrap();
             let roundtripped: TorrentInfo = serde_json::from_value(json).unwrap();
             proptest::prop_assert_eq!(original, roundtripped);

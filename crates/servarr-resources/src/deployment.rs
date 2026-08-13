@@ -9,6 +9,7 @@ use k8s_openapi::api::core::v1::{
 use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{LabelSelector, ObjectMeta};
 use k8s_openapi::apimachinery::pkg::util::intstr::IntOrString;
+use kube::ResourceExt;
 use servarr_crds::*;
 use std::collections::{BTreeMap, HashMap};
 
@@ -118,7 +119,8 @@ pub fn build(
     let volume_mounts = build_volume_mounts(&persistence, app);
     let volumes = build_volumes(app, &persistence);
     let env_vars = build_env_vars(app, &defaults, uid, gid, &persistence);
-    let (container_security, pod_security) = build_security_contexts(security, uid, gid);
+    let (container_security, pod_security) =
+        build_security_contexts(security, app, &defaults, uid, gid);
 
     // Auto-select exec probes for Transmission with auth enabled
     let effective_probes = maybe_override_probes_for_auth(app, probes);
@@ -921,34 +923,53 @@ fn build_env_vars(
         }
     }
 
-    // Transmission auth from secret
-    if let Some(AppConfig::Transmission(ref tc)) = app.spec.app_config
+    // Legacy Transmission auth from appConfig.transmission.auth.
+    // Deprecated since v1.3: when adminCredentials is also set, this block is skipped to
+    // avoid duplicate USER/PASS env vars (SSA rejects the apply with a 500). Emit a
+    // deprecation warning so the user knows to remove the legacy block (#542).
+    //
+    // Gated on the same `AppType::Transmission` predicate as the adminCredentials block
+    // above (not just the AppConfig variant): a CR whose `spec.app` and `spec.app_config`
+    // disagree is normally rejected by the validating webhook, but when the webhook is off
+    // this keeps both blocks making the same app-type decision, so neither one can end up
+    // skipped while the other never fires — which would silently drop both USER and PASS.
+    if matches!(app.spec.app, AppType::Transmission)
+        && let Some(AppConfig::Transmission(ref tc)) = app.spec.app_config
         && let Some(ref auth) = tc.auth
     {
-        env.push(EnvVar {
-            name: "USER".into(),
-            value_from: Some(EnvVarSource {
-                secret_key_ref: Some(SecretKeySelector {
-                    name: auth.secret_name.clone(),
-                    key: "USER".into(),
-                    optional: Some(false),
+        if app.spec.admin_credentials.is_some() {
+            tracing::warn!(
+                app = %app.name_any(),
+                "appConfig.transmission.auth is deprecated since v1.3; spec.adminCredentials \
+                 takes precedence — skipping legacy auth block (adminCredentials already \
+                 provides USER/PASS)"
+            );
+        } else {
+            env.push(EnvVar {
+                name: "USER".into(),
+                value_from: Some(EnvVarSource {
+                    secret_key_ref: Some(SecretKeySelector {
+                        name: auth.secret_name.clone(),
+                        key: "USER".into(),
+                        optional: Some(false),
+                    }),
+                    ..Default::default()
                 }),
                 ..Default::default()
-            }),
-            ..Default::default()
-        });
-        env.push(EnvVar {
-            name: "PASS".into(),
-            value_from: Some(EnvVarSource {
-                secret_key_ref: Some(SecretKeySelector {
-                    name: auth.secret_name.clone(),
-                    key: "PASS".into(),
-                    optional: Some(false),
+            });
+            env.push(EnvVar {
+                name: "PASS".into(),
+                value_from: Some(EnvVarSource {
+                    secret_key_ref: Some(SecretKeySelector {
+                        name: auth.secret_name.clone(),
+                        key: "PASS".into(),
+                        optional: Some(false),
+                    }),
+                    ..Default::default()
                 }),
                 ..Default::default()
-            }),
-            ..Default::default()
-        });
+            });
+        }
     }
 
     env
@@ -956,6 +977,8 @@ fn build_env_vars(
 
 fn build_security_contexts(
     profile: &SecurityProfile,
+    app: &ServarrApp,
+    defaults: &AppDefaults,
     _uid: i64,
     gid: i64,
 ) -> (SecurityContext, PodSecurityContext) {
@@ -1017,9 +1040,16 @@ fn build_security_contexts(
             let run_as_user = Some(profile.user);
             let run_as_group = Some(profile.group);
             if profile.user == 0 {
-                tracing::warn!(
-                    "Custom security profile has user=0 (root); container will run as root"
-                );
+                // Only warn if root is a deviation from the app's defaults.
+                // Apps like SshBastion intentionally run as root (bind :22, SYS_CHROOT, etc.)
+                // — silent for them, loud for everything else.
+                if defaults.security.user != 0 {
+                    tracing::warn!(
+                        app = %app.name_any(),
+                        "Custom security profile runs as root (user=0); this may be intentional for \
+                         the app type but unexpected for others"
+                    );
+                }
             }
             let caps_drop = if profile.capabilities_drop.is_empty() {
                 Some(vec!["ALL".into()])

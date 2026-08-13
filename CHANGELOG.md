@@ -14,6 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Add `docs/upgrade-1.3.md`, a full 1.2.x → 1.3.x migration guide covering the Overseerr→Seerr
   rename, the legacy `appConfig.transmission.auth` conflict, `apiKeySecret` requirements for
   `apiHealthCheck`, and the Transmission download-data self-heal opt-ins.
+- Add a startup check that warns when the installed CRDs are missing a field the running operator
+  build expects, catching a missed `servarr-crds` upgrade before it silently drops config (#543).
 
 ### Fixed
 
@@ -31,6 +33,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Fix `kubectl apply` of a pre-1.3 manifest spelled `app: Overseerr` being rejected outright by the
   CRD's structural schema, even though already-stored objects with that spelling kept reconciling
   fine — the CRD schema now accepts the legacy value too (#540).
+- Fix `Transmission` reconcile failing outright (SSA 500, duplicate `USER`/`PASS` env vars) when
+  both `spec.adminCredentials` and the legacy `spec.appConfig.transmission.auth` were set —
+  `adminCredentials` now wins and the legacy block is skipped instead of conflicting (#536).
+- Fix the Transmission download-data self-heal losing track of orphaned torrents after
+  Transmission rewrote its own error message during verify (`"no data found"` -> `"no data was
+  found"`), which silently escaped the removal predicate — now matches on the error code instead
+  of the message text (#537).
+- Fix the `DownloadDataMissing` event never publishing for large stale-torrent batches because its
+  note exceeded the Kubernetes Events API's 1024-character limit — the torrent-id list is now
+  truncated (#538).
+- Fix a spurious root-user warning logged on every reconcile for apps that intentionally run as
+  root by design (e.g. `SshBastion`) — the warning now only fires when running as root deviates
+  from the app's own default (#539).
+- Fix the legacy `appConfig.transmission.auth` config being silently dropped with no signal —
+  the operator now publishes a `DeprecatedTransmissionAuth` Warning Event and log warning so
+  users upgrading from 1.2 know to remove it (#542).
 
 ## [1.3.0] - 2026-08-07
 

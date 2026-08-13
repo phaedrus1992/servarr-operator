@@ -2124,6 +2124,135 @@ async fn test_transmission_reconcile_creates_configmap() {
     assert_eq!(result.unwrap(), Action::requeue(Duration::from_secs(300)));
 }
 
+/// #542: when both adminCredentials and legacy appConfig.transmission.auth are set,
+/// deployment::build silently drops the legacy env vars (#536) -- reconcile must still
+/// surface that as a Warning Event, not just an operator-log line.
+#[tokio::test]
+async fn test_transmission_reconcile_warns_on_legacy_auth_with_admin_credentials() {
+    use servarr_crds::{AdminCredentialsSpec, AppConfig, TransmissionAuth, TransmissionConfig};
+
+    let mock_server = MockServer::start().await;
+    let client = mock_client(&mock_server.uri()).await;
+    let ctx = test_context(client);
+
+    let spec = ServarrAppSpec {
+        app: AppType::Transmission,
+        admin_credentials: Some(AdminCredentialsSpec {
+            secret_name: "test-transmission-admin".into(),
+        }),
+        app_config: Some(AppConfig::Transmission(TransmissionConfig {
+            auth: Some(TransmissionAuth {
+                secret_name: "test-transmission-legacy-auth".into(),
+            }),
+            ..Default::default()
+        })),
+        ..Default::default()
+    };
+    let mut app = ServarrApp::new("test-transmission-both-auth", spec);
+    app.metadata.namespace = Some("test".into());
+    app.metadata.uid = Some("test-uid-tx-both-auth".into());
+    app.metadata.resource_version = Some("1".into());
+    app.metadata.generation = Some(1);
+    let app = Arc::new(app);
+
+    mount_common_mocks(
+        &mock_server,
+        "test-transmission-both-auth",
+        "test",
+        "transmission",
+    )
+    .await;
+
+    Mock::given(method("PATCH"))
+        .and(path(
+            "/api/v1/namespaces/test/configmaps/test-transmission-both-auth",
+        ))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(configmap_response("test-transmission-both-auth", "test")),
+        )
+        .mount(&mock_server)
+        .await;
+
+    let result = servarr_operator::controller::reconcile(app, ctx).await;
+    assert!(result.is_ok(), "reconcile should succeed, got: {result:?}");
+
+    let requests = mock_server.received_requests().await.unwrap_or_default();
+    let deprecated_auth_event = requests.iter().any(|r| {
+        r.method == wiremock::http::Method::POST
+            && r.url.path() == "/apis/events.k8s.io/v1/namespaces/test/events"
+            && serde_json::from_slice::<serde_json::Value>(&r.body).is_ok_and(|body| {
+                body["reason"] == "DeprecatedTransmissionAuth" && body["type"] == "Warning"
+            })
+    });
+    assert!(
+        deprecated_auth_event,
+        "reconcile should publish a Warning Event with reason DeprecatedTransmissionAuth \
+         when both adminCredentials and the legacy appConfig.transmission.auth are set, \
+         requests: {requests:?}"
+    );
+}
+
+/// adminCredentials alone (the supported, non-deprecated shape) must not trigger the
+/// deprecation Event -- only the presence of the legacy auth block alongside it does.
+#[tokio::test]
+async fn test_transmission_reconcile_skips_legacy_auth_warning_without_legacy_block() {
+    use servarr_crds::AdminCredentialsSpec;
+
+    let mock_server = MockServer::start().await;
+    let client = mock_client(&mock_server.uri()).await;
+    let ctx = test_context(client);
+
+    let spec = ServarrAppSpec {
+        app: AppType::Transmission,
+        admin_credentials: Some(AdminCredentialsSpec {
+            secret_name: "test-transmission-admin-only".into(),
+        }),
+        ..Default::default()
+    };
+    let mut app = ServarrApp::new("test-transmission-admin-only", spec);
+    app.metadata.namespace = Some("test".into());
+    app.metadata.uid = Some("test-uid-tx-admin-only".into());
+    app.metadata.resource_version = Some("1".into());
+    app.metadata.generation = Some(1);
+    let app = Arc::new(app);
+
+    mount_common_mocks(
+        &mock_server,
+        "test-transmission-admin-only",
+        "test",
+        "transmission",
+    )
+    .await;
+
+    Mock::given(method("PATCH"))
+        .and(path(
+            "/api/v1/namespaces/test/configmaps/test-transmission-admin-only",
+        ))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(configmap_response("test-transmission-admin-only", "test")),
+        )
+        .mount(&mock_server)
+        .await;
+
+    let result = servarr_operator::controller::reconcile(app, ctx).await;
+    assert!(result.is_ok(), "reconcile should succeed, got: {result:?}");
+
+    let requests = mock_server.received_requests().await.unwrap_or_default();
+    let deprecated_auth_event = requests.iter().any(|r| {
+        r.method == wiremock::http::Method::POST
+            && r.url.path() == "/apis/events.k8s.io/v1/namespaces/test/events"
+            && serde_json::from_slice::<serde_json::Value>(&r.body)
+                .is_ok_and(|body| body["reason"] == "DeprecatedTransmissionAuth")
+    });
+    assert!(
+        !deprecated_auth_event,
+        "reconcile must not publish DeprecatedTransmissionAuth when only adminCredentials \
+         is set -- that's the supported, non-deprecated shape, requests: {requests:?}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Test 11: App with gateway enabled + TLS -> TCPRoute + Certificate
 // ---------------------------------------------------------------------------

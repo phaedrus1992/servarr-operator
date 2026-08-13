@@ -27,6 +27,34 @@ pub struct Context {
     pub watch_namespace: Option<String>,
 }
 
+/// Parses `WATCH_ALL_NAMESPACES`. Standalone (not just an inline step of [`Context::new`]) so
+/// callers that need the cluster-scoped/namespace-scoped decision before a full `Context`
+/// exists — e.g. deciding whether the `crd_check` self-check has the RBAC to run (#543,
+/// `ClusterRole`-only) — don't duplicate the parsing.
+pub fn watch_all_namespaces() -> bool {
+    match std::env::var("WATCH_ALL_NAMESPACES") {
+        Ok(v) if v.eq_ignore_ascii_case("true") || v == "1" || v.eq_ignore_ascii_case("yes") => {
+            true
+        }
+        Ok(v)
+            if v.eq_ignore_ascii_case("false")
+                || v == "0"
+                || v.eq_ignore_ascii_case("no")
+                || v.is_empty() =>
+        {
+            false
+        }
+        Ok(v) => {
+            warn!(
+                value = %v,
+                "unrecognized WATCH_ALL_NAMESPACES value, expected true/false/1/0/yes/no; defaulting to false"
+            );
+            false
+        }
+        Err(_) => false,
+    }
+}
+
 impl Context {
     pub fn new(client: Client) -> Self {
         let (image_overrides, legacy_image_override_apps) = load_image_overrides();
@@ -34,29 +62,7 @@ impl Context {
             controller: "servarr-operator".into(),
             instance: std::env::var("POD_NAME").ok(),
         };
-        let watch_all = match std::env::var("WATCH_ALL_NAMESPACES") {
-            Ok(v)
-                if v.eq_ignore_ascii_case("true") || v == "1" || v.eq_ignore_ascii_case("yes") =>
-            {
-                true
-            }
-            Ok(v)
-                if v.eq_ignore_ascii_case("false")
-                    || v == "0"
-                    || v.eq_ignore_ascii_case("no")
-                    || v.is_empty() =>
-            {
-                false
-            }
-            Ok(v) => {
-                warn!(
-                    value = %v,
-                    "unrecognized WATCH_ALL_NAMESPACES value, expected true/false/1/0/yes/no; defaulting to false"
-                );
-                false
-            }
-            Err(_) => false,
-        };
+        let watch_all = watch_all_namespaces();
         let watch_namespace = if watch_all {
             None
         } else {
@@ -315,106 +321,82 @@ mod tests {
         );
     }
 
-    // ── WATCH_ALL_NAMESPACES parsing (tested via Context::new internals) ──
-    //
-    // Context::new requires a kube::Client, which needs a real cluster.
-    // We test the env-var parsing logic by extracting it into a helper here.
-
-    /// Mirrors the WATCH_ALL_NAMESPACES parsing from Context::new.
-    fn parse_watch_all() -> bool {
-        match std::env::var("WATCH_ALL_NAMESPACES") {
-            Ok(v)
-                if v.eq_ignore_ascii_case("true") || v == "1" || v.eq_ignore_ascii_case("yes") =>
-            {
-                true
-            }
-            Ok(v)
-                if v.eq_ignore_ascii_case("false")
-                    || v == "0"
-                    || v.eq_ignore_ascii_case("no")
-                    || v.is_empty() =>
-            {
-                false
-            }
-            Ok(_) => false,
-            Err(_) => false,
-        }
-    }
+    // ── WATCH_ALL_NAMESPACES parsing ──
 
     #[test]
     fn watch_all_true_lowercase() {
         temp_env::with_var("WATCH_ALL_NAMESPACES", Some("true"), || {
-            assert!(parse_watch_all());
+            assert!(watch_all_namespaces());
         });
     }
 
     #[test]
     fn watch_all_true_uppercase() {
         temp_env::with_var("WATCH_ALL_NAMESPACES", Some("TRUE"), || {
-            assert!(parse_watch_all());
+            assert!(watch_all_namespaces());
         });
     }
 
     #[test]
     fn watch_all_one() {
         temp_env::with_var("WATCH_ALL_NAMESPACES", Some("1"), || {
-            assert!(parse_watch_all());
+            assert!(watch_all_namespaces());
         });
     }
 
     #[test]
     fn watch_all_yes() {
         temp_env::with_var("WATCH_ALL_NAMESPACES", Some("yes"), || {
-            assert!(parse_watch_all());
+            assert!(watch_all_namespaces());
         });
     }
 
     #[test]
     fn watch_all_false_lowercase() {
         temp_env::with_var("WATCH_ALL_NAMESPACES", Some("false"), || {
-            assert!(!parse_watch_all());
+            assert!(!watch_all_namespaces());
         });
     }
 
     #[test]
     fn watch_all_false_uppercase() {
         temp_env::with_var("WATCH_ALL_NAMESPACES", Some("FALSE"), || {
-            assert!(!parse_watch_all());
+            assert!(!watch_all_namespaces());
         });
     }
 
     #[test]
     fn watch_all_zero() {
         temp_env::with_var("WATCH_ALL_NAMESPACES", Some("0"), || {
-            assert!(!parse_watch_all());
+            assert!(!watch_all_namespaces());
         });
     }
 
     #[test]
     fn watch_all_no() {
         temp_env::with_var("WATCH_ALL_NAMESPACES", Some("no"), || {
-            assert!(!parse_watch_all());
+            assert!(!watch_all_namespaces());
         });
     }
 
     #[test]
     fn watch_all_empty_string() {
         temp_env::with_var("WATCH_ALL_NAMESPACES", Some(""), || {
-            assert!(!parse_watch_all());
+            assert!(!watch_all_namespaces());
         });
     }
 
     #[test]
     fn watch_all_unset() {
         temp_env::with_var("WATCH_ALL_NAMESPACES", None::<&str>, || {
-            assert!(!parse_watch_all());
+            assert!(!watch_all_namespaces());
         });
     }
 
     #[test]
     fn watch_all_unrecognized_defaults_false() {
         temp_env::with_var("WATCH_ALL_NAMESPACES", Some("maybe"), || {
-            assert!(!parse_watch_all());
+            assert!(!watch_all_namespaces());
         });
     }
 
@@ -422,7 +404,7 @@ mod tests {
 
     /// Mirrors the watch_namespace derivation from Context::new.
     fn derive_watch_namespace() -> Option<String> {
-        let watch_all = parse_watch_all();
+        let watch_all = watch_all_namespaces();
         if watch_all {
             None
         } else {
