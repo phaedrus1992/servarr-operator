@@ -15,7 +15,7 @@ use kube::{Client, CustomResourceExt, Resource, ResourceExt};
 use servarr_api::AppKind;
 use servarr_api::TenantSafeMessage;
 use servarr_api::k8s::{kube_err_public_summary, kube_err_summary};
-use servarr_crds::{AppType, Condition, ServarrApp, ServarrAppStatus, condition_types};
+use servarr_crds::{AppConfig, AppType, Condition, ServarrApp, ServarrAppStatus, condition_types};
 use thiserror::Error;
 use tokio::time::Duration;
 use tracing::{debug, error, info, warn};
@@ -344,6 +344,33 @@ pub async fn reconcile(app: Arc<ServarrApp>, ctx: Arc<Context>) -> Result<Action
             .await
     {
         warn!(%name, error = %kube_err_summary(&e), "failed to publish DeprecatedImageOverride event");
+    }
+
+    // #542: appConfig.transmission.auth is superseded by adminCredentials when both are
+    // set (deployment::build silently drops the legacy env vars to avoid an SSA conflict,
+    // #536). A tracing warn! alone is invisible to a user who isn't reading operator logs,
+    // same reasoning as DeprecatedImageOverride above — surface it as a Warning Event too.
+    if app.spec.app == AppType::Transmission
+        && app.spec.admin_credentials.is_some()
+        && matches!(&app.spec.app_config, Some(AppConfig::Transmission(tc)) if tc.auth.is_some())
+        && let Err(e) = recorder
+            .publish(
+                &Event {
+                    type_: EventType::Warning,
+                    reason: "DeprecatedTransmissionAuth".into(),
+                    note: Some(
+                        "appConfig.transmission.auth is deprecated since v1.3 and ignored while \
+                         spec.adminCredentials is set — remove appConfig.transmission.auth"
+                            .into(),
+                    ),
+                    action: "BuildDeployment".into(),
+                    secondary: None,
+                },
+                &obj_ref,
+            )
+            .await
+    {
+        warn!(%name, error = %kube_err_summary(&e), "failed to publish DeprecatedTransmissionAuth event");
     }
 
     // Issue #44: an AppType rename (e.g. Overseerr -> Seerr) changes the

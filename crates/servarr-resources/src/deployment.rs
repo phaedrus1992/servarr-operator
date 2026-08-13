@@ -927,7 +927,14 @@ fn build_env_vars(
     // Deprecated since v1.3: when adminCredentials is also set, this block is skipped to
     // avoid duplicate USER/PASS env vars (SSA rejects the apply with a 500). Emit a
     // deprecation warning so the user knows to remove the legacy block (#542).
-    if let Some(AppConfig::Transmission(ref tc)) = app.spec.app_config
+    //
+    // Gated on the same `AppType::Transmission` predicate as the adminCredentials block
+    // above (not just the AppConfig variant): a CR whose `spec.app` and `spec.app_config`
+    // disagree is normally rejected by the validating webhook, but when the webhook is off
+    // this keeps both blocks making the same app-type decision, so neither one can end up
+    // skipped while the other never fires — which would silently drop both USER and PASS.
+    if matches!(app.spec.app, AppType::Transmission)
+        && let Some(AppConfig::Transmission(ref tc)) = app.spec.app_config
         && let Some(ref auth) = tc.auth
     {
         if app.spec.admin_credentials.is_some() {
