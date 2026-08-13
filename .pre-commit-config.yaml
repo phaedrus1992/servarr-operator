@@ -62,6 +62,17 @@ repos:
         stages: [pre-push]
         always_run: true
 
+      - id: cargo-hawk
+        name: cargo hawk (dead/unnecessary-pub surface)
+        # servarr_api and servarr_crds are excluded: their pub surface is a genuine
+        # cross-crate boundary consumed by sibling workspace crates, not dead code.
+        # Non-blocking (no -D) until the existing findings are triaged — see #568/#569.
+        entry: cargo hawk check --manifest-path Cargo.toml --exclude-crate servarr_api --exclude-crate servarr_crds -W hawk::unnecessary_public -W hawk::unnecessary_restricted_visibility
+        language: system
+        pass_filenames: false
+        stages: [pre-push]
+        always_run: true
+
       # ── Stage 2.5: pre-push tag validation ──────────────────────────────────
       # Catch locally what CI would catch: pushing a tag without a matching
       # CHANGELOG.md section. Saves a wasted CI run.

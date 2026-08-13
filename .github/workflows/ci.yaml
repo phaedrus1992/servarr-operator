@@ -104,6 +104,35 @@ jobs:
       - name: Run clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
+  hawk:
+    needs: [fmt, actionlint, zizmor]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+
+      - name: Cache cargo-hawk binary
+        id: cargo-hawk-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cargo/bin/cargo-hawk
+          key: cargo-hawk-0.1.12-${{ runner.os }}
+
+      - name: Install cargo-hawk
+        if: steps.cargo-hawk-cache.outputs.cache-hit != 'true'
+        run: RUSTC_BOOTSTRAP=1 cargo install --locked --version 0.1.12 cargo-hawk
+
+      - name: Run cargo-hawk
+        # servarr_api and servarr_crds are excluded: their pub surface is a genuine
+        # cross-crate boundary consumed by sibling workspace crates, not dead code.
+        # Non-blocking (no -D) until the existing findings are triaged — see #568/#569.
+        run: cargo hawk check --manifest-path Cargo.toml --exclude-crate servarr_api --exclude-crate servarr_crds -W hawk::unnecessary_public -W hawk::unnecessary_restricted_visibility
+
   test:
     needs: [fmt, actionlint, zizmor]
     runs-on: ubuntu-latest
