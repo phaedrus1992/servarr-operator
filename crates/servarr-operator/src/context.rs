@@ -58,6 +58,34 @@ pub fn watch_all_namespaces() -> bool {
     }
 }
 
+/// Parses `WATCH_ALL_NAMESPACES`. Standalone (not just an inline step of [`Context::new`]) so
+/// callers that need the cluster-scoped/namespace-scoped decision before a full `Context`
+/// exists — e.g. deciding whether the `crd_check` self-check has the RBAC to run (#543,
+/// `ClusterRole`-only) — don't duplicate the parsing.
+pub fn watch_all_namespaces() -> bool {
+    match std::env::var("WATCH_ALL_NAMESPACES") {
+        Ok(v) if v.eq_ignore_ascii_case("true") || v == "1" || v.eq_ignore_ascii_case("yes") => {
+            true
+        }
+        Ok(v)
+            if v.eq_ignore_ascii_case("false")
+                || v == "0"
+                || v.eq_ignore_ascii_case("no")
+                || v.is_empty() =>
+        {
+            false
+        }
+        Ok(v) => {
+            warn!(
+                value = %v,
+                "unrecognized WATCH_ALL_NAMESPACES value, expected true/false/1/0/yes/no; defaulting to false"
+            );
+            false
+        }
+        Err(_) => false,
+    }
+}
+
 impl Context {
     pub fn new(client: Client) -> Self {
         let (image_overrides, legacy_image_override_apps) = load_image_overrides();
