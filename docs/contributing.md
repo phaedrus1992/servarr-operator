@@ -19,9 +19,11 @@ The hooks run `cargo fmt`, `actionlint`, `zizmor`, `helm lint`, `cargo clippy`, 
 `cargo hawk` (dead/unnecessary-pub lint) on every commit.
 
 `cargo hawk` needs [cargo-hawk](https://github.com/astral-sh/hawk), which pins the `1.97.1`
-toolchain internally (matching `rust-toolchain.toml`). Install it once:
+toolchain internally (matching `rust-toolchain.toml`) and hooks compiler internals, so it also
+needs the `rustc-dev` and `llvm-tools-preview` components. Install it once:
 
 ```bash
+rustup component add rustc-dev llvm-tools-preview
 RUSTC_BOOTSTRAP=1 cargo install --locked --version 0.1.12 cargo-hawk
 ```
 

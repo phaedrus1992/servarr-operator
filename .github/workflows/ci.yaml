@@ -116,6 +116,11 @@ jobs:
       - name: Rust cache
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
 
+      - name: Install rustc-dev components
+        # cargo-hawk hooks compiler internals (rustc_interface, rustc_lexer, ...),
+        # which the default toolchain profile doesn't ship.
+        run: rustup component add rustc-dev llvm-tools-preview
+
       - name: Install cargo-hawk
         run: RUSTC_BOOTSTRAP=1 cargo install --locked --version 0.1.12 cargo-hawk
 
