@@ -99,7 +99,7 @@ jobs:
           persist-credentials: false
 
       - name: Rust cache
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       - name: Run clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
@@ -114,7 +114,7 @@ jobs:
           persist-credentials: false
 
       - name: Rust cache
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       - name: Install rustc-dev components
         # cargo-hawk hooks compiler internals (rustc_interface, rustc_lexer, ...),
@@ -140,7 +140,7 @@ jobs:
           persist-credentials: false
 
       - name: Rust cache
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@15449e3094499af05d8d964a1c884208e4b8b595 # v2.81.11
