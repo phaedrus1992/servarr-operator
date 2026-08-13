@@ -761,6 +761,7 @@ mod tests {
         Arc::new(Context {
             client,
             image_overrides: Default::default(),
+            legacy_image_override_apps: Default::default(),
             reporter: Reporter {
                 controller: "test".into(),
                 instance: None,

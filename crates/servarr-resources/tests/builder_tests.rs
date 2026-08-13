@@ -1987,6 +1987,7 @@ fn test_deployment_seerr_config_ownership_migration_skipped_for_existing_claim_n
             size: String::new(),
         }],
         nfs_mounts: vec![],
+        removed_default_volumes: vec![],
     });
     assert!(
         !has_migrate_config_ownership_container(&app),
