@@ -15,7 +15,7 @@ use kube::{Client, CustomResourceExt, Resource, ResourceExt};
 use servarr_api::AppKind;
 use servarr_api::TenantSafeMessage;
 use servarr_api::k8s::{kube_err_public_summary, kube_err_summary};
-use servarr_crds::{AppType, Condition, ServarrApp, ServarrAppStatus, condition_types};
+use servarr_crds::{AppConfig, AppType, Condition, ServarrApp, ServarrAppStatus, condition_types};
 use thiserror::Error;
 use tokio::time::Duration;
 use tracing::{debug, error, info, warn};
@@ -366,6 +366,33 @@ pub async fn reconcile(app: Arc<ServarrApp>, ctx: Arc<Context>) -> Result<Action
             .await
     {
         warn!(%name, error = %kube_err_summary(&e), "failed to publish DeprecatedImageOverride event");
+    }
+
+    // #542: appConfig.transmission.auth is superseded by adminCredentials when both are
+    // set (deployment::build silently drops the legacy env vars to avoid an SSA conflict,
+    // #536). A tracing warn! alone is invisible to a user who isn't reading operator logs,
+    // same reasoning as DeprecatedImageOverride above — surface it as a Warning Event too.
+    if app.spec.app == AppType::Transmission
+        && app.spec.admin_credentials.is_some()
+        && matches!(&app.spec.app_config, Some(AppConfig::Transmission(tc)) if tc.auth.is_some())
+        && let Err(e) = recorder
+            .publish(
+                &Event {
+                    type_: EventType::Warning,
+                    reason: "DeprecatedTransmissionAuth".into(),
+                    note: Some(
+                        "appConfig.transmission.auth is deprecated since v1.3 and ignored while \
+                         spec.adminCredentials is set — remove appConfig.transmission.auth"
+                            .into(),
+                    ),
+                    action: "BuildDeployment".into(),
+                    secondary: None,
+                },
+                &obj_ref,
+            )
+            .await
+    {
+        warn!(%name, error = %kube_err_summary(&e), "failed to publish DeprecatedTransmissionAuth event");
     }
 
     // Issue #44: an AppType rename (e.g. Overseerr -> Seerr) changes the
@@ -1844,18 +1871,13 @@ async fn check_update_available(
     })
 }
 
-/// Substring (matched case-insensitively) Transmission reports in `errorString` when the
-/// on-disk data for a torrent has gone missing — e.g. an external cleanup job deleted files
-/// Transmission still references in its session (#483).
-const MISSING_DATA_ERROR_PATTERN: &str = "no data found";
-
 /// How many times to re-poll a torrent's status after triggering `torrent-verify` before
 /// treating it as "still checking, try again next reconcile" rather than removing it.
-/// Transmission clears the checking status for a genuinely-missing (zero-byte) torrent in
-/// well under a second, so a handful of short polls is enough without blocking reconcile
-/// for a long-running verify of a torrent that turns out to be fine.
-const VERIFY_POLL_ATTEMPTS: u8 = 5;
-const VERIFY_POLL_INTERVAL: Duration = Duration::from_millis(200);
+/// For large batches (hundreds of torrents) the verify itself can take minutes, so the
+/// poll window must cover that (#537). 100 attempts × 500ms = 50s total, enough for
+/// batches of several hundred torrents to complete verification.
+const VERIFY_POLL_ATTEMPTS: u8 = 100;
+const VERIFY_POLL_INTERVAL: Duration = Duration::from_millis(500);
 
 /// Transmission RPC status codes meaning "still hash-checking" (queued-to-verify, verifying).
 const CHECKING_STATUSES: [i64; 2] = [1, 2];
@@ -1865,8 +1887,15 @@ const CHECKING_STATUSES: [i64; 2] = [1, 2];
 /// a `TorrentInfo` with a missing hash defaults to `""` (#500), which would scope subsequent
 /// `torrent-verify`/`torrent-remove`/`torrent-get` calls to an empty-string id instead of failing
 /// loudly.
-const TORRENT_HEALTH_FIELDS: [&str; 6] =
-    ["id", "name", "error", "errorString", "status", "hashString"];
+const TORRENT_HEALTH_FIELDS: [&str; 7] = [
+    "id",
+    "name",
+    "error",
+    "errorString",
+    "status",
+    "hashString",
+    "percentDone",
+];
 
 /// Transmission's `tr_stat` error code for "the torrent has a local I/O problem" (missing or
 /// unreadable data, permissions, etc.). Codes `1`/`2` are tracker warning/error and carry
@@ -1889,10 +1918,13 @@ fn download_health_unknown(reason: &str, message: String, now: &str) -> Conditio
 }
 
 fn is_missing_data_torrent(t: &servarr_api::TorrentInfo) -> bool {
-    t.error == TR_STAT_LOCAL_ERROR
-        && t.error_string
-            .to_lowercase()
-            .contains(MISSING_DATA_ERROR_PATTERN)
+    // Match on error code 3 (TR_STAT_LOCAL_ERROR) rather than errorString: Transmission
+    // rewrites the message during/after verify (e.g. "no data found" -> "no data was
+    // found!"), so substring matching is brittle (#537). But TR_STAT_LOCAL_ERROR also
+    // covers non-missing-data local I/O problems (permissions, disk-full, read-only
+    // remount) — require percentDone == 0.0 too, so a torrent that's merely stuck on a
+    // transient I/O error isn't misclassified as having lost its data.
+    t.error == TR_STAT_LOCAL_ERROR && t.percent_done == 0.0
 }
 
 fn is_checking(t: &servarr_api::TorrentInfo) -> bool {
@@ -2196,19 +2228,16 @@ async fn report_stale_torrents(
     // characters, unbounded length — `events.k8s.io/v1` rejects a note over 1024 chars).
     // Report the operator-assigned ids instead; names are available in the operator's own
     // debug log for troubleshooting (#483).
+    //
+    // For large batches the full id list overflows 1024 chars (486 torrents → 2448-char
+    // note). Truncate to first 20 ids + "...and N more" to stay within the limit
+    // regardless of batch size (#538).
     debug!(
         names = ?stale.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(),
         "download-client health: stale torrent names"
     );
     let ids: Vec<i64> = stale.iter().map(|t| t.id).collect();
-    let note = format!(
-        "{} torrent(s) reporting missing data (ids: {ids:?}); {} removed as orphaned, \
-         {} confirmed orphaned but not removed, {} pending verify",
-        stale.len(),
-        outcome.removed.len(),
-        outcome.confirmed_orphaned.len(),
-        outcome.still_pending.len(),
-    );
+    let note = build_stale_torrent_note(&ids, stale.len(), outcome);
     if let Err(e) = recorder
         .publish(
             &Event {
@@ -2224,6 +2253,35 @@ async fn report_stale_torrents(
     {
         warn!(error = %e, "download-client health: failed to publish event");
     }
+}
+
+/// Build the event note for a stale-torrent batch, truncating the id list if necessary
+/// to stay within the 1024-char limit on `events.k8s.io/v1` notes (#538).
+fn build_stale_torrent_note(
+    ids: &[i64],
+    stale_count: usize,
+    outcome: &RemediationOutcome,
+) -> String {
+    const MAX_IDS_SHOWN: usize = 20;
+    let truncated = ids.len().saturating_sub(MAX_IDS_SHOWN);
+    let displayed: Vec<String> = ids
+        .iter()
+        .take(MAX_IDS_SHOWN)
+        .map(|id| id.to_string())
+        .collect();
+    let ids_part = if truncated > 0 {
+        format!("{} ...and {truncated} more", displayed.join(", "))
+    } else {
+        displayed.join(", ")
+    };
+    format!(
+        "{stale_count} torrent(s) reporting missing data (ids: {ids_part}); \
+         {} removed as orphaned, {} confirmed orphaned but not removed, \
+         {} pending verify",
+        outcome.removed.len(),
+        outcome.confirmed_orphaned.len(),
+        outcome.still_pending.len(),
+    )
 }
 
 fn build_download_health_condition(
@@ -4836,11 +4894,12 @@ mod tests {
             error_string: error_string.to_string(),
             status: 0,
             hash_string: format!("hash-{id}"),
+            percent_done: 0.0,
         }
     }
 
     #[test]
-    fn is_missing_data_torrent_matches_no_data_found_case_insensitively() {
+    fn is_missing_data_torrent_matches_local_error_with_zero_percent_done() {
         let t = torrent(1, 3, "No Data Found! Ensure your drives are connected.");
         assert!(is_missing_data_torrent(&t));
     }
@@ -4865,6 +4924,17 @@ mod tests {
         // torrent's tracker, not the local filesystem. A hostile tracker returning
         // "no data found" in its failure reason must not trigger removal (#483).
         let t = torrent(1, 2, "no data found! (tracker failure reason)");
+        assert!(!is_missing_data_torrent(&t));
+    }
+
+    #[test]
+    fn is_missing_data_torrent_ignores_local_error_with_data_present() {
+        // TR_STAT_LOCAL_ERROR (3) also covers permissions/disk-full/read-only-remount —
+        // not just missing data. A torrent that's mostly/fully downloaded but hit one of
+        // those must not be classified as missing-data (#537 regression: the errorString
+        // conjunct this replaced happened to exclude these too, just for the wrong reason).
+        let mut t = torrent(1, 3, "Permission denied");
+        t.percent_done = 0.97;
         assert!(!is_missing_data_torrent(&t));
     }
 
@@ -4942,7 +5012,10 @@ mod tests {
         assert_eq!(settled[0].status, 0);
     }
 
-    #[tokio::test]
+    // start_paused: VERIFY_POLL_ATTEMPTS x VERIFY_POLL_INTERVAL is ~50s of real sleeps
+    // (#537, widened for large batches) -- paused virtual time auto-advances through the
+    // idle sleeps between mock-server round trips instead of burning wall-clock time.
+    #[tokio::test(start_paused = true)]
     async fn poll_until_settled_gives_up_and_returns_empty_when_still_checking() {
         let mock_server = MockServer::start().await;
         Mock::given(method("POST"))
