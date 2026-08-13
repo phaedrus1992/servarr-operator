@@ -15,8 +15,19 @@ Pre-commit hooks are managed with [prek](https://github.com/nickel-lang/prek). I
 prek install
 ```
 
-The hooks run `cargo fmt`, `actionlint`, `zizmor`, `helm lint`, `cargo clippy`, and `cargo test`
-on every commit.
+The hooks run `cargo fmt`, `actionlint`, `zizmor`, `helm lint`, `cargo clippy`, `cargo test`, and
+`cargo hawk` (dead/unnecessary-pub lint) on every commit.
+
+`cargo hawk` needs [cargo-hawk](https://github.com/astral-sh/hawk), which pins the `1.97.1`
+toolchain internally (matching `rust-toolchain.toml`). Install it once:
+
+```bash
+RUSTC_BOOTSTRAP=1 cargo install --locked --version 0.1.12 cargo-hawk
+```
+
+`RUSTC_BOOTSTRAP=1` only scopes to that one install command — it does not affect `cargo build`,
+`cargo test`, or any other command in your shell. The hook currently runs non-blocking (`-W`, not
+`-D`); see #568/#569 for the tracked follow-up on tightening the findings it reports today.
 
 ## CI Commit Message Flags
 
