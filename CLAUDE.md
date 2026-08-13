@@ -39,6 +39,7 @@ retarget a milestone-scoped PR to `main` without explicit user approval.
 
 ## CI Toolchain Note
 
-CI runs Rust 1.94.0, which may enforce stricter Clippy lints than the local toolchain. Always run
+CI runs Rust 1.97.1, which may enforce stricter Clippy lints than the local toolchain. Always run
 `cargo clippy --all-targets --all-features -- -D warnings` locally before pushing to catch
-lint regressions early. Known stricter lints on 1.94: `clippy::bool_comparison`.
+lint regressions early. Known stricter lints on 1.94: `clippy::bool_comparison`. The 1.94 -> 1.97.1
+bump (v1.3.1) surfaced no additional stricter lints against this codebase.
