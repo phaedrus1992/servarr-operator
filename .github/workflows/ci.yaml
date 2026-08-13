@@ -116,15 +116,7 @@ jobs:
       - name: Rust cache
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
 
-      - name: Cache cargo-hawk binary
-        id: cargo-hawk-cache
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.cargo/bin/cargo-hawk
-          key: cargo-hawk-0.1.12-${{ runner.os }}
-
       - name: Install cargo-hawk
-        if: steps.cargo-hawk-cache.outputs.cache-hit != 'true'
         run: RUSTC_BOOTSTRAP=1 cargo install --locked --version 0.1.12 cargo-hawk
 
       - name: Run cargo-hawk
