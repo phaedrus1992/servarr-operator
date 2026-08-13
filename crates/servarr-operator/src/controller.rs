@@ -4811,7 +4811,10 @@ mod tests {
         assert_eq!(settled[0].status, 0);
     }
 
-    #[tokio::test]
+    // start_paused: VERIFY_POLL_ATTEMPTS x VERIFY_POLL_INTERVAL is ~50s of real sleeps
+    // (#537, widened for large batches) -- paused virtual time auto-advances through the
+    // idle sleeps between mock-server round trips instead of burning wall-clock time.
+    #[tokio::test(start_paused = true)]
     async fn poll_until_settled_gives_up_and_returns_empty_when_still_checking() {
         let mock_server = MockServer::start().await;
         Mock::given(method("POST"))
