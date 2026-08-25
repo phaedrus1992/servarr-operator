@@ -172,6 +172,16 @@
       matchManagers: ['custom.regex'],
     },
 
+    // cargo-hawk runs with RUSTC_BOOTSTRAP=1 and hooks unstable compiler
+    // internals (rustc_interface, rustc_lexer) — keep version bumps human-
+    // reviewed like major updates, rather than auto-merging on the default
+    // non-major policy above (#572).
+    {
+      matchDepNames: ['cargo-hawk'],
+      matchManagers: ['custom.regex'],
+      automerge: false,
+    },
+
     // Container image versions in image-defaults.toml, and their mirror in
     // values.yaml. Both files must be listed here (not just image-defaults.toml):
     // Renovate groups a dependency by its resolved groupName, so a dependency
