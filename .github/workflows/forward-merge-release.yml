@@ -103,6 +103,21 @@ jobs:
             echo "::error::  # resolve conflicts, then: git push origin $tgt"
           }
 
+          # A merge with no textual conflict can still be semantically broken —
+          # e.g. both sides independently changed a function signature on
+          # different lines, so `git merge` combines them cleanly but the
+          # result doesn't compile (#528). Building the merge result before
+          # push catches this; a build failure here is not a git conflict, so
+          # the instructions must say so explicitly.
+          bail_on_build_failure() {
+            local src="$1" tgt="$2"
+            echo "::error::Build failed after merging $src into $tgt (not a git conflict — the merge itself is clean, but the combined code doesn't compile). Resolve manually:"
+            echo "::error::  git fetch origin && git checkout $tgt && git reset --hard origin/$tgt"
+            echo "::error::  git merge origin/$src"
+            echo "::error::  cargo build --workspace --tests   # fix the break"
+            echo "::error::  # once it builds, then: git push origin $tgt"
+          }
+
           for TARGET in "${TARGETS[@]}"; do
             echo "::group::Forward-merge $CURRENT → $TARGET"
             TARGET_SHA=$(git rev-parse "origin/$TARGET" 2>/dev/null || echo "")
@@ -134,6 +149,16 @@ jobs:
 
             git checkout -q "origin/$TARGET"
             git merge --no-edit "origin/$CURRENT"
+
+            # Validate the merge result actually builds before pushing it
+            # anywhere. A clean textual merge is not proof the code compiles.
+            if ! cargo build --workspace --tests; then
+              bail_on_build_failure "$CURRENT" "$TARGET"
+              echo "::error::Cascade halted: build failure after merging $CURRENT into $TARGET"
+              echo "::endgroup::"
+              HALTED="build failure at $TARGET"
+              break
+            fi
 
             # Land the merge directly so the fix propagates automatically — main
             # is the final target and is forward-merged the same way as every
