@@ -181,6 +181,11 @@ pub async fn reconcile(stack: Arc<MediaStack>, ctx: Arc<Context>) -> Result<Acti
 
     let sa_api = Api::<ServarrApp>::namespaced(client.clone(), &ns);
 
+    // Names of orphaned children whose PVC detach didn't unambiguously succeed this
+    // reconcile, surfaced as a status Condition below so a stuck orphan is visible via
+    // `kubectl describe`/status instead of only a pod log line (#562 follow-up).
+    let mut stuck_orphans: Vec<String> = Vec::new();
+
     // Cleanup orphaned children BEFORE applying desired children. A renamed app (e.g.
     // Overseerr -> Seerr) produces a new child name whose normalized `spec.app` collides
     // with the stale orphan's under the admission webhook's duplicate-instance check.
@@ -246,6 +251,7 @@ pub async fn reconcile(stack: Arc<MediaStack>, ctx: Arc<Context>) -> Result<Acti
                     %name, child = %child_name,
                     "skipping orphaned child delete this reconcile; will retry PVC detach next reconcile"
                 );
+                stuck_orphans.push(child_name.clone());
                 continue;
             }
             if let Err(e) = sa_api.delete(&child_name, &Default::default()).await
@@ -456,6 +462,26 @@ pub async fn reconcile(stack: Arc<MediaStack>, ctx: Arc<Context>) -> Result<Acti
     };
 
     status.set_condition(Condition::ok("Valid", "Valid", "Spec is valid", &now));
+
+    if stuck_orphans.is_empty() {
+        status.set_condition(Condition::ok(
+            "OrphanCleanupHealthy",
+            "NoStuckOrphans",
+            "no orphaned children awaiting PVC detach",
+            &now,
+        ));
+    } else {
+        status.set_condition(Condition::fail(
+            "OrphanCleanupHealthy",
+            "PvcDetachFailed",
+            &format!(
+                "{} orphaned child(ren) awaiting PVC detach before cleanup can proceed: {}",
+                stuck_orphans.len(),
+                stuck_orphans.join(", ")
+            ),
+            &now,
+        ));
+    }
 
     match &phase {
         StackPhase::Ready => {

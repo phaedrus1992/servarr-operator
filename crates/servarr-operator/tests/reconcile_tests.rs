@@ -1703,6 +1703,27 @@ async fn test_media_stack_reconcile_orphan_cleanup() {
         "ready stack should requeue after 300 seconds"
     );
     // The expect(1) on the DELETE mock will verify the orphan was deleted
+
+    // A cleanly-deleted orphan (no detach failure) must report the healthy condition.
+    let requests = mock_server.received_requests().await.unwrap_or_default();
+    let status_body: serde_json::Value = requests
+        .iter()
+        .find(|r| {
+            r.method == wiremock::http::Method::PATCH
+                && r.url.path().ends_with("/mediastacks/orphan-stack/status")
+        })
+        .expect("MediaStack status PATCH should have been sent")
+        .body_json()
+        .expect("status patch body should be valid JSON");
+    let conditions = status_body["status"]["conditions"]
+        .as_array()
+        .expect("status.conditions should be an array");
+    let orphan_condition = conditions
+        .iter()
+        .find(|c| c["conditionType"] == "OrphanCleanupHealthy")
+        .expect("OrphanCleanupHealthy condition should be set");
+    assert_eq!(orphan_condition["status"], "True");
+    assert_eq!(orphan_condition["reason"], "NoStuckOrphans");
 }
 
 // ---------------------------------------------------------------------------
@@ -2081,6 +2102,36 @@ async fn test_media_stack_reconcile_orphan_cleanup_skips_delete_when_pvc_detach_
     );
     // _pvc_mock / DELETE mock drop verifies expect(1) / expect(0) above: the PVC detach
     // was attempted exactly once, and the child delete never happened.
+
+    // The stuck orphan must be visible on MediaStack status, not just in pod logs.
+    let requests = mock_server.received_requests().await.unwrap_or_default();
+    let status_body: serde_json::Value = requests
+        .iter()
+        .find(|r| {
+            r.method == wiremock::http::Method::PATCH
+                && r.url
+                    .path()
+                    .ends_with("/mediastacks/detach-fail-stack/status")
+        })
+        .expect("MediaStack status PATCH should have been sent")
+        .body_json()
+        .expect("status patch body should be valid JSON");
+    let conditions = status_body["status"]["conditions"]
+        .as_array()
+        .expect("status.conditions should be an array");
+    let orphan_condition = conditions
+        .iter()
+        .find(|c| c["conditionType"] == "OrphanCleanupHealthy")
+        .expect("OrphanCleanupHealthy condition should be set");
+    assert_eq!(orphan_condition["status"], "False");
+    assert_eq!(orphan_condition["reason"], "PvcDetachFailed");
+    assert!(
+        orphan_condition["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("detach-fail-stack-old-radarr"),
+        "condition message should name the stuck orphan, got: {orphan_condition}"
+    );
 }
 
 // ---------------------------------------------------------------------------
