@@ -56,6 +56,21 @@ jobs:
             echo "$DELIM"
           } >> "$GITHUB_OUTPUT"
 
+      - name: Configure git push credentials
+        env:
+          FORWARD_MERGE_PAT: ${{ secrets.FORWARD_MERGE_PAT }}
+        run: |
+          set -euo pipefail
+          if [[ -n "$FORWARD_MERGE_PAT" ]]; then
+            # A PAT with workflow scope allows pushing merge commits that
+            # touch .github/workflows/ — the built-in GITHUB_TOKEN cannot.
+            git remote set-url origin \
+              "https://x-access-token:${FORWARD_MERGE_PAT}@github.com/${{ github.repository }}"
+            echo "Using FORWARD_MERGE_PAT for git push"
+          else
+            echo "Using GITHUB_TOKEN for git push"
+          fi
+
       - name: Forward-merge cascade
         env:
           CURRENT: ${{ steps.detect.outputs.current }}
@@ -101,6 +116,17 @@ jobs:
             echo "::error::  git fetch origin && git checkout $tgt && git reset --hard origin/$tgt"
             echo "::error::  git merge origin/$src"
             echo "::error::  # resolve conflicts, then: git push origin $tgt"
+          }
+
+          # Push a branch/HEAD, suppressing stderr for the branch-protection
+          # / workflow-permission error that we handle in the caller.
+          push_branch() {
+            local branch="$1" target="$2"
+            if [[ "$branch" == "$target" ]]; then
+              git push origin HEAD:"$target" 2>/dev/null
+            else
+              git push origin "$branch" --force-with-lease 2>/dev/null
+            fi
           }
 
           # A merge with no textual conflict can still be semantically broken —
@@ -175,29 +201,42 @@ jobs:
             # release branch, with no manual step. If a target is branch-protected
             # the push is rejected; fall back to opening a PR and halt so the
             # remaining (now un-merged) targets aren't silently skipped.
-            if git push origin HEAD:"$TARGET" 2>/dev/null; then
+            if push_branch "HEAD" "$TARGET"; then
               echo "Pushed directly to $TARGET"
             else
               # HEAD currently holds the merge commit built above; create the PR
               # branch from it directly. Resetting to origin/$TARGET here would
               # discard the merge and open a zero-diff PR.
               git checkout -B "$MERGE_BRANCH"
-              git push origin "$MERGE_BRANCH" --force-with-lease
 
-              # gh pr create hits the same Actions permission gap as the
-              # conflict path above if it's ever denied — check the exit
-              # status instead of asserting success unconditionally.
-              if gh pr create --base "$TARGET" --head "$MERGE_BRANCH" \
-                --title "Forward-merge $CURRENT into $TARGET" \
-                --body "Direct push to $TARGET blocked by branch protection; opening PR."; then
-                echo "::error::Cascade halted: $TARGET is protected, opened PR instead"
+              if push_branch "$MERGE_BRANCH" "$TARGET"; then
+                # gh pr create hits the same Actions permission gap as the
+                # conflict path above if it's ever denied — check the exit
+                # status instead of asserting success unconditionally.
+                if gh pr create --base "$TARGET" --head "$MERGE_BRANCH" \
+                  --title "Forward-merge $CURRENT into $TARGET" \
+                  --body "Direct push to $TARGET blocked by branch protection; opening PR."; then
+                  echo "::error::Cascade halted: $TARGET is protected, opened PR instead"
+                else
+                  echo "::error::Cascade halted: $TARGET is protected and PR creation failed. Resolve manually:"
+                  echo "::error::  git fetch origin && git checkout $TARGET && git reset --hard origin/$TARGET"
+                  echo "::error::  git merge origin/$MERGE_BRANCH"
+                fi
+                echo "::endgroup::"
+                HALTED="protected branch $TARGET"
               else
-                echo "::error::Cascade halted: $TARGET is protected and PR creation failed. Resolve manually:"
-                echo "::error::  git fetch origin && git checkout $TARGET && git reset --hard origin/$TARGET"
-                echo "::error::  git merge origin/$MERGE_BRANCH"
+                echo "::error::Cascade halted: cannot push merge commit to $TARGET"
+                echo ""
+                echo "The merge commit touches .github/workflows/ files which the"
+                echo "GITHUB_TOKEN cannot push. To fix this, create a classic PAT at"
+                echo "  https://github.com/settings/tokens"
+                echo "with the \`workflow\` scope and store it as FORWARD_MERGE_PAT:"
+                echo "  https://github.com/${{ github.repository }}/settings/secrets/actions"
+                echo ""
+                echo "Then re-run this workflow."
+                echo "::endgroup::"
+                HALTED="push blocked on $TARGET (workflow file changes)"
               fi
-              echo "::endgroup::"
-              HALTED="protected branch $TARGET"
               break
             fi
 
