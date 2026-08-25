@@ -114,7 +114,9 @@ jobs:
             echo "::error::Build failed after merging $src into $tgt (not a git conflict — the merge itself is clean, but the combined code doesn't compile). Resolve manually:"
             echo "::error::  git fetch origin && git checkout $tgt && git reset --hard origin/$tgt"
             echo "::error::  git merge origin/$src"
-            echo "::error::  cargo build --workspace --tests   # fix the break"
+            echo "::error::  # fix the break, then:"
+            echo "::error::  git add -u && git commit --amend --no-edit"
+            echo "::error::  cargo build --workspace --tests   # verify the fix"
             echo "::error::  # once it builds, then: git push origin $tgt"
           }
 
@@ -152,7 +154,15 @@ jobs:
 
             # Validate the merge result actually builds before pushing it
             # anywhere. A clean textual merge is not proof the code compiles.
-            if ! cargo build --workspace --tests; then
+            # --locked: this job has contents:write and a live GITHUB_TOKEN,
+            # so pin to the merge's own committed Cargo.lock rather than
+            # letting cargo silently resolve newer, unreviewed dependency
+            # versions (and their build.rs/proc-macros) at merge time.
+            # This checks only the default host target, not the release
+            # build matrix's musl/macOS cross targets — acceptable today
+            # since the workspace has no platform-cfg'd code path, but
+            # worth revisiting if that changes.
+            if ! cargo build --workspace --tests --locked; then
               bail_on_build_failure "$CURRENT" "$TARGET"
               echo "::error::Cascade halted: build failure after merging $CURRENT into $TARGET"
               echo "::endgroup::"
