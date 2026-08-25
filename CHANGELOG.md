@@ -49,6 +49,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Fix the legacy `appConfig.transmission.auth` config being silently dropped with no signal —
   the operator now publishes a `DeprecatedTransmissionAuth` Warning Event and log warning so
   users upgrading from 1.2 know to remove it (#542).
+- Fix orphan cleanup deleting a renamed/removed app's `ServarrApp` CR even when detaching its
+  PVC's ownership failed first, letting Kubernetes' cascading garbage collection destroy the
+  still-owned config PVC along with it — the delete is now skipped and retried on the next
+  reconcile until detach fully succeeds, and a new `OrphanCleanupHealthy` status condition
+  surfaces a stuck orphan instead of leaving it visible only in pod logs (#562).
 
 ## [1.3.0] - 2026-08-07
 
