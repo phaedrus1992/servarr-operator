@@ -181,6 +181,11 @@ pub async fn reconcile(stack: Arc<MediaStack>, ctx: Arc<Context>) -> Result<Acti
 
     let sa_api = Api::<ServarrApp>::namespaced(client.clone(), &ns);
 
+    // Names of orphaned children whose PVC detach didn't unambiguously succeed this
+    // reconcile, surfaced as a status Condition below so a stuck orphan is visible via
+    // `kubectl describe`/status instead of only a pod log line (#562 follow-up).
+    let mut stuck_orphans: Vec<String> = Vec::new();
+
     // Cleanup orphaned children BEFORE applying desired children. A renamed app (e.g.
     // Overseerr -> Seerr) produces a new child name whose normalized `spec.app` collides
     // with the stale orphan's under the admission webhook's duplicate-instance check.
@@ -208,6 +213,7 @@ pub async fn reconcile(stack: Arc<MediaStack>, ctx: Arc<Context>) -> Result<Acti
             // cleanup. Everything *else* the child owns (Deployment, Service, Secrets,
             // NetworkPolicy, routes) should still be torn down normally -- a
             // removed/renamed app must actually stop running, not linger unmanaged.
+            let mut detach_failed = false;
             match servarr_resources::pvc::build_all(child) {
                 Ok(pvcs) => {
                     for pvc in &pvcs {
@@ -220,6 +226,7 @@ pub async fn reconcile(stack: Arc<MediaStack>, ctx: Arc<Context>) -> Result<Acti
                             .await
                             && !is_not_found(&e)
                         {
+                            detach_failed = true;
                             warn!(
                                 %name, child = %child_name, pvc = %pvc_name,
                                 error = %kube_err_summary(&e),
@@ -229,11 +236,23 @@ pub async fn reconcile(stack: Arc<MediaStack>, ctx: Arc<Context>) -> Result<Acti
                     }
                 }
                 Err(e) => {
+                    detach_failed = true;
                     warn!(
                         %name, child = %child_name, error = %e,
                         "failed to compute child's PVCs before orphan cleanup"
                     );
                 }
+            }
+            // Detaching every PVC didn't unambiguously succeed -- deleting the child now
+            // would let cascading GC take a still-owned PVC down with it. Leave the child
+            // as an orphan; it gets retried on the next reconcile.
+            if detach_failed {
+                warn!(
+                    %name, child = %child_name,
+                    "skipping orphaned child delete this reconcile; will retry PVC detach next reconcile"
+                );
+                stuck_orphans.push(child_name.clone());
+                continue;
             }
             if let Err(e) = sa_api.delete(&child_name, &Default::default()).await
                 && !is_not_found(&e)
@@ -443,6 +462,26 @@ pub async fn reconcile(stack: Arc<MediaStack>, ctx: Arc<Context>) -> Result<Acti
     };
 
     status.set_condition(Condition::ok("Valid", "Valid", "Spec is valid", &now));
+
+    if stuck_orphans.is_empty() {
+        status.set_condition(Condition::ok(
+            "OrphanCleanupHealthy",
+            "NoStuckOrphans",
+            "no orphaned children awaiting PVC detach",
+            &now,
+        ));
+    } else {
+        status.set_condition(Condition::fail(
+            "OrphanCleanupHealthy",
+            "PvcDetachFailed",
+            &format!(
+                "{} orphaned child(ren) awaiting PVC detach before cleanup can proceed: {}",
+                stuck_orphans.len(),
+                stuck_orphans.join(", ")
+            ),
+            &now,
+        ));
+    }
 
     match &phase {
         StackPhase::Ready => {
