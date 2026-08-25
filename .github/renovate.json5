@@ -226,6 +226,23 @@
       datasourceTemplate: 'github-releases',
     },
 
+    // cargo-hawk version pin in the CI install step and its documented
+    // manual-install instructions. Neither is covered by the cargo manager
+    // since it's a `cargo install --version` invocation inside a workflow
+    // `run:` step / doc code block, not a Cargo.toml dependency (#572).
+    {
+      customType: 'regex',
+      managerFilePatterns: [
+        '/(^|/)\\.github\\/workflows\\/ci\\.yaml$/',
+        '/(^|/)docs\\/contributing\\.md$/',
+      ],
+      matchStrings: [
+        '--version (?<currentValue>\\d+\\.\\d+\\.\\d+) cargo-hawk',
+      ],
+      depNameTemplate: 'cargo-hawk',
+      datasourceTemplate: 'crate',
+    },
+
     // Container image tags in image-defaults.toml
     {
       customType: 'regex',
