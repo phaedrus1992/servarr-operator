@@ -172,6 +172,16 @@
       matchManagers: ['custom.regex'],
     },
 
+    // cargo-hawk runs with RUSTC_BOOTSTRAP=1 and hooks unstable compiler
+    // internals (rustc_interface, rustc_lexer) — keep version bumps human-
+    // reviewed like major updates, rather than auto-merging on the default
+    // non-major policy above (#572).
+    {
+      matchDepNames: ['cargo-hawk'],
+      matchManagers: ['custom.regex'],
+      automerge: false,
+    },
+
     // Container image versions in image-defaults.toml, and their mirror in
     // values.yaml. Both files must be listed here (not just image-defaults.toml):
     // Renovate groups a dependency by its resolved groupName, so a dependency
@@ -250,6 +260,23 @@
       depNameTemplate: 'rust',
       packageNameTemplate: 'rust-lang/rust',
       datasourceTemplate: 'github-releases',
+    },
+
+    // cargo-hawk version pin in the CI install step and its documented
+    // manual-install instructions. Neither is covered by the cargo manager
+    // since it's a `cargo install --version` invocation inside a workflow
+    // `run:` step / doc code block, not a Cargo.toml dependency (#572).
+    {
+      customType: 'regex',
+      managerFilePatterns: [
+        '/(^|/)\\.github\\/workflows\\/ci\\.yaml$/',
+        '/(^|/)docs\\/contributing\\.md$/',
+      ],
+      matchStrings: [
+        '--version (?<currentValue>\\d+\\.\\d+\\.\\d+) cargo-hawk',
+      ],
+      depNameTemplate: 'cargo-hawk',
+      datasourceTemplate: 'crate',
     },
 
     // Container image tags in image-defaults.toml
