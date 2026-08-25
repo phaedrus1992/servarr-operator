@@ -66,7 +66,7 @@ jobs:
 
       - name: Validate .pre-commit-config.yaml parses
         run: |
-          python3 -m pip install --quiet pyyaml
+          python3 -m pip install --quiet 'pyyaml==6.0.3'
           python3 -c "import yaml; yaml.safe_load(open('.pre-commit-config.yaml'))"
 
   helm-lint:
@@ -135,6 +135,9 @@ jobs:
         run: rustup component add rustc-dev llvm-tools-preview
 
       - name: Install cargo-hawk
+        # The exact "--version X.Y.Z cargo-hawk" text is matched by a Renovate
+        # custom regex manager (.github/renovate.json5) — keep this phrasing
+        # if the line is ever edited, or version bumps silently stop.
         run: RUSTC_BOOTSTRAP=1 cargo install --locked --version 0.1.12 cargo-hawk
 
       - name: Run cargo-hawk
