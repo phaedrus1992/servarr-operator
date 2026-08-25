@@ -56,6 +56,19 @@ jobs:
         with:
           advanced-security: false
 
+  pre-commit-config-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+
+      - name: Validate .pre-commit-config.yaml parses
+        run: |
+          python3 -m pip install --quiet pyyaml
+          python3 -c "import yaml; yaml.safe_load(open('.pre-commit-config.yaml'))"
+
   helm-lint:
     runs-on: ubuntu-latest
     steps:
@@ -90,7 +103,7 @@ jobs:
 
   # ── Stage 2: Analysis + Tests ──────────────────────────────────────────
   clippy:
-    needs: [fmt, actionlint, zizmor]
+    needs: [fmt, actionlint, zizmor, pre-commit-config-lint]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -105,7 +118,7 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
 
   hawk:
-    needs: [fmt, actionlint, zizmor]
+    needs: [fmt, actionlint, zizmor, pre-commit-config-lint]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -131,7 +144,7 @@ jobs:
         run: cargo hawk check --manifest-path Cargo.toml --exclude-crate servarr_api --exclude-crate servarr_crds -W hawk::unnecessary_public -W hawk::unnecessary_restricted_visibility
 
   test:
-    needs: [fmt, actionlint, zizmor]
+    needs: [fmt, actionlint, zizmor, pre-commit-config-lint]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
