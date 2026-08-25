@@ -56,26 +56,19 @@ jobs:
             echo "$DELIM"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Configure git push credentials
-        env:
-          FORWARD_MERGE_PAT: ${{ secrets.FORWARD_MERGE_PAT }}
-        run: |
-          set -euo pipefail
-          if [[ -n "$FORWARD_MERGE_PAT" ]]; then
-            # A PAT with workflow scope allows pushing merge commits that
-            # touch .github/workflows/ — the built-in GITHUB_TOKEN cannot.
-            git remote set-url origin \
-              "https://x-access-token:${FORWARD_MERGE_PAT}@github.com/${{ github.repository }}"
-            echo "Using FORWARD_MERGE_PAT for git push"
-          else
-            echo "Using GITHUB_TOKEN for git push"
-          fi
-
       - name: Forward-merge cascade
         env:
           CURRENT: ${{ steps.detect.outputs.current }}
           BRANCHES: ${{ steps.detect.outputs.branches }}
           GH_TOKEN: ${{ github.token }}
+          # A PAT with workflow scope allows pushing merge commits that touch
+          # .github/workflows/ — the built-in GITHUB_TOKEN cannot. Injected
+          # per push via `-c http.extraheader` (see push_head_to_target below)
+          # instead of `git remote set-url`, which would write it in
+          # cleartext into .git/config for the rest of the job — including
+          # the `cargo build` below, where a build.rs/proc-macro in the
+          # merged workspace could read and exfiltrate it.
+          FORWARD_MERGE_PAT: ${{ secrets.FORWARD_MERGE_PAT }}
         run: |
           set -euo pipefail
 
@@ -118,15 +111,41 @@ jobs:
             echo "::error::  # resolve conflicts, then: git push origin $tgt"
           }
 
-          # Push a branch/HEAD, suppressing stderr for the branch-protection
-          # / workflow-permission error that we handle in the caller.
-          push_branch() {
-            local branch="$1" target="$2"
-            if [[ "$branch" == "$target" ]]; then
-              git push origin HEAD:"$target" 2>/dev/null
-            else
-              git push origin "$branch" --force-with-lease 2>/dev/null
+          # Both push helpers below capture stderr instead of discarding it,
+          # so a real git error (bad PAT, rate limit, stale
+          # --force-with-lease) is distinguishable from the
+          # branch-protection / workflow-permission case the caller falls
+          # back on — previously all failures looked identical to the
+          # caller.
+          #
+          # When FORWARD_MERGE_PAT is set, it's injected as a `-c
+          # http.extraheader` override scoped to this single git invocation
+          # rather than written to .git/config, so it never sits on disk for
+          # a later step (e.g. cargo build) to read.
+          push_head_to_target() {
+            local target="$1" err
+            local -a auth=()
+            if [[ -n "${FORWARD_MERGE_PAT:-}" ]]; then
+              auth=(-c "http.https://github.com/.extraheader=AUTHORIZATION: basic $(
+                printf 'x-access-token:%s' "$FORWARD_MERGE_PAT" | base64 -w0
+              )")
             fi
+            err=$(git "${auth[@]}" push origin HEAD:"$target" 2>&1) && return 0
+            echo "::warning::push_head_to_target failed (HEAD -> $target): $err"
+            return 1
+          }
+
+          force_push_branch() {
+            local branch="$1" err
+            local -a auth=()
+            if [[ -n "${FORWARD_MERGE_PAT:-}" ]]; then
+              auth=(-c "http.https://github.com/.extraheader=AUTHORIZATION: basic $(
+                printf 'x-access-token:%s' "$FORWARD_MERGE_PAT" | base64 -w0
+              )")
+            fi
+            err=$(git "${auth[@]}" push origin "$branch" --force-with-lease 2>&1) && return 0
+            echo "::warning::force_push_branch failed ($branch): $err"
+            return 1
           }
 
           # A merge with no textual conflict can still be semantically broken —
@@ -201,7 +220,7 @@ jobs:
             # release branch, with no manual step. If a target is branch-protected
             # the push is rejected; fall back to opening a PR and halt so the
             # remaining (now un-merged) targets aren't silently skipped.
-            if push_branch "HEAD" "$TARGET"; then
+            if push_head_to_target "$TARGET"; then
               echo "Pushed directly to $TARGET"
             else
               # HEAD currently holds the merge commit built above; create the PR
@@ -209,7 +228,7 @@ jobs:
               # discard the merge and open a zero-diff PR.
               git checkout -B "$MERGE_BRANCH"
 
-              if push_branch "$MERGE_BRANCH" "$TARGET"; then
+              if force_push_branch "$MERGE_BRANCH"; then
                 # gh pr create hits the same Actions permission gap as the
                 # conflict path above if it's ever denied — check the exit
                 # status instead of asserting success unconditionally.
@@ -228,10 +247,15 @@ jobs:
                 echo "::error::Cascade halted: cannot push merge commit to $TARGET"
                 echo ""
                 echo "The merge commit touches .github/workflows/ files which the"
-                echo "GITHUB_TOKEN cannot push. To fix this, create a classic PAT at"
-                echo "  https://github.com/settings/tokens"
-                echo "with the \`workflow\` scope and store it as FORWARD_MERGE_PAT:"
-                echo "  https://github.com/${{ github.repository }}/settings/secrets/actions"
+                echo "GITHUB_TOKEN cannot push. To fix this, create a fine-grained PAT"
+                echo "scoped to this repository only (Contents: read/write, Workflows:"
+                echo "read/write, with an expiry) at:"
+                echo "  https://github.com/settings/personal-access-tokens/new"
+                echo "A classic PAT also works but needs the \`workflow\` scope, which"
+                echo "on GitHub implies full \`repo\` and is account-wide — avoid it"
+                echo "unless fine-grained tokens aren't an option. Store it as"
+                echo "FORWARD_MERGE_PAT:"
+                echo "  https://github.com/$GITHUB_REPOSITORY/settings/secrets/actions"
                 echo ""
                 echo "Then re-run this workflow."
                 echo "::endgroup::"
