@@ -208,6 +208,7 @@ pub async fn reconcile(stack: Arc<MediaStack>, ctx: Arc<Context>) -> Result<Acti
             // cleanup. Everything *else* the child owns (Deployment, Service, Secrets,
             // NetworkPolicy, routes) should still be torn down normally -- a
             // removed/renamed app must actually stop running, not linger unmanaged.
+            let mut detach_failed = false;
             match servarr_resources::pvc::build_all(child) {
                 Ok(pvcs) => {
                     for pvc in &pvcs {
@@ -220,6 +221,7 @@ pub async fn reconcile(stack: Arc<MediaStack>, ctx: Arc<Context>) -> Result<Acti
                             .await
                             && !is_not_found(&e)
                         {
+                            detach_failed = true;
                             warn!(
                                 %name, child = %child_name, pvc = %pvc_name,
                                 error = %kube_err_summary(&e),
@@ -229,11 +231,22 @@ pub async fn reconcile(stack: Arc<MediaStack>, ctx: Arc<Context>) -> Result<Acti
                     }
                 }
                 Err(e) => {
+                    detach_failed = true;
                     warn!(
                         %name, child = %child_name, error = %e,
                         "failed to compute child's PVCs before orphan cleanup"
                     );
                 }
+            }
+            // Detaching every PVC didn't unambiguously succeed -- deleting the child now
+            // would let cascading GC take a still-owned PVC down with it. Leave the child
+            // as an orphan; it gets retried on the next reconcile.
+            if detach_failed {
+                warn!(
+                    %name, child = %child_name,
+                    "skipping orphaned child delete this reconcile; will retry PVC detach next reconcile"
+                );
+                continue;
             }
             if let Err(e) = sa_api.delete(&child_name, &Default::default()).await
                 && !is_not_found(&e)
