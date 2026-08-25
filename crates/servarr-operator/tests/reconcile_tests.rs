@@ -1746,6 +1746,27 @@ async fn test_media_stack_reconcile_orphan_cleanup() {
         "ready stack should requeue after 300 seconds"
     );
     // The expect(1) on the DELETE mock will verify the orphan was deleted
+
+    // A cleanly-deleted orphan (no detach failure) must report the healthy condition.
+    let requests = mock_server.received_requests().await.unwrap_or_default();
+    let status_body: serde_json::Value = requests
+        .iter()
+        .find(|r| {
+            r.method == wiremock::http::Method::PATCH
+                && r.url.path().ends_with("/mediastacks/orphan-stack/status")
+        })
+        .expect("MediaStack status PATCH should have been sent")
+        .body_json()
+        .expect("status patch body should be valid JSON");
+    let conditions = status_body["status"]["conditions"]
+        .as_array()
+        .expect("status.conditions should be an array");
+    let orphan_condition = conditions
+        .iter()
+        .find(|c| c["conditionType"] == "OrphanCleanupHealthy")
+        .expect("OrphanCleanupHealthy condition should be set");
+    assert_eq!(orphan_condition["status"], "True");
+    assert_eq!(orphan_condition["reason"], "NoStuckOrphans");
 }
 
 // ---------------------------------------------------------------------------
@@ -1963,6 +1984,196 @@ async fn test_media_stack_reconcile_orphan_cleanup_runs_before_apply() {
         "orphan ServarrApp delete must use the default (cascading) propagation policy -- \
          PropagationPolicy::Orphan on the whole CR would leave its Deployment/Service/Secrets \
          permanently running with no owner to ever clean them up, got body: {delete_body}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Test 9c: MediaStack orphan cleanup skips the child delete when PVC detach fails (#562)
+// ---------------------------------------------------------------------------
+
+/// Regression test for #562: if the PVC ownerReference-detach PATCH fails with anything
+/// other than 404, the orphaned child ServarrApp must NOT be deleted this reconcile.
+/// Deleting it anyway would let Kubernetes' cascading GC take the still-owned PVC down
+/// with it -- silently destroying the user's config data, which is exactly what the
+/// detach step exists to prevent. The child stays as an orphan and gets retried on the
+/// next reconcile instead.
+#[tokio::test]
+async fn test_media_stack_reconcile_orphan_cleanup_skips_delete_when_pvc_detach_fails() {
+    let mock_server = MockServer::start().await;
+    let client = mock_client(&mock_server.uri()).await;
+    let ctx = test_context(client);
+
+    // Stack has only Sonarr
+    let stack = Arc::new(make_media_stack("detach-fail-stack", "test"));
+
+    // PATCH child ServarrApp (the real one)
+    Mock::given(method("PATCH"))
+        .and(path(
+            "/apis/servarr.dev/v1alpha1/namespaces/test/servarrapps/detach-fail-stack-sonarr",
+        ))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(servarrapp_response("detach-fail-stack-sonarr", "test")),
+        )
+        .mount(&mock_server)
+        .await;
+
+    // GET child ServarrApp (real child, ready)
+    Mock::given(method("GET"))
+        .and(path(
+            "/apis/servarr.dev/v1alpha1/namespaces/test/servarrapps/detach-fail-stack-sonarr",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json({
+            let mut resp = servarrapp_response("detach-fail-stack-sonarr", "test");
+            resp["status"] = json!({
+                "ready": true,
+                "readyReplicas": 1,
+                "observedGeneration": 1,
+                "conditions": []
+            });
+            resp
+        }))
+        .mount(&mock_server)
+        .await;
+
+    // GET ServarrApps by label returns the real child AND an orphan
+    Mock::given(method("GET"))
+        .and(path(
+            "/apis/servarr.dev/v1alpha1/namespaces/test/servarrapps",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "apiVersion": "servarr.dev/v1alpha1",
+            "kind": "ServarrAppList",
+            "metadata": {},
+            "items": [
+                {
+                    "apiVersion": "servarr.dev/v1alpha1",
+                    "kind": "ServarrApp",
+                    "metadata": {
+                        "name": "detach-fail-stack-sonarr",
+                        "namespace": "test",
+                        "uid": "sa-uid-real",
+                        "resourceVersion": "200"
+                    },
+                    "spec": { "app": "Sonarr" }
+                },
+                {
+                    "apiVersion": "servarr.dev/v1alpha1",
+                    "kind": "ServarrApp",
+                    "metadata": {
+                        "name": "detach-fail-stack-old-radarr",
+                        "namespace": "test",
+                        "uid": "sa-uid-orphan",
+                        "resourceVersion": "201"
+                    },
+                    "spec": { "app": "Radarr" }
+                }
+            ]
+        })))
+        .mount(&mock_server)
+        .await;
+
+    // PATCH the orphan's config PVC to strip its ownerReference -- fails with a non-404
+    // error, simulating a transient API problem.
+    Mock::given(method("PATCH"))
+        .and(path(
+            "/api/v1/namespaces/test/persistentvolumeclaims/detach-fail-stack-old-radarr-config",
+        ))
+        .respond_with(ResponseTemplate::new(500).set_body_json(json!({
+            "apiVersion": "v1",
+            "kind": "Status",
+            "metadata": {},
+            "status": "Failure",
+            "message": "internal error",
+            "reason": "InternalError",
+            "code": 500
+        })))
+        .expect(1)
+        .named("patch-pvc-detach-fails")
+        .mount(&mock_server)
+        .await;
+
+    // The orphaned child must NOT be deleted -- expect(0) is verified when mock_server drops.
+    Mock::given(method("DELETE"))
+        .and(path(
+            "/apis/servarr.dev/v1alpha1/namespaces/test/servarrapps/detach-fail-stack-old-radarr",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "apiVersion": "servarr.dev/v1alpha1",
+            "kind": "ServarrApp",
+            "metadata": {
+                "name": "detach-fail-stack-old-radarr",
+                "namespace": "test",
+                "uid": "sa-uid-orphan",
+                "resourceVersion": "201"
+            }
+        })))
+        .expect(0)
+        .named("delete-orphan-must-not-happen")
+        .mount(&mock_server)
+        .await;
+
+    // PATCH MediaStack status
+    Mock::given(method("PATCH"))
+        .and(path(
+            "/apis/servarr.dev/v1alpha1/namespaces/test/mediastacks/detach-fail-stack/status",
+        ))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(mediastack_response("detach-fail-stack", "test")),
+        )
+        .mount(&mock_server)
+        .await;
+
+    // GET MediaStack list (for gauge)
+    Mock::given(method("GET"))
+        .and(path(
+            "/apis/servarr.dev/v1alpha1/namespaces/test/mediastacks",
+        ))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(empty_list("servarr.dev/v1alpha1", "MediaStackList")),
+        )
+        .mount(&mock_server)
+        .await;
+
+    let result = servarr_operator::media_stack_controller::reconcile(stack, ctx).await;
+
+    assert!(
+        result.is_ok(),
+        "reconcile should still succeed even when one orphan's PVC detach fails, got: {result:?}"
+    );
+    // _pvc_mock / DELETE mock drop verifies expect(1) / expect(0) above: the PVC detach
+    // was attempted exactly once, and the child delete never happened.
+
+    // The stuck orphan must be visible on MediaStack status, not just in pod logs.
+    let requests = mock_server.received_requests().await.unwrap_or_default();
+    let status_body: serde_json::Value = requests
+        .iter()
+        .find(|r| {
+            r.method == wiremock::http::Method::PATCH
+                && r.url
+                    .path()
+                    .ends_with("/mediastacks/detach-fail-stack/status")
+        })
+        .expect("MediaStack status PATCH should have been sent")
+        .body_json()
+        .expect("status patch body should be valid JSON");
+    let conditions = status_body["status"]["conditions"]
+        .as_array()
+        .expect("status.conditions should be an array");
+    let orphan_condition = conditions
+        .iter()
+        .find(|c| c["conditionType"] == "OrphanCleanupHealthy")
+        .expect("OrphanCleanupHealthy condition should be set");
+    assert_eq!(orphan_condition["status"], "False");
+    assert_eq!(orphan_condition["reason"], "PvcDetachFailed");
+    assert!(
+        orphan_condition["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("detach-fail-stack-old-radarr"),
+        "condition message should name the stuck orphan, got: {orphan_condition}"
     );
 }
 
