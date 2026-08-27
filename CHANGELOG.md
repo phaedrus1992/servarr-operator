@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased] - ReleaseDate
 
+## [1.3.1] - 2026-08-27
+
 Closes out the Overseerr → Seerr migration started in 1.3.0 — the CRD schema now accepts the
 legacy `overseerrSync` field spelling, not just the `app: Overseerr` enum value, and stale
 image/auth fallbacks now surface as Warning Events instead of only a log line; hardens
@@ -433,7 +435,8 @@ to stop leaking raw upstream/Kubernetes errors into tenant-visible status and Ev
   on each `v*` tag.
 
 <!-- next-url -->
-[Unreleased]: https://github.com/phaedrus1992/servarr-operator/compare/v1.3.0...HEAD
+[Unreleased]: https://github.com/phaedrus1992/servarr-operator/compare/v1.3.1...HEAD
+[1.3.1]: https://github.com/phaedrus1992/servarr-operator/compare/v1.3.0...v1.3.1
 [1.3.0]: https://github.com/phaedrus1992/servarr-operator/compare/v1.2.3...v1.3.0
 [1.2.3]: https://github.com/phaedrus1992/servarr-operator/compare/v1.2.2...v1.2.3
 [1.2.2]: https://github.com/phaedrus1992/servarr-operator/compare/v1.2.1...v1.2.2
