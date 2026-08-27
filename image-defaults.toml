@@ -42,7 +42,7 @@ downloads = false
 
 [sabnzbd]
 repository = "linuxserver/sabnzbd"
-tag = "5.1.0"
+tag = "5.1.1"
 port = 8080
 security = "linuxserver"
 downloads = true
@@ -79,7 +79,7 @@ downloads = false
 
 [jackett]
 repository = "linuxserver/jackett"
-tag = "0.24.2419"
+tag = "0.24.2424"
 port = 9117
 security = "linuxserver"
 downloads = false
