@@ -50,11 +50,11 @@ kubectl describe pod -l app.kubernetes.io/name=servarr-operator | grep -A5 Event
 - `networkpolicies.networking.k8s.io` -- get, list, watch, create, patch, update, delete
 - `events` -- create, patch
 - `secrets` -- get (for API key reading)
-- `customresourcedefinitions.apiextensions.k8s.io` -- get, create, patch (for CRD self-registration)
+- `customresourcedefinitions.apiextensions.k8s.io` -- get, scoped to `servarrapps.servarr.dev` and `mediastacks.servarr.dev` (for the read-only startup CRD staleness self-check)
 
 Verify the ClusterRoleBinding references the correct ServiceAccount name and namespace.
 
-**CRD not installed:** The operator auto-registers the CRD on startup, but if RBAC blocks that, install it manually:
+**CRD not installed:** The operator does not install or register the CRD itself -- it only reads the installed CRD at startup to warn if it looks stale relative to the operator build. Install (or upgrade) the CRD manually:
 
 ```bash
 servarr-operator crd | kubectl apply -f -
