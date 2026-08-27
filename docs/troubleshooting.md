@@ -585,3 +585,35 @@ spec:
 ```
 
 **Application-level crash:** If the container exits with a non-zero code and logs show application errors (database corruption, permission denied on config volume), the issue is not with the operator. Check file ownership matches the configured UID/GID (default: 65534/65534 for both LinuxServer and NonRoot profiles) and that the PVC has sufficient space.
+
+---
+
+## 9. MediaStack Orphan Cleanup Stuck
+
+### Symptom
+
+An app was removed or renamed in a `MediaStack`'s `spec.apps` list, but its old child `ServarrApp` is still around, or the stack's status shows an `OrphanCleanupHealthy: False` condition.
+
+```bash
+kubectl get ms <name> -o jsonpath='{.status.conditions}' | jq .
+```
+
+### Diagnosis
+
+**Check the condition for the stuck child name(s):**
+
+```bash
+kubectl get ms <name> -o jsonpath='{.status.conditions[?(@.type=="OrphanCleanupHealthy")]}' | jq .
+```
+
+**Check operator logs for the detach failure:**
+
+```bash
+kubectl logs deploy/servarr-operator | grep -i orphan
+```
+
+### Fix
+
+**PVC ownerReference detach failing:** Removing an app from `spec.apps` orphans its child `ServarrApp` (and the child's config PVC ownership is detached first, so cascading deletion of the CR doesn't take the PVC with it). If detaching the PVC's ownership doesn't unambiguously succeed -- a transient API error, RBAC gap, or the PVC already gone -- the operator skips deleting the orphaned `ServarrApp` that reconcile and retries on the next one, surfacing the stuck child names via the `OrphanCleanupHealthy` status condition instead of only a log line. This is usually transient and clears on its own within a few reconcile cycles; if it doesn't, check the operator's RBAC for `patch` on `persistentvolumeclaims` and confirm the PVC still exists.
+
+**Nothing left to clean up:** Once the detach succeeds and the orphaned `ServarrApp` CR is deleted, `OrphanCleanupHealthy` returns to `True` and any stuck-child names are cleared from the condition message.
