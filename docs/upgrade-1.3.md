@@ -126,7 +126,10 @@ If a `Transmission` app has both `spec.adminCredentials` and the older
 `spec.appConfig.transmission.auth` block set, the generated Deployment ends up with duplicate
 `USER`/`PASS` env vars and the server-side apply is rejected
 ([#536](https://github.com/phaedrus1992/servarr-operator/issues/536)). Remove the legacy block —
-`adminCredentials` already covers the same credentials:
+`adminCredentials` already covers the same credentials. As of 1.3.1, `adminCredentials` winning
+over the legacy block also publishes a `DeprecatedTransmissionAuth` Warning Event
+(`kubectl get events`) so it's not just a `tracing::warn!` log line
+([#542](https://github.com/phaedrus1992/servarr-operator/issues/542)):
 
 ```diff
  spec:
