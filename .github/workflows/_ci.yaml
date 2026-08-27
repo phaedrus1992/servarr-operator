@@ -60,7 +60,7 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@5b4d68e2e660441203ab128a23676f1e4faf1532 # v2.86.3
+        uses: taiki-e/install-action@a2a5f6e99e1a31540baa0468acfa302cff0f359f # v2.86.4
         with:
           tool: cargo-llvm-cov
 
@@ -114,7 +114,7 @@ jobs:
 
       - name: Install cross (arm64 only)
         if: matrix.os == 'linux' && matrix.arch == 'arm64'
-        uses: taiki-e/install-action@5b4d68e2e660441203ab128a23676f1e4faf1532 # v2.86.3
+        uses: taiki-e/install-action@a2a5f6e99e1a31540baa0468acfa302cff0f359f # v2.86.4
         with:
           tool: cross
 
