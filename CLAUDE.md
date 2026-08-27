@@ -11,25 +11,45 @@ own diff detection and may produce a double-bump or a mismatch between the tag a
 CHANGELOG entries are still written by hand (or the `keepachangelog` skill) — only the version
 number in `Cargo.toml` / `Cargo.lock` is off-limits for direct edits.
 
-### Changelog: default image bumps are user-facing
+### Changelog: dedicated "Image Updates" section per version
 
 The generic Keep a Changelog guidance to omit dependency bumps does **not** apply to the default
 application images in `image-defaults.toml`. Those pins are what users actually run, so every bump
-gets a `Changed` entry naming the app, old → new tag, and (for repository moves) the new path.
+is recorded — but not folded into the generic `Changed` bullets. Instead, every version entry that
+touched `image-defaults.toml` gets its own `### Image Updates` subsection, positioned after
+`Changed` and before `Fixed`. **Omit the whole section entirely on a version with no image
+changes** — don't emit an empty header.
 
-For a major upstream bump, fetch the upstream release notes and summarize the user-relevant
-highlights — new features, behavior changes, and especially any non-backward-compatible migration
-the user must be aware of. Patch/rolling bumps (e.g. Jackett indexer-definition rollups) need only
-a one-line entry. CI/GitHub-Actions and Rust crate dependency bumps stay omitted unless they change
-operator behavior.
+**Per-entry format**, one line per app:
 
-### Changelog: group all app image updates together
+```markdown
+### Image Updates
 
-Within the `Changed` section, keep all "Update default <app> image" entries grouped together
-in a single contiguous block. Non-image entries (feature changes, behavior changes, config
-deprecations) go before or after the image block, never interleaved between individual image
-bumps. This prevents a single image update from being visually buried between unrelated entries
-and makes the image sweep easy to scan at a glance.
+- **<App>**: `<old-repo:old-tag>` -> `<new-repo:new-tag>`
+```
+
+Drop the repo path from the tag when it didn't change (`` `4.1.2` -> `4.1.3` ``); include the full
+`repo:tag` on both sides when the repository moved.
+
+**Release-note highlights.** When the bump crosses a minor/major upstream version (not a
+patch/rolling release), fetch that project's own release notes for every version between the old
+and new tag and add an indented bullet list beneath its line — new features, behavior changes, and
+especially anything not backward compatible that the user needs to act on:
+
+```markdown
+- **Seerr**: `linuxserver/overseerr:1.35.0` -> `ghcr.io/seerr-team/seerr:v3.4.1` (repository moved)
+  - Merged with Jellyseerr; actively maintained successor to the now-archived Overseerr
+  - Runs as a fixed UID/GID `1000` (not configurable via PUID/PGID like the LinuxServer image)
+  - Auto-migrates an inherited Overseerr database in-place on first boot
+```
+
+Patch/rolling bumps (e.g. Jackett indexer-definition rollups) get just the version-change line, no
+highlights sublist. CI/GitHub-Actions and Rust crate dependency bumps still stay omitted from the
+changelog entirely unless they change operator behavior — this section is for `image-defaults.toml`
+only.
+
+**Ordering within the section:** list apps in the order their bumps landed (git log order), not
+alphabetically — matches how the rest of this changelog reads chronologically within a version.
 
 ## Release Branch Workflow
 

@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased] - ReleaseDate
 
+Closes out the Overseerr → Seerr migration started in 1.3.0 — the CRD schema now accepts the
+legacy `overseerrSync` field spelling, not just the `app: Overseerr` enum value, and stale
+image/auth fallbacks now surface as Warning Events instead of only a log line; hardens
+Transmission's download-data self-heal against false-positive removals and oversized Events; makes
+MediaStack's orphan cleanup safe against a stuck PVC detach, with the stuck state now visible on
+status; and adds a startup check that warns when installed CRDs lag the running operator build.
+
 ### Added
 
 - Add `docs/upgrade-1.3.md`, a full 1.2.x → 1.3.x migration guide covering the Overseerr→Seerr
@@ -16,6 +23,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `apiHealthCheck`, and the Transmission download-data self-heal opt-ins.
 - Add a startup check that warns when the installed CRDs are missing a field the running operator
   build expects, catching a missed `servarr-crds` upgrade before it silently drops config (#543).
+
+### Image Updates
+
+- **Transmission**: `4.1.2` -> `4.1.3`
+- **Jackett**: `0.24.2304` -> `0.24.2424` (indexer-definition rollups)
 
 ### Fixed
 
@@ -39,7 +51,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Fix the Transmission download-data self-heal losing track of orphaned torrents after
   Transmission rewrote its own error message during verify (`"no data found"` -> `"no data was
   found"`), which silently escaped the removal predicate — now matches on the error code instead
-  of the message text (#537).
+  of the message text, and additionally requires `percentDone == 0.0` so a transient local I/O
+  fault (permissions, full disk, read-only remount) sharing the same error code can't trigger
+  torrent removal on an otherwise-healthy session (#537).
 - Fix the `DownloadDataMissing` event never publishing for large stale-torrent batches because its
   note exceeded the Kubernetes Events API's 1024-character limit — the torrent-id list is now
   truncated (#538).
