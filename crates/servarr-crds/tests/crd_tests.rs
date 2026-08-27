@@ -629,6 +629,75 @@ fn seerr_sync_field_deserializes_legacy_overseerr_sync_spelling() {
     assert!(deserialized.seerr_sync.unwrap().enabled);
 }
 
+/// Regression test for #545: unlike `AppType`'s enum alias (#540), `seerr_sync`'s
+/// `#[serde(alias = "overseerrSync")]` is on an object-typed field, so schemars can't fold it
+/// into the generated schema the same way -- the CRD's structural schema only declared a
+/// `seerrSync` property, which silently pruned a manifest still using `overseerrSync` instead of
+/// rejecting it. Assert the generated `ServarrApp` CRD schema exposes both property names.
+#[test]
+fn servarr_app_crd_schema_includes_legacy_overseerr_sync_alias() {
+    let crd = crd_with_legacy_field_aliases::<ServarrApp>();
+    let props = crd
+        .spec
+        .versions
+        .iter()
+        .find(|v| v.name == "v1alpha1")
+        .and_then(|v| v.schema.as_ref())
+        .and_then(|s| s.open_api_v3_schema.as_ref())
+        .and_then(|s| s.properties.as_ref())
+        .and_then(|p| p.get("spec"))
+        .and_then(|spec_schema| spec_schema.properties.as_ref())
+        .expect("ServarrApp CRD schema should have spec.properties");
+
+    assert!(
+        props.contains_key("seerrSync"),
+        "sanity check: seerrSync should be present in the generated schema"
+    );
+    assert!(
+        props.contains_key("overseerrSync"),
+        "CRD schema must also expose overseerrSync so a kubectl apply of a manifest using the \
+         legacy field name isn't silently pruned by structural-schema validation (#545)"
+    );
+}
+
+/// Same regression as above, for `MediaStack` -- `seerr_sync` lives on `StackApp`
+/// (media_stack.rs), nested inside `spec.apps[]`, not directly on `MediaStackSpec`. Needs the
+/// same schema fix, at a different nesting depth.
+#[test]
+fn media_stack_crd_schema_includes_legacy_overseerr_sync_alias() {
+    use k8s_openapi::apiextensions_apiserver::pkg::apis::apiextensions::v1::JSONSchemaPropsOrArray;
+
+    let crd = crd_with_legacy_field_aliases::<MediaStack>();
+    let props = crd
+        .spec
+        .versions
+        .iter()
+        .find(|v| v.name == "v1alpha1")
+        .and_then(|v| v.schema.as_ref())
+        .and_then(|s| s.open_api_v3_schema.as_ref())
+        .and_then(|s| s.properties.as_ref())
+        .and_then(|p| p.get("spec"))
+        .and_then(|spec_schema| spec_schema.properties.as_ref())
+        .and_then(|p| p.get("apps"))
+        .and_then(|apps_schema| apps_schema.items.as_ref())
+        .and_then(|items| match items {
+            JSONSchemaPropsOrArray::Schema(s) => Some(s.as_ref()),
+            JSONSchemaPropsOrArray::Schemas(_) => None,
+        })
+        .and_then(|item_schema| item_schema.properties.as_ref())
+        .expect("MediaStack CRD schema should have spec.apps.items.properties");
+
+    assert!(
+        props.contains_key("seerrSync"),
+        "sanity check: seerrSync should be present in the generated schema"
+    );
+    assert!(
+        props.contains_key("overseerrSync"),
+        "CRD schema must also expose overseerrSync so a kubectl apply of a manifest using the \
+         legacy field name isn't silently pruned by structural-schema validation (#545)"
+    );
+}
+
 // ── Property test: AppConfig::Seerr legacy "overseerr" discriminator ──
 //
 // The AppConfig enum renames the Overseerr variant to Seerr with

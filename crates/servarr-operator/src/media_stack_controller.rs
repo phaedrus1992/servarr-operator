@@ -9,7 +9,7 @@ use k8s_openapi::api::core::v1::{PersistentVolumeClaim, Pod, Service};
 use kube::api::{Api, DeleteParams, ListParams, Patch, PatchParams};
 use kube::runtime::controller::{Action, Controller};
 use kube::runtime::watcher;
-use kube::{Client, CustomResourceExt, Resource, ResourceExt};
+use kube::{Client, Resource, ResourceExt};
 use servarr_api::k8s::kube_err_summary;
 use servarr_crds::{
     AppType, Condition, MediaStack, MediaStackStatus, ServarrApp, ServarrAppSpec, StackAppStatus,
@@ -49,7 +49,7 @@ impl Error {
 }
 
 pub fn print_crd() -> Result<()> {
-    let crd = MediaStack::crd();
+    let crd = servarr_crds::crd_with_legacy_field_aliases::<MediaStack>();
     let yaml = serde_yaml::to_string(&crd)?;
     println!("{yaml}");
     Ok(())
