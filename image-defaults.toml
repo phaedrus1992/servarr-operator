@@ -79,7 +79,7 @@ downloads = false
 
 [jackett]
 repository = "linuxserver/jackett"
-tag = "0.24.2416"
+tag = "0.24.2419"
 port = 9117
 security = "linuxserver"
 downloads = false
