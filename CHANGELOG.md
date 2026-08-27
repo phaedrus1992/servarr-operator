@@ -54,6 +54,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   still-owned config PVC along with it — the delete is now skipped and retried on the next
   reconcile until detach fully succeeds, and a new `OrphanCleanupHealthy` status condition
   surfaces a stuck orphan instead of leaving it visible only in pod logs (#562).
+- Fix `kubectl apply` of a manifest still spelled `overseerrSync` being silently pruned by the
+  CRD's structural schema instead of rejected or accepted — unlike the `app: Overseerr` enum
+  value (#540), the field's legacy alias wasn't reflected into the generated schema at all, so
+  the config silently vanished on apply with no error. The CRD schema now accepts both spellings
+  for both the `ServarrApp` and `MediaStack` CRDs (#545).
+- Fix `docs/troubleshooting.md` incorrectly claiming the operator auto-registers the CRD on
+  startup and recommending `create`/`patch` RBAC verbs for it — the operator only ever performs
+  a read-only startup staleness check (#543), scoped to `get` on the two CRDs it uses (#563).
 
 ## [1.3.0] - 2026-08-07
 

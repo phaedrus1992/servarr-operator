@@ -11,7 +11,7 @@ use kube::runtime::controller::{Action, Controller};
 use kube::runtime::events::{Event, EventType, Recorder};
 use kube::runtime::reflector::{self, ObjectRef};
 use kube::runtime::watcher;
-use kube::{Client, CustomResourceExt, Resource, ResourceExt};
+use kube::{Client, Resource, ResourceExt};
 use servarr_api::AppKind;
 use servarr_api::TenantSafeMessage;
 use servarr_api::k8s::{kube_err_public_summary, kube_err_summary};
@@ -80,7 +80,7 @@ impl Error {
 }
 
 pub fn print_crd() -> Result<()> {
-    let crd = ServarrApp::crd();
+    let crd = servarr_crds::crd_with_legacy_field_aliases::<ServarrApp>();
     let yaml = serde_yaml::to_string(&crd)?;
     println!("{yaml}");
     Ok(())
