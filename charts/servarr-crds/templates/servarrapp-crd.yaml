@@ -613,6 +613,23 @@ spec:
                       type: string
                     type: array
                 type: object
+              overseerrSync:
+                description: Seerr cross-app synchronization. Only applies to Seerr-type apps.
+                nullable: true
+                properties:
+                  autoRemove:
+                    default: true
+                    description: Whether to remove servers from Seerr when their CRs are deleted.
+                    type: boolean
+                  enabled:
+                    default: false
+                    description: Whether Seerr sync is enabled.
+                    type: boolean
+                  namespaceScope:
+                    description: Namespace to discover apps in. Defaults to the Seerr CR's namespace.
+                    nullable: true
+                    type: string
+                type: object
               persistence:
                 nullable: true
                 properties:
