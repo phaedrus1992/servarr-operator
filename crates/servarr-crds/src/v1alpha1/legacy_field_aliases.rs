@@ -8,8 +8,10 @@
 //! struct's `properties` map, and no single field's `#[schemars(schema_with = ...)]` can add a
 //! key beside itself. Instead, this walks the fully generated schema after `T::crd()` builds it
 //! and duplicates every known aliased key's schema under its legacy name, recursively -- which
-//! covers a field at any nesting depth (a struct's own field, or a field inside an array item's
-//! struct) with one mechanism (#545).
+//! covers a field at any nesting depth reachable through `properties` or array `items` (a
+//! struct's own field, or a field inside an array item's struct) with one mechanism (#545).
+//! It does not walk `oneOf`/`anyOf`/`allOf`/`additionalProperties`/`$ref` -- an aliased field
+//! reached only through one of those would need the walk extended first.
 
 use k8s_openapi::apiextensions_apiserver::pkg::apis::apiextensions::v1::{
     CustomResourceDefinition, JSONSchemaProps, JSONSchemaPropsOrArray,
@@ -65,6 +67,53 @@ fn apply_legacy_field_aliases(schema: &mut JSONSchemaProps) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Guards against a dead registry entry: if a future `LEGACY_FIELD_ALIASES` addition has a
+    /// typo'd `new_key`, or the aliased field's schema moves outside the `properties`/`items`
+    /// reach `apply_legacy_field_aliases` walks, this fails loudly in CI instead of silently
+    /// shipping a CRD that never got the legacy alias applied -- the exact failure class #545
+    /// itself was.
+    #[test]
+    fn every_legacy_field_alias_matches_at_least_one_crd_schema() {
+        let servarr_app_crd = crd_with_legacy_field_aliases::<crate::ServarrApp>();
+        let media_stack_crd = crd_with_legacy_field_aliases::<crate::MediaStack>();
+
+        for (new_key, legacy_key) in LEGACY_FIELD_ALIASES {
+            let found = [&servarr_app_crd, &media_stack_crd].iter().any(|crd| {
+                crd.spec.versions.iter().any(|v| {
+                    v.schema
+                        .as_ref()
+                        .and_then(|s| s.open_api_v3_schema.as_ref())
+                        .is_some_and(|schema| schema_contains_key(schema, legacy_key))
+                })
+            });
+            assert!(
+                found,
+                "LEGACY_FIELD_ALIASES entry ({new_key:?}, {legacy_key:?}) never matched any \
+                 property in either ServarrApp or MediaStack's generated CRD schema -- this \
+                 entry is dead: either new_key is stale/typo'd, or the aliased field moved \
+                 outside the properties/items reach that apply_legacy_field_aliases walks"
+            );
+        }
+    }
+
+    fn schema_contains_key(schema: &JSONSchemaProps, key: &str) -> bool {
+        if let Some(properties) = &schema.properties {
+            if properties.contains_key(key) {
+                return true;
+            }
+            if properties.values().any(|p| schema_contains_key(p, key)) {
+                return true;
+            }
+        }
+        match &schema.items {
+            Some(JSONSchemaPropsOrArray::Schema(item)) => schema_contains_key(item, key),
+            Some(JSONSchemaPropsOrArray::Schemas(items)) => {
+                items.iter().any(|item| schema_contains_key(item, key))
+            }
+            None => false,
+        }
+    }
 
     fn schema_with_properties(properties: Vec<(&str, JSONSchemaProps)>) -> JSONSchemaProps {
         JSONSchemaProps {
