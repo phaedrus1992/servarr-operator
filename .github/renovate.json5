@@ -15,6 +15,12 @@
     '/^release\\/.*/',
   ],
   branchConcurrentLimit: 5,
+  // Auto-pin GitHub Actions to a commit SHA (and rewrite the version comment
+  // on every bump) so the pinned ratio checked by zizmor/CI stays at 100%
+  // without a manual re-pin every time a new workflow is added.
+  'github-actions': {
+    pinDigests: true,
+  },
   internalChecksFilter: 'strict',
   labels: [
     'dependencies',
