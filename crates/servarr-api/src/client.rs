@@ -138,7 +138,7 @@ impl HttpClient {
 
     /// Return a reference to the underlying [`reqwest::Client`] for
     /// advanced use cases (e.g. Transmission RPC with custom headers).
-    pub fn inner(&self) -> &reqwest::Client {
+    pub(crate) fn inner(&self) -> &reqwest::Client {
         &self.inner
     }
 

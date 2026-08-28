@@ -40,7 +40,7 @@ pub enum Error {
 impl Error {
     /// Returns a log-safe summary. The `Kube` variant delegates to [`kube_err_summary`]; the
     /// other variants already only carry curated messages, never raw external response content.
-    pub fn log_summary(&self) -> String {
+    fn log_summary(&self) -> String {
         match self {
             Self::Kube(e) => kube_err_summary(e),
             other => other.to_string(),

@@ -159,12 +159,12 @@ impl BasicCredentials {
     }
 
     /// The username half of the credential pair.
-    pub fn username(&self) -> &str {
+    pub(crate) fn username(&self) -> &str {
         &self.username
     }
 
     /// The password half of the credential pair.
-    pub fn password(&self) -> &str {
+    pub(crate) fn password(&self) -> &str {
         &self.password
     }
 }

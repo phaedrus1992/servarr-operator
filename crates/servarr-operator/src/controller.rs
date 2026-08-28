@@ -64,7 +64,7 @@ pub enum Error {
 impl Error {
     /// Returns a log-safe summary. The `Kube` variant delegates to [`kube_err_summary`]; the
     /// other variants already only carry curated messages, never raw external response content.
-    pub fn log_summary(&self) -> String {
+    fn log_summary(&self) -> String {
         match self {
             Self::Kube(e) => kube_err_summary(e),
             other => other.to_string(),
@@ -73,7 +73,7 @@ impl Error {
 
     /// Returns a tenant-safe summary. The `Kube` variant delegates to
     /// [`kube_err_public_summary`]; the other variants are safe as-is (see [`Self::log_summary`]).
-    pub fn public_summary(&self) -> String {
+    fn public_summary(&self) -> String {
         match self {
             Self::Kube(e) => kube_err_public_summary(e),
             other => other.to_string(),
@@ -1576,7 +1576,7 @@ fn is_health_poll_throttled(
     current - last < chrono::Duration::seconds(i64::from(interval))
 }
 
-pub(crate) async fn check_api_health(
+async fn check_api_health(
     client: &Client,
     app: &ServarrApp,
     transmission_access: Option<&Result<TransmissionAccess, String>>,
@@ -2236,7 +2236,7 @@ fn build_download_health_condition(
     )
 }
 
-pub(crate) struct StatusConditions {
+struct StatusConditions {
     pub health: Option<Condition>,
     pub update: Option<Condition>,
     pub admin_creds: Option<Condition>,
@@ -2290,7 +2290,7 @@ fn result_to_condition<E: Into<TenantSafeMessage>>(
     }
 }
 
-pub(crate) async fn update_status(
+async fn update_status(
     client: &Client,
     app: &ServarrApp,
     conditions: StatusConditions,
@@ -2952,27 +2952,27 @@ async fn try_restore(
 /// A discovered *arr app in the namespace with its service URL and API key.
 #[derive(Debug)]
 pub(crate) struct DiscoveredApp {
-    pub(crate) name: String,
-    pub(crate) app_type: AppType,
+    name: String,
+    app_type: AppType,
     /// Hostname component (e.g. `"sonarr.default.svc"`).
-    pub(crate) host: String,
+    host: String,
     /// Port component, matching the `i32` type used by `ServicePort.port`.
-    pub(crate) port: i32,
-    pub(crate) api_key: String,
-    pub(crate) instance: Option<String>,
+    port: i32,
+    api_key: String,
+    instance: Option<String>,
 }
 
 impl DiscoveredApp {
     /// Compute the base URL from host and port components.
     /// Issue #14: Compute on demand instead of storing redundantly.
-    pub(crate) fn base_url(&self) -> String {
+    fn base_url(&self) -> String {
         format!("http://{}:{}", self.host, self.port)
     }
 }
 
 /// Discover all Servarr v3 apps (Sonarr/Radarr/Lidarr) in a namespace
 /// and resolve their service URLs and API keys.
-pub(crate) async fn discover_namespace_apps(
+async fn discover_namespace_apps(
     client: &Client,
     namespace: &str,
 ) -> Result<Vec<DiscoveredApp>, TenantSafeMessage> {

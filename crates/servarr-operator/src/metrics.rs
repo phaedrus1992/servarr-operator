@@ -74,45 +74,45 @@ lazy_static::lazy_static! {
     .unwrap();
 }
 
-pub fn increment_reconcile_total(app_type: &str, result: &str) {
+pub(crate) fn increment_reconcile_total(app_type: &str, result: &str) {
     RECONCILE_TOTAL.with_label_values(&[app_type, result]).inc();
 }
 
-pub fn observe_reconcile_duration(app_type: &str, duration_secs: f64) {
+pub(crate) fn observe_reconcile_duration(app_type: &str, duration_secs: f64) {
     RECONCILE_DURATION
         .with_label_values(&[app_type])
         .observe(duration_secs);
 }
 
-pub fn increment_drift_corrections(app_type: &str, namespace: &str, resource_type: &str) {
+pub(crate) fn increment_drift_corrections(app_type: &str, namespace: &str, resource_type: &str) {
     DRIFT_CORRECTIONS_TOTAL
         .with_label_values(&[app_type, namespace, resource_type])
         .inc();
 }
 
-pub fn increment_backup_operations(app_type: &str, operation: &str, result: &str) {
+pub(crate) fn increment_backup_operations(app_type: &str, operation: &str, result: &str) {
     BACKUP_OPERATIONS_TOTAL
         .with_label_values(&[app_type, operation, result])
         .inc();
 }
 
-pub fn set_managed_apps(app_type: &str, namespace: &str, count: i64) {
+pub(crate) fn set_managed_apps(app_type: &str, namespace: &str, count: i64) {
     MANAGED_APPS
         .with_label_values(&[app_type, namespace])
         .set(count);
 }
 
-pub fn increment_stack_reconcile_total(result: &str) {
+pub(crate) fn increment_stack_reconcile_total(result: &str) {
     STACK_RECONCILE_TOTAL.with_label_values(&[result]).inc();
 }
 
-pub fn observe_stack_reconcile_duration(duration_secs: f64) {
+pub(crate) fn observe_stack_reconcile_duration(duration_secs: f64) {
     STACK_RECONCILE_DURATION
         .with_label_values(&[] as &[&str])
         .observe(duration_secs);
 }
 
-pub fn set_managed_stacks(namespace: &str, count: i64) {
+pub(crate) fn set_managed_stacks(namespace: &str, count: i64) {
     MANAGED_STACKS.with_label_values(&[namespace]).set(count);
 }
 
