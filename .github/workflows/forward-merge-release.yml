@@ -98,11 +98,10 @@ jobs:
           # rather than silently leaving downstream targets unmerged.
           HALTED=""
 
-          # A real conflict needs human resolution, and Actions in this repo
-          # is denied PR creation (repo permission gap — the protected-branch
-          # fallback below hits the same wall), so `gh pr create` on a
-          # conflicted merge just fails. Bail with manual-resolution
-          # instructions instead of attempting to open a PR.
+          # A real conflict needs human resolution — git merge --abort above
+          # already discarded the attempted merge, so there is no valid
+          # branch left to open a PR from. Bail with manual-resolution
+          # instructions instead.
           bail_on_conflict() {
             local src="$1" tgt="$2"
             echo "::error::Merge conflict: $src into $tgt has conflicts. Resolve manually:"
@@ -234,10 +233,15 @@ jobs:
               git checkout -B "$MERGE_BRANCH"
 
               if force_push_branch "$MERGE_BRANCH"; then
-                # gh pr create hits the same Actions permission gap as the
-                # conflict path above if it's ever denied — check the exit
-                # status instead of asserting success unconditionally.
-                if gh pr create --base "$TARGET" --head "$MERGE_BRANCH" \
+                # The default GITHUB_TOKEN cannot create pull requests
+                # ("GitHub Actions is not permitted to create or approve
+                # pull requests") — that's the exact gap FORWARD_MERGE_PAT
+                # exists to route around, same as the push helpers above.
+                # Without this override, gh reads GH_TOKEN from the step env
+                # (pinned to github.token) and hits that wall every time
+                # (#683). Check the exit status instead of asserting success
+                # unconditionally — the PAT can still lack PR-creation scope.
+                if GH_TOKEN="${FORWARD_MERGE_PAT:-$GH_TOKEN}" gh pr create --base "$TARGET" --head "$MERGE_BRANCH" \
                   --title "Forward-merge $CURRENT into $TARGET" \
                   --body "Direct push to $TARGET blocked by branch protection; opening PR."; then
                   echo "::error::Cascade halted: $TARGET is protected, opened PR instead"
@@ -245,6 +249,11 @@ jobs:
                   echo "::error::Cascade halted: $TARGET is protected and PR creation failed. Resolve manually:"
                   echo "::error::  git fetch origin && git checkout $TARGET && git reset --hard origin/$TARGET"
                   echo "::error::  git merge origin/$MERGE_BRANCH"
+                  if [[ -n "${FORWARD_MERGE_PAT:-}" ]]; then
+                    echo "::error::FORWARD_MERGE_PAT is configured but PR creation still failed —"
+                    echo "::error::if the git push above succeeded, the PAT likely lacks the"
+                    echo "::error::'Pull requests: write' scope. Add it and reissue the PAT."
+                  fi
                 fi
                 echo "::endgroup::"
                 HALTED="protected branch $TARGET"
@@ -257,7 +266,7 @@ jobs:
                   echo "This fails for every target, not just ones touching"
                   echo ".github/workflows/ — create a fine-grained PAT scoped to this"
                   echo "repository only (Contents: read/write, Workflows: read/write,"
-                  echo "with an expiry) at:"
+                  echo "Pull requests: read/write, with an expiry) at:"
                 else
                   echo "FORWARD_MERGE_PAT is configured but the push still failed — see"
                   echo "the ::warning:: above for the underlying git error (expired token,"
