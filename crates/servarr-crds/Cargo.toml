@@ -14,7 +14,7 @@ indexmap = { version = "=2.14.1", features = ["serde"] }
 
 [build-dependencies]
 toml = "=1.1.4"
-serde = { version = "=1.0.228", features = ["derive"] }
+serde = { version = "=1.0.229", features = ["derive"] }
 
 [dev-dependencies]
 serde_yaml.workspace = true
