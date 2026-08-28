@@ -72,6 +72,15 @@ lazy_static::lazy_static! {
         &["namespace"]
     )
     .unwrap();
+
+    pub static ref EVENT_PUBLISH_FAILURES_TOTAL: IntCounterVec = prometheus::register_int_counter_vec!(
+        Opts::new(
+            "servarr_operator_event_publish_failures_total",
+            "Total number of Kubernetes Event publish failures, by event reason"
+        ),
+        &["reason"]
+    )
+    .unwrap();
 }
 
 pub(crate) fn increment_reconcile_total(app_type: &str, result: &str) {
@@ -116,6 +125,12 @@ pub(crate) fn set_managed_stacks(namespace: &str, count: i64) {
     MANAGED_STACKS.with_label_values(&[namespace]).set(count);
 }
 
+pub(crate) fn increment_event_publish_failure(reason: &str) {
+    EVENT_PUBLISH_FAILURES_TOTAL
+        .with_label_values(&[reason])
+        .inc();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -151,6 +166,18 @@ mod tests {
                 .get_sample_sum()
                 >= 1.5
         );
+    }
+
+    #[test]
+    fn increment_event_publish_failure_increments_counter() {
+        let before = EVENT_PUBLISH_FAILURES_TOTAL
+            .with_label_values(&["TestReason"])
+            .get();
+        increment_event_publish_failure("TestReason");
+        let after = EVENT_PUBLISH_FAILURES_TOTAL
+            .with_label_values(&["TestReason"])
+            .get();
+        assert_eq!(after, before + 1);
     }
 
     #[test]
