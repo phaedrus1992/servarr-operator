@@ -2,7 +2,7 @@ use kube::api::Api;
 use kube::runtime::events::{Event, EventType, Recorder};
 use kube::{Client, ResourceExt};
 use servarr_api::TenantSafeMessage;
-use servarr_api::k8s::kube_err_summary;
+use servarr_api::k8s::{is_kube_not_found, kube_err_summary};
 use servarr_crds::{AppType, ServarrApp};
 use tracing::{info, warn};
 
@@ -26,10 +26,14 @@ pub(super) trait ClassifyCleanupSeverity {
 
 impl ClassifyCleanupSeverity for kube::Error {
     fn cleanup_severity(&self) -> CleanupSeverity {
-        match self {
-            // The API server has no such object (Secret, ServarrApp, ...) — provably absent.
-            kube::Error::Api(status) if status.code == 404 => CleanupSeverity::Terminal,
-            _ => CleanupSeverity::Transient,
+        // The API server has no such object (Secret, ServarrApp, ...) — provably absent. Uses
+        // the shared `is_kube_not_found` predicate (see #659/#660) so the underlying 404 check
+        // stays in one place; the Terminal/Transient retry duality built on top of it here is
+        // specific to the finalizer-cleanup path and isn't shared further.
+        if is_kube_not_found(self) {
+            CleanupSeverity::Terminal
+        } else {
+            CleanupSeverity::Transient
         }
     }
 }

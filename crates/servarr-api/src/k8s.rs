@@ -73,6 +73,17 @@ pub fn kube_err_public_summary(e: &kube::Error) -> String {
     }
 }
 
+/// Returns `true` when `e` is a 404 from the Kubernetes API server — the object doesn't exist.
+///
+/// Shared low-level predicate: `servarr-operator`'s finalizer-cleanup path
+/// (`ClassifyCleanupSeverity`) and its ordinary reconcile-path get-or-create/optional-skip
+/// checks both need "was this a 404", but only the cleanup path also needs the
+/// Terminal/Transient retry duality built on top of it. This function is the shared core; each
+/// caller decides what a 404 *means* for its own control flow.
+pub fn is_kube_not_found(e: &kube::Error) -> bool {
+    matches!(e, kube::Error::Api(status) if status.code == 404)
+}
+
 /// Read a single key from a Kubernetes Secret.
 ///
 /// The value is returned as a decoded UTF-8 string (Kubernetes stores
@@ -321,6 +332,36 @@ mod tests {
     // to `Display` passthrough would leak it and fail the assertion. The output
     // is constant, so a single fixed seed exercises the same collapse guarantee
     // the property loop would.
+    #[test]
+    fn is_kube_not_found_true_for_404_api_error() {
+        let err = kube::Error::Api(Box::new(kube::core::Status {
+            code: 404,
+            ..Default::default()
+        }));
+        assert!(is_kube_not_found(&err));
+    }
+
+    #[test]
+    fn is_kube_not_found_false_for_non_404_api_error() {
+        for code in [400, 403, 409, 500, 503] {
+            let err = kube::Error::Api(Box::new(kube::core::Status {
+                code,
+                ..Default::default()
+            }));
+            assert!(
+                !is_kube_not_found(&err),
+                "status {code} must not be treated as not-found"
+            );
+        }
+    }
+
+    #[test]
+    fn is_kube_not_found_false_for_non_api_variant() {
+        assert!(!is_kube_not_found(
+            &kube::Error::LinesCodecMaxLineLengthExceeded
+        ));
+    }
+
     #[test]
     fn kube_err_public_summary_collapses_non_api_variants() {
         let seed = SEED_TOKEN;

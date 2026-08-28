@@ -186,6 +186,13 @@ impl JellyfinClient {
     /// past the user-creation step before calling `POST /Startup/User`.
     /// Returns `Ok(())` on 200/204 and on 404 (endpoint not present in older
     /// versions); returns `Err` only for unexpected status codes.
+    ///
+    /// Doesn't share `servarr-operator`'s `ClassifyCleanupSeverity`/`is_kube_not_found` (see
+    /// #661): `servarr-api` is a dependency of `servarr-operator`, so this crate can't reach
+    /// back into the operator's `controller` module, and the semantics don't match anyway —
+    /// this is a one-shot startup-wizard step with no finalizer, no retry-vs-terminal duality,
+    /// and no Event to publish. A non-404, non-success status is returned as `Err` (never a
+    /// panic), so there's no untrusted-input DoS concern here either.
     async fn startup_get_first_user(&self) -> Result<(), ApiError> {
         let url = self.http.base_url().join("/Startup/FirstUser")?;
         let resp = self
