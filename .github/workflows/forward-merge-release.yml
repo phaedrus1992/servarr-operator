@@ -246,10 +246,18 @@ jobs:
               else
                 echo "::error::Cascade halted: cannot push merge commit to $TARGET"
                 echo ""
-                echo "The merge commit touches .github/workflows/ files which the"
-                echo "GITHUB_TOKEN cannot push. To fix this, create a fine-grained PAT"
-                echo "scoped to this repository only (Contents: read/write, Workflows:"
-                echo "read/write, with an expiry) at:"
+                if [[ -z "${FORWARD_MERGE_PAT:-}" ]]; then
+                  echo "No FORWARD_MERGE_PAT is configured, so this push carried no"
+                  echo "credentials at all (checkout no longer persists GITHUB_TOKEN)."
+                  echo "This fails for every target, not just ones touching"
+                  echo ".github/workflows/ — create a fine-grained PAT scoped to this"
+                  echo "repository only (Contents: read/write, Workflows: read/write,"
+                  echo "with an expiry) at:"
+                else
+                  echo "FORWARD_MERGE_PAT is configured but the push still failed — see"
+                  echo "the ::warning:: above for the underlying git error (expired token,"
+                  echo "missing Workflows scope, or similar). Reissue the PAT at:"
+                fi
                 echo "  https://github.com/settings/personal-access-tokens/new"
                 echo "A classic PAT also works but needs the \`workflow\` scope, which"
                 echo "on GitHub implies full \`repo\` and is account-wide — avoid it"
@@ -259,7 +267,7 @@ jobs:
                 echo ""
                 echo "Then re-run this workflow."
                 echo "::endgroup::"
-                HALTED="push blocked on $TARGET (workflow file changes)"
+                HALTED="push blocked on $TARGET"
               fi
               break
             fi
