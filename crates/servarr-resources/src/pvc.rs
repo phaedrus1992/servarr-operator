@@ -7,6 +7,15 @@ use std::collections::BTreeMap;
 
 use crate::common;
 
+/// # Errors
+///
+/// Only when `app.spec.app` has no `image-defaults.toml` entry or an unrecognized security
+/// profile (see [`AppDefaults::for_app`]). Not reachable for any real `ServarrApp`: `spec.app`
+/// is a closed [`servarr_crds::AppType`] enum, and
+/// `AppDefaults::validate_all()`/`validate_all_passes_for_every_app_type` (servarr-crds'
+/// `defaults_tests.rs`) prove every variant resolves. Kept as a `Result` rather than an
+/// infallible call so a future `AppType` variant added without a matching
+/// `image-defaults.toml` entry fails loudly here (and in that test) instead of panicking.
 pub fn build_all(app: &ServarrApp) -> Result<Vec<PersistentVolumeClaim>, String> {
     let defaults = AppDefaults::for_app(&app.spec.app)
         .inspect_err(|e| common::log_app_defaults_error(app, e))?;

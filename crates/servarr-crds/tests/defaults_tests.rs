@@ -392,6 +392,26 @@ fn http_apps_liveness_timeout_tolerates_dotnet_gc_pauses() {
 // SSH bastion tier and display
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// validate_all coverage (#610 follow-up)
+// ---------------------------------------------------------------------------
+
+/// `AppDefaults::validate_all()` is what gates operator startup against a broken
+/// `image-defaults.toml` (see `controller::run`), but nothing previously asserted it actually
+/// passes -- a missing/malformed entry for a new `AppType` variant would only surface at
+/// startup in a real cluster, not in CI. This also backs the "provably unreachable" argument
+/// for `servarr_resources::pvc::build_all`'s error branch (#610): since `validate_all` proves
+/// every `AppType::ALL` variant resolves via `AppDefaults::try_for_app`, and `spec.app` is
+/// always one of those variants (a closed enum, not an open string), `build_all` can never hit
+/// its "no image defaults" / "unknown security profile" errors for any real `ServarrApp`.
+#[test]
+fn validate_all_passes_for_every_app_type() {
+    assert!(
+        AppDefaults::validate_all().is_ok(),
+        "image-defaults.toml is missing or malformed for at least one AppType variant"
+    );
+}
+
 #[test]
 fn ssh_bastion_is_tier_zero() {
     assert_eq!(AppType::SshBastion.tier(), 0);
