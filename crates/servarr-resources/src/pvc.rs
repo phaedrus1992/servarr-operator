@@ -7,6 +7,20 @@ use std::collections::BTreeMap;
 
 use crate::common;
 
+/// # Errors
+///
+/// Two independent causes:
+/// - `app.spec.app` has no `image-defaults.toml` entry or an unrecognized security profile (see
+///   [`AppDefaults::try_for_app`]). Not reachable for any real `ServarrApp`: `spec.app` is a
+///   closed [`servarr_crds::AppType`] enum, and
+///   `AppDefaults::validate_all()`/`validate_all_passes_for_every_app_type` (servarr-crds'
+///   `defaults_tests.rs`) prove every variant resolves. Kept as a `Result` rather than an
+///   infallible call so a future `AppType` variant added without a matching
+///   `image-defaults.toml` entry fails loudly here (and in that test) instead of panicking.
+/// - `resolve_persistence`'s mount-path-collision check. This one *is* reachable for a real
+///   `ServarrApp`: the admission webhook that normally catches it at apply-time is optional
+///   (`WEBHOOK_ENABLED`), so a CR created without it running -- or whose collision only appears
+///   after an operator upgrade adds a new operator-reserved mount -- can still exist in-cluster.
 pub fn build_all(app: &ServarrApp) -> Result<Vec<PersistentVolumeClaim>, String> {
     let defaults = AppDefaults::try_for_app(&app.spec.app)
         .inspect_err(|e| common::log_app_defaults_error(app, e))?;
