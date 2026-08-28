@@ -14,11 +14,11 @@ tracing.workspace = true
 url = "2.5.8"
 kube.workspace = true
 k8s-openapi.workspace = true
-overseerr = "0.1"
-sonarr = "0.1.1"
-radarr = "0.1.1"
-lidarr = "0.1.1"
-prowlarr = "0.1.1"
+overseerr = "=0.1.1"
+sonarr = "=0.1.1"
+radarr = "=0.1.1"
+lidarr = "=0.1.1"
+prowlarr = "=0.1.1"
 
 [dev-dependencies]
 wiremock.workspace = true
