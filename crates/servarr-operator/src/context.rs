@@ -59,7 +59,7 @@ pub fn watch_all_namespaces() -> bool {
 }
 
 impl Context {
-    pub fn new(client: Client) -> Self {
+    pub(crate) fn new(client: Client) -> Self {
         let (image_overrides, legacy_image_override_apps) = load_image_overrides();
         let reporter = Reporter {
             controller: "servarr-operator".into(),

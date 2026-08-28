@@ -29,8 +29,8 @@ const DEFAULT_TLS_DIR: &str = "/etc/webhook/tls";
 #[derive(Clone)]
 pub struct WebhookConfig {
     pub port: u16,
-    pub tls_cert: PathBuf,
-    pub tls_key: PathBuf,
+    tls_cert: PathBuf,
+    tls_key: PathBuf,
 }
 
 impl Default for WebhookConfig {

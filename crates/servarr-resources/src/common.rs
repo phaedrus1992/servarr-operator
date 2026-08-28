@@ -4,9 +4,9 @@ use kube::api::ObjectMeta;
 use servarr_crds::ServarrApp;
 use std::collections::BTreeMap;
 
-pub const MANAGER: &str = "servarr-operator";
+const MANAGER: &str = "servarr-operator";
 
-pub fn log_app_defaults_error(app: &ServarrApp, error: &str) {
+pub(crate) fn log_app_defaults_error(app: &ServarrApp, error: &str) {
     tracing::error!(
         app = %app_name(app),
         namespace = %app_namespace(app),
