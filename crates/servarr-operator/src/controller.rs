@@ -7221,17 +7221,11 @@ mod tests {
         let event = &events[0];
         assert_eq!(event["type"], "Warning");
         assert_eq!(event["reason"], "CleanupFailed");
+        // #669: the tenant-visible Event note deliberately does NOT vary by RetryOutlook (see
+        // finish_cleanup's comment) -- that distinction is operator-log-only, so this stays an
+        // exact match against the sanitized status summary alone.
+        assert_eq!(event["note"], "Kubernetes API error (status: 403)");
         let note = event["note"].as_str().expect("note is a string");
-        assert!(
-            note.starts_with("Kubernetes API error (status: 403)"),
-            "got: {note}"
-        );
-        // #669: a 403 needs a manual RBAC fix and will retry forever without one -- the note
-        // must say so rather than looking identical to a genuinely transient failure.
-        assert!(
-            note.contains("will not self-resolve on retry"),
-            "a 403 list failure should be flagged as needing a manual fix, got: {note}"
-        );
         assert!(
             !note.contains(CLEANUP_FAILED_SEED),
             "Event note must be tenant-safe, got: {note}"
@@ -7353,17 +7347,9 @@ mod tests {
         let event = &events[0];
         assert_eq!(event["type"], "Warning");
         assert_eq!(event["reason"], "CleanupFailed");
+        // #669: see the sibling Prowlarr test -- RetryOutlook stays operator-log-only.
+        assert_eq!(event["note"], "Kubernetes API error (status: 403)");
         let note = event["note"].as_str().expect("note is a string");
-        assert!(
-            note.starts_with("Kubernetes API error (status: 403)"),
-            "got: {note}"
-        );
-        // #669: a 403 needs a manual RBAC fix and will retry forever without one -- the note
-        // must say so rather than looking identical to a genuinely transient failure.
-        assert!(
-            note.contains("will not self-resolve on retry"),
-            "a 403 secret-read failure should be flagged as needing a manual fix, got: {note}"
-        );
         assert!(
             !note.contains(CLEANUP_FAILED_SEED),
             "Event note must be tenant-safe, got: {note}"
@@ -7708,10 +7694,14 @@ mod tests {
     #[test]
     fn kube_error_retry_outlook_by_status_code() {
         for (code, expected) in [
-            (400, RetryOutlook::MaySelfResolve),
+            // Any 4xx except 429 means the request itself is rejected -- deterministic given
+            // the same input, so it needs a manual fix rather than a passive retry.
+            (400, RetryOutlook::NeedsManualFix),
             (401, RetryOutlook::NeedsManualFix),
             (403, RetryOutlook::NeedsManualFix),
-            (409, RetryOutlook::MaySelfResolve),
+            (409, RetryOutlook::NeedsManualFix),
+            // 429 (rate limit) and 5xx are the genuinely retry-friendly cases.
+            (429, RetryOutlook::MaySelfResolve),
             (500, RetryOutlook::MaySelfResolve),
             (503, RetryOutlook::MaySelfResolve),
         ] {
@@ -7721,6 +7711,30 @@ mod tests {
                 "status {code} should be {expected:?}"
             );
         }
+    }
+
+    #[test]
+    fn kube_error_retry_outlook_needs_manual_fix_for_deterministic_client_variants() {
+        // #669 review (silent-failure-hunter): a match-arm-level catch-all would silently
+        // default any new/rare kube::Error variant to MaySelfResolve, exactly the failure mode
+        // this trait's doc comment says not to allow. Exhaustive match instead -- this test
+        // spot-checks a sample of the deterministic-config variants land on NeedsManualFix.
+        assert_eq!(
+            kube::Error::TlsRequired.retry_outlook(),
+            RetryOutlook::NeedsManualFix
+        );
+        assert_eq!(
+            kube::Error::LinesCodecMaxLineLengthExceeded.retry_outlook(),
+            RetryOutlook::NeedsManualFix
+        );
+    }
+
+    #[test]
+    fn kube_error_retry_outlook_may_self_resolve_for_transport_variants() {
+        assert_eq!(
+            kube::Error::ReadEvents(std::io::Error::other("boom")).retry_outlook(),
+            RetryOutlook::MaySelfResolve
+        );
     }
 
     #[test]
@@ -7782,6 +7796,24 @@ mod tests {
             .retry_outlook(),
             RetryOutlook::NeedsManualFix,
             "403 from the downstream *arr app"
+        );
+        assert_eq!(
+            servarr_api::ApiError::ApiResponse {
+                status: 400,
+                body: String::new(),
+            }
+            .retry_outlook(),
+            RetryOutlook::NeedsManualFix,
+            "400 (malformed request) from the downstream *arr app"
+        );
+        assert_eq!(
+            servarr_api::ApiError::ApiResponse {
+                status: 429,
+                body: String::new(),
+            }
+            .retry_outlook(),
+            RetryOutlook::MaySelfResolve,
+            "429 (rate limit) is genuinely retry-friendly"
         );
         assert_eq!(
             servarr_api::ApiError::ApiResponse {
