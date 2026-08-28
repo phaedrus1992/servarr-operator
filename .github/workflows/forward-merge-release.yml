@@ -176,7 +176,12 @@ jobs:
               continue
             fi
 
-            git fetch origin "$CURRENT" "$TARGET" 2>/dev/null || true
+            if ! FETCH_ERR=$(git fetch origin "$CURRENT" "$TARGET" 2>&1); then
+              echo "::error::Cascade halted: failed to fetch $CURRENT/$TARGET from origin: $FETCH_ERR"
+              echo "::endgroup::"
+              HALTED="fetch failure for $CURRENT/$TARGET"
+              break
+            fi
             git checkout -q "origin/$TARGET"
 
             MERGE_BRANCH="forward-merge/$CURRENT-to-$TARGET"
