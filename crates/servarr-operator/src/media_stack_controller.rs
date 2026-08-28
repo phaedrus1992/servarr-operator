@@ -17,7 +17,7 @@ use servarr_crds::{
 };
 use thiserror::Error;
 use tokio::time::Duration;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::context::Context;
 use crate::metrics::{
@@ -718,19 +718,38 @@ async fn cleanup_orphaned_children(
                         continue;
                     };
                     let detach = serde_json::json!({ "metadata": { "ownerReferences": null } });
-                    if let Err(e) = pvc_api
+                    match pvc_api
                         .patch(pvc_name, &PatchParams::default(), &Patch::Merge(detach))
                         .await
-                        && !is_not_found(&e)
                     {
-                        let cause = DetachFailureCause::from_kube_error(&e);
-                        detach_failure =
-                            Some(detach_failure.map_or(cause, |prev| prev.most_severe(cause)));
-                        warn!(
-                            %name, child = %child_name, pvc = %pvc_name,
-                            error = %kube_err_summary(&e), cause = cause.as_str(),
-                            "failed to detach PVC ownership before orphan cleanup"
-                        );
+                        Ok(_) => {}
+                        Err(e) if is_not_found(&e) => {
+                            // #670: a 404 here is ambiguous by construction -- it could mean
+                            // the PVC was already detached (a prior reconcile's patch already
+                            // succeeded, or the PVC was deleted out-of-band), or it could mean
+                            // `pvc::build_all` computed a name that never matched any real PVC
+                            // (a naming-convention drift between it and the PVC's actual
+                            // creation path). Neither blocks cleanup today, but this line gives
+                            // on-call a breadcrumb: a PVC name that should exist showing up
+                            // here repeatedly is a signal to check
+                            // `servarr_resources::pvc`/`common::child_name` for drift.
+                            debug!(
+                                %name, child = %child_name, pvc = %pvc_name,
+                                "PVC ownerReference detach returned 404 -- already \
+                                 detached/deleted, or the computed PVC name never matched a \
+                                 real PVC"
+                            );
+                        }
+                        Err(e) => {
+                            let cause = DetachFailureCause::from_kube_error(&e);
+                            detach_failure =
+                                Some(detach_failure.map_or(cause, |prev| prev.most_severe(cause)));
+                            warn!(
+                                %name, child = %child_name, pvc = %pvc_name,
+                                error = %kube_err_summary(&e), cause = cause.as_str(),
+                                "failed to detach PVC ownership before orphan cleanup"
+                            );
+                        }
                     }
                 }
             }

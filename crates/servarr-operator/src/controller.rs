@@ -4120,8 +4120,8 @@ fn json_is_subset(desired: &serde_json::Value, actual: &serde_json::Value) -> bo
 #[cfg(test)]
 mod tests {
     use super::cleanup::{
-        ClassifyCleanupSeverity, CleanupSeverity, SonarrSeerr, cleanup_prowlarr_registration_body,
-        cleanup_seerr_registration_body, seerr_remove_server,
+        ClassifyCleanupSeverity, CleanupSeverity, RetryOutlook, SonarrSeerr,
+        cleanup_prowlarr_registration_body, cleanup_seerr_registration_body, seerr_remove_server,
     };
     use super::*;
     use serde_json::json;
@@ -7221,8 +7221,17 @@ mod tests {
         let event = &events[0];
         assert_eq!(event["type"], "Warning");
         assert_eq!(event["reason"], "CleanupFailed");
-        assert_eq!(event["note"], "Kubernetes API error (status: 403)");
         let note = event["note"].as_str().expect("note is a string");
+        assert!(
+            note.starts_with("Kubernetes API error (status: 403)"),
+            "got: {note}"
+        );
+        // #669: a 403 needs a manual RBAC fix and will retry forever without one -- the note
+        // must say so rather than looking identical to a genuinely transient failure.
+        assert!(
+            note.contains("will not self-resolve on retry"),
+            "a 403 list failure should be flagged as needing a manual fix, got: {note}"
+        );
         assert!(
             !note.contains(CLEANUP_FAILED_SEED),
             "Event note must be tenant-safe, got: {note}"
@@ -7344,8 +7353,17 @@ mod tests {
         let event = &events[0];
         assert_eq!(event["type"], "Warning");
         assert_eq!(event["reason"], "CleanupFailed");
-        assert_eq!(event["note"], "Kubernetes API error (status: 403)");
         let note = event["note"].as_str().expect("note is a string");
+        assert!(
+            note.starts_with("Kubernetes API error (status: 403)"),
+            "got: {note}"
+        );
+        // #669: a 403 needs a manual RBAC fix and will retry forever without one -- the note
+        // must say so rather than looking identical to a genuinely transient failure.
+        assert!(
+            note.contains("will not self-resolve on retry"),
+            "a 403 secret-read failure should be flagged as needing a manual fix, got: {note}"
+        );
         assert!(
             !note.contains(CLEANUP_FAILED_SEED),
             "Event note must be tenant-safe, got: {note}"
@@ -7683,6 +7701,109 @@ mod tests {
                 "status {status} should be {expected:?}"
             );
         }
+    }
+
+    // ---- RetryOutlook classification tests (#669) ----
+
+    #[test]
+    fn kube_error_retry_outlook_by_status_code() {
+        for (code, expected) in [
+            (400, RetryOutlook::MaySelfResolve),
+            (401, RetryOutlook::NeedsManualFix),
+            (403, RetryOutlook::NeedsManualFix),
+            (409, RetryOutlook::MaySelfResolve),
+            (500, RetryOutlook::MaySelfResolve),
+            (503, RetryOutlook::MaySelfResolve),
+        ] {
+            assert_eq!(
+                api_status_error(code).retry_outlook(),
+                expected,
+                "status {code} should be {expected:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn secret_error_kube_retry_outlook_by_status_code() {
+        for (code, expected) in [
+            (403, RetryOutlook::NeedsManualFix),
+            (500, RetryOutlook::MaySelfResolve),
+        ] {
+            let err = servarr_api::SecretError::Kube(api_status_error(code));
+            assert_eq!(
+                err.retry_outlook(),
+                expected,
+                "status {code} should be {expected:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn secret_error_malformed_secret_needs_manual_fix() {
+        // A missing key or non-UTF8 value needs a human to fix the Secret's contents -- it
+        // will never clear on its own, unlike the cleanup_severity classification (which keeps
+        // it Transient so the finalizer isn't dropped while the fix is pending).
+        let errs = [
+            servarr_api::SecretError::NoData { name: "s".into() },
+            servarr_api::SecretError::KeyNotFound {
+                name: "s".into(),
+                key: "k".into(),
+            },
+            servarr_api::SecretError::InvalidUtf8 {
+                name: "s".into(),
+                key: "k".into(),
+            },
+        ];
+        for err in errs {
+            assert_eq!(
+                err.retry_outlook(),
+                RetryOutlook::NeedsManualFix,
+                "{err:?} should need a manual fix"
+            );
+        }
+    }
+
+    #[test]
+    fn api_error_retry_outlook_by_variant() {
+        assert_eq!(
+            servarr_api::ApiError::ApiResponse {
+                status: 401,
+                body: String::new(),
+            }
+            .retry_outlook(),
+            RetryOutlook::NeedsManualFix,
+            "401 from the downstream *arr app"
+        );
+        assert_eq!(
+            servarr_api::ApiError::ApiResponse {
+                status: 403,
+                body: String::new(),
+            }
+            .retry_outlook(),
+            RetryOutlook::NeedsManualFix,
+            "403 from the downstream *arr app"
+        );
+        assert_eq!(
+            servarr_api::ApiError::ApiResponse {
+                status: 500,
+                body: String::new(),
+            }
+            .retry_outlook(),
+            RetryOutlook::MaySelfResolve,
+            "500 from the downstream *arr app"
+        );
+        assert_eq!(
+            servarr_api::ApiError::InvalidApiKey.retry_outlook(),
+            RetryOutlook::NeedsManualFix
+        );
+        assert_eq!(
+            servarr_api::ApiError::OperationFailed {
+                message: "nope".into()
+            }
+            .retry_outlook(),
+            RetryOutlook::MaySelfResolve,
+            "free-text rejection can't be reliably classified further"
+        );
     }
 
     // ---- CleanupSeverity::Terminal wrapper behavior tests (#451) ----

@@ -16,12 +16,35 @@ pub(super) enum CleanupSeverity {
     Transient,
 }
 
-/// Classifies an error's [`CleanupSeverity`]. Implemented only for the concrete error types the
-/// cleanup path actually produces (`kube::Error`, `SecretError`, `ApiError`) — deliberately no
-/// blanket/default impl, so a new error type flowing through [`CleanupMapErr`] must get an
-/// explicit, reviewed classification rather than silently defaulting to one severity or the other.
+/// For a `Transient` cleanup failure, whether retrying is expected to eventually succeed on its
+/// own (#669, same shape as #610's `DetachFailureCause`): a permission failure (401/403, a bad
+/// API key) needs a manual fix and will retry forever without one, while a genuine 5xx/network
+/// blip may clear on its own. `Terminal` failures don't need this distinction -- they already
+/// stop retrying.
+///
+/// Deliberately doesn't change `finish_cleanup`'s retry/drop-finalizer decision: a `Transient`
+/// permission failure still keeps the finalizer and retries, same as before this was added.
+/// Silently dropping the finalizer because of an RBAC/API-key problem would abandon the
+/// downstream Prowlarr/Seerr cleanup outright, which is worse than retrying forever with a
+/// clearer diagnostic. This only enriches the `CleanupFailed` Event/log so on-call can tell
+/// "will probably clear on its own" from "needs a human to fix a credential."
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum RetryOutlook {
+    /// May succeed on a later attempt without intervention.
+    MaySelfResolve,
+    /// Needs a manual fix (credential, RBAC, API key, malformed config) -- will retry forever
+    /// without one.
+    NeedsManualFix,
+}
+
+/// Classifies an error's [`CleanupSeverity`] and, for `Transient` failures, its [`RetryOutlook`].
+/// Implemented only for the concrete error types the cleanup path actually produces
+/// (`kube::Error`, `SecretError`, `ApiError`) — deliberately no blanket/default impl for either
+/// method, so a new error type flowing through [`CleanupMapErr`] must get an explicit, reviewed
+/// classification rather than silently defaulting to one outcome or the other.
 pub(super) trait ClassifyCleanupSeverity {
     fn cleanup_severity(&self) -> CleanupSeverity;
+    fn retry_outlook(&self) -> RetryOutlook;
 }
 
 impl ClassifyCleanupSeverity for kube::Error {
@@ -34,6 +57,19 @@ impl ClassifyCleanupSeverity for kube::Error {
             CleanupSeverity::Terminal
         } else {
             CleanupSeverity::Transient
+        }
+    }
+
+    fn retry_outlook(&self) -> RetryOutlook {
+        // 401/403 mean "rejected for who's asking, not what's asked" -- won't self-resolve on
+        // retry the way a 5xx/network blip can. `kube::Error::Auth` is the same class one layer
+        // earlier: the client couldn't even attach credentials.
+        if matches!(self, kube::Error::Api(status) if status.code == 401 || status.code == 403)
+            || matches!(self, kube::Error::Auth(_))
+        {
+            RetryOutlook::NeedsManualFix
+        } else {
+            RetryOutlook::MaySelfResolve
         }
     }
 }
@@ -50,6 +86,17 @@ impl ClassifyCleanupSeverity for servarr_api::k8s::SecretError {
             }
         }
     }
+
+    fn retry_outlook(&self) -> RetryOutlook {
+        match self {
+            Self::Kube(e) => e.retry_outlook(),
+            // Same reasoning as `cleanup_severity` above: this needs a human to fix the
+            // Secret's contents, not a passive retry.
+            Self::NoData { .. } | Self::KeyNotFound { .. } | Self::InvalidUtf8 { .. } => {
+                RetryOutlook::NeedsManualFix
+            }
+        }
+    }
 }
 
 impl ClassifyCleanupSeverity for servarr_api::ApiError {
@@ -59,6 +106,27 @@ impl ClassifyCleanupSeverity for servarr_api::ApiError {
             // read or delete — already gone.
             Self::ApiResponse { status: 404, .. } => CleanupSeverity::Terminal,
             _ => CleanupSeverity::Transient,
+        }
+    }
+
+    fn retry_outlook(&self) -> RetryOutlook {
+        match self {
+            // 401/403 from the downstream *arr app, or an API key the client itself already
+            // rejected as malformed -- both need the configured `apiKeySecret` fixed, not a
+            // retry. A malformed base URL is a static config problem too, not something that
+            // clears on its own.
+            Self::ApiResponse {
+                status: 401 | 403, ..
+            }
+            | Self::InvalidApiKey
+            | Self::InvalidUrl(_) => RetryOutlook::NeedsManualFix,
+            // `Request` (transport-level: DNS, connect, timeout) and `OperationFailed` (the
+            // downstream app rejected the operation with a free-text message we can't reliably
+            // classify further) are left as may-self-resolve, matching the prior undifferentiated
+            // behavior for both.
+            Self::ApiResponse { .. } | Self::Request(_) | Self::OperationFailed { .. } => {
+                RetryOutlook::MaySelfResolve
+            }
         }
     }
 }
@@ -80,15 +148,18 @@ pub(super) async fn cleanup_prowlarr_registration(
 }
 
 /// A cleanup body's failure: the `error` side carries full detail for the operator log, the
-/// `tenant_msg` side is tenant-safe for the Kubernetes Event, and `severity` tells the wrapper
-/// (via [`finish_cleanup`]) whether to retry or treat the target as already gone. Call sites keep
-/// the already-log-safe `Display` (backed by `kube_err_summary()` for the `Kube` variant) for
-/// `error`, and route the same error through `TenantSafeMessage` for `tenant_msg`.
+/// `tenant_msg` side is tenant-safe for the Kubernetes Event, `severity` tells the wrapper (via
+/// [`finish_cleanup`]) whether to retry or treat the target as already gone, and `retry_outlook`
+/// (meaningful only when `severity` is `Transient`) tells it whether that retry is expected to
+/// help. Call sites keep the already-log-safe `Display` (backed by `kube_err_summary()` for the
+/// `Kube` variant) for `error`, and route the same error through `TenantSafeMessage` for
+/// `tenant_msg`.
 #[derive(Debug)]
 pub(super) struct CleanupFailure {
     error: anyhow::Error,
     tenant_msg: TenantSafeMessage,
     pub(super) severity: CleanupSeverity,
+    retry_outlook: RetryOutlook,
 }
 
 /// Turns a single error into a [`CleanupFailure`].
@@ -124,10 +195,12 @@ where
     {
         self.map_err(|e| {
             let severity = e.cleanup_severity();
+            let retry_outlook = e.retry_outlook();
             CleanupFailure {
                 error: anyhow::anyhow!("{prefix}: {}", summary(&e)),
                 tenant_msg: e.into(),
                 severity,
+                retry_outlook,
             }
         })
     }
@@ -136,10 +209,17 @@ where
     where
         F: FnOnce(&E) -> String,
     {
-        self.map_err(|e| CleanupFailure {
-            error: anyhow::anyhow!("{prefix}: {}", summary(&e)),
-            tenant_msg: e.into(),
-            severity: CleanupSeverity::Transient,
+        self.map_err(|e| {
+            // Only `severity` is forced to `Transient` here (see the doc comment above) --
+            // `retry_outlook` still reflects the real error, since a LIST call can fail on a
+            // permission problem just as easily as a GET/DELETE can.
+            let retry_outlook = e.retry_outlook();
+            CleanupFailure {
+                error: anyhow::anyhow!("{prefix}: {}", summary(&e)),
+                tenant_msg: e.into(),
+                severity: CleanupSeverity::Transient,
+                retry_outlook,
+            }
         })
     }
 }
@@ -148,12 +228,15 @@ where
 /// anyhow message is `{ctx}: {e}`; the tenant-safe message is the curated string itself. Always
 /// [`CleanupSeverity::Transient`] — a curated-string failure here means the app type's compiled
 /// defaults didn't load, a config/programming problem unrelated to whether the downstream target
-/// exists, so it must keep retrying rather than being folded into idempotent success.
+/// exists, so it must keep retrying rather than being folded into idempotent success. Always
+/// [`RetryOutlook::NeedsManualFix`] too: a broken `image-defaults.toml` needs a redeploy, not a
+/// passive retry.
 fn cleanup_err_new(e: String, ctx: &str) -> CleanupFailure {
     CleanupFailure {
         error: anyhow::anyhow!("{ctx}: {e}"),
         tenant_msg: TenantSafeMessage::new(e),
         severity: CleanupSeverity::Transient,
+        retry_outlook: RetryOutlook::NeedsManualFix,
     }
 }
 
@@ -401,8 +484,9 @@ async fn finish_cleanup(
             error,
             tenant_msg,
             severity: CleanupSeverity::Transient,
+            retry_outlook,
         }) => {
-            publish_cleanup_failed(recorder, obj_ref, &tenant_msg).await;
+            publish_cleanup_failed(recorder, obj_ref, &tenant_msg, retry_outlook).await;
             Err(error)
         }
     }
@@ -431,19 +515,29 @@ async fn publish_cleanup_normal(
 }
 
 /// Publish the Warning event (reason `CleanupFailed`) for a failed finalizer cleanup, shared
-/// by the Prowlarr and Seerr cleanup wrappers. The note carries the tenant-safe message
-/// from the propagated cleanup error.
+/// by the Prowlarr and Seerr cleanup wrappers. The note carries the tenant-safe message from the
+/// propagated cleanup error, with a static suffix (#669) when `retry_outlook` says retrying
+/// won't help -- so on-call doesn't have to guess from an identical Event either way.
 async fn publish_cleanup_failed(
     recorder: &Recorder,
     obj_ref: &k8s_openapi::api::core::v1::ObjectReference,
     msg: &TenantSafeMessage,
+    retry_outlook: RetryOutlook,
 ) {
+    let note = match retry_outlook {
+        RetryOutlook::MaySelfResolve => msg.as_ref().to_string(),
+        RetryOutlook::NeedsManualFix => format!(
+            "{} (will not self-resolve on retry -- needs a manual fix, e.g. credentials, RBAC, \
+             or the configured apiKeySecret)",
+            msg.as_ref()
+        ),
+    };
     if let Err(e) = recorder
         .publish(
             &Event {
                 type_: EventType::Warning,
                 reason: "CleanupFailed".into(),
-                note: Some(msg.as_ref().to_string()),
+                note: Some(note),
                 action: "Finalize".into(),
                 secondary: None,
             },
