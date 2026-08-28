@@ -93,6 +93,23 @@ pub fn is_kube_not_found(e: &kube::Error) -> bool {
     matches!(e, kube::Error::Api(status) if status.code == 404 || status.is_not_found())
 }
 
+/// Returns `true` when `e` means the request was rejected for who's asking, not what's asked --
+/// a `401`/`403` API response, or a `kube::Error::Auth` (credential/exec-plugin) failure that
+/// never even reached the API server to get a status code. Neither self-resolves on retry the
+/// way a 5xx/network blip can; both need a human to fix a credential or RBAC grant.
+///
+/// Shared low-level predicate: `servarr-operator`'s orphan-cleanup PVC-detach path
+/// (`DetachFailureCause`) and its finalizer-cleanup path (`ClassifyCleanupSeverity`'s
+/// `RetryOutlook`) both need this exact "is this a permission problem" check, on top of which
+/// each caller builds its own richer classification (the finalizer-cleanup path also treats
+/// several deterministic non-`Api` variants -- `SerdeError`, `BuildRequest`, TLS/kubeconfig
+/// setup, API discovery -- as needing a manual fix; the PVC-detach path doesn't, since a simple
+/// PATCH call realistically only ever produces an `Api` or `Auth` error).
+pub fn is_kube_permission_denied(e: &kube::Error) -> bool {
+    matches!(e, kube::Error::Api(status) if status.code == 401 || status.code == 403)
+        || matches!(e, kube::Error::Auth(_))
+}
+
 /// Read a single key from a Kubernetes Secret.
 ///
 /// The value is returned as a decoded UTF-8 string (Kubernetes stores
@@ -382,6 +399,48 @@ mod tests {
             ..Default::default()
         }));
         assert!(is_kube_not_found(&err));
+    }
+
+    #[test]
+    fn is_kube_permission_denied_true_for_401_and_403() {
+        for code in [401, 403] {
+            let err = kube::Error::Api(Box::new(kube::core::Status {
+                code,
+                ..Default::default()
+            }));
+            assert!(
+                is_kube_permission_denied(&err),
+                "status {code} should be treated as permission-denied"
+            );
+        }
+    }
+
+    #[test]
+    fn is_kube_permission_denied_false_for_other_status_codes() {
+        for code in [400, 404, 409, 500, 503] {
+            let err = kube::Error::Api(Box::new(kube::core::Status {
+                code,
+                ..Default::default()
+            }));
+            assert!(
+                !is_kube_permission_denied(&err),
+                "status {code} must not be treated as permission-denied"
+            );
+        }
+    }
+
+    #[test]
+    fn is_kube_permission_denied_true_for_auth_variant() {
+        let err = kube::Error::Auth(kube::client::AuthError::AuthExecRun {
+            cmd: "kubectl".into(),
+            status: std::process::ExitStatus::default(),
+            out: std::process::Output {
+                status: std::process::ExitStatus::default(),
+                stdout: Vec::new(),
+                stderr: Vec::new(),
+            },
+        });
+        assert!(is_kube_permission_denied(&err));
     }
 
     #[test]
