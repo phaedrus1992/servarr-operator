@@ -146,6 +146,26 @@ jobs:
         # Non-blocking (no -D) until the existing findings are triaged — see #568/#569.
         run: cargo hawk check --manifest-path Cargo.toml --exclude-crate servarr_api --exclude-crate servarr_crds -W hawk::unnecessary_public -W hawk::unnecessary_restricted_visibility
 
+  deny:
+    needs: [fmt, actionlint, zizmor, pre-commit-config-lint]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@15449e3094499af05d8d964a1c884208e4b8b595 # v2.81.11
+        with:
+          tool: cargo-deny
+
+      - name: Run cargo deny
+        run: cargo deny check
+
   test:
     needs: [fmt, actionlint, zizmor, pre-commit-config-lint]
     runs-on: ubuntu-latest
