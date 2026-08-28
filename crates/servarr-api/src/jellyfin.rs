@@ -114,7 +114,7 @@ impl JellyfinClient {
     /// Return `true` if the startup wizard has not been completed yet.
     ///
     /// Calls `GET /Startup/Configuration`; a 200 response means the wizard is pending.
-    pub async fn startup_pending(&self) -> Result<bool, ApiError> {
+    pub(crate) async fn startup_pending(&self) -> Result<bool, ApiError> {
         let url = self.http.base_url().join("/Startup/Configuration")?;
         let resp = self
             .http
@@ -152,7 +152,11 @@ impl JellyfinClient {
     }
 
     /// Set the initial admin user via the startup wizard (`POST /Startup/User`).
-    pub async fn startup_set_user(&self, username: &str, password: &str) -> Result<(), ApiError> {
+    pub(crate) async fn startup_set_user(
+        &self,
+        username: &str,
+        password: &str,
+    ) -> Result<(), ApiError> {
         let url = self.http.base_url().join("/Startup/User")?;
         let body = StartupUserRequest {
             name: username,
@@ -249,7 +253,11 @@ impl JellyfinClient {
     }
 
     /// Authenticate as a user and return the access token.
-    pub async fn authenticate(&self, username: &str, password: &str) -> Result<String, ApiError> {
+    pub(crate) async fn authenticate(
+        &self,
+        username: &str,
+        password: &str,
+    ) -> Result<String, ApiError> {
         let url = self.http.base_url().join("/Users/AuthenticateByName")?;
         let body = AuthenticateRequest {
             username,
@@ -275,7 +283,7 @@ impl JellyfinClient {
     }
 
     /// List all users (requires an authenticated token).
-    pub async fn list_users(&self, token: &str) -> Result<Vec<JellyfinUser>, ApiError> {
+    pub(crate) async fn list_users(&self, token: &str) -> Result<Vec<JellyfinUser>, ApiError> {
         let url = self.http.base_url().join("/Users")?;
         let resp = self
             .http
@@ -300,7 +308,7 @@ impl JellyfinClient {
     }
 
     /// Change a user's password (`POST /Users/{userId}/Password`).
-    pub async fn set_password(
+    pub(crate) async fn set_password(
         &self,
         token: &str,
         user_id: &str,
