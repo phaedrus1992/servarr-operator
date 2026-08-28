@@ -614,6 +614,9 @@ kubectl logs deploy/servarr-operator | grep -i orphan
 
 ### Fix
 
-**PVC ownerReference detach failing:** Removing an app from `spec.apps` orphans its child `ServarrApp` (and the child's config PVC ownership is detached first, so cascading deletion of the CR doesn't take the PVC with it). If detaching the PVC's ownership doesn't unambiguously succeed -- a transient API error, RBAC gap, or the PVC already gone -- the operator skips deleting the orphaned `ServarrApp` that reconcile and retries on the next one, surfacing the stuck child names via the `OrphanCleanupHealthy` status condition instead of only a log line. This is usually transient and clears on its own within a few reconcile cycles; if it doesn't, check the operator's RBAC for `patch` on `persistentvolumeclaims` and confirm the PVC still exists.
+**PVC ownerReference detach failing:** Removing an app from `spec.apps` orphans its child `ServarrApp` (and the child's config PVC ownership is detached first, so cascading deletion of the CR doesn't take the PVC with it). If detaching the PVC's ownership doesn't unambiguously succeed, the operator skips deleting the orphaned `ServarrApp` that reconcile and retries on the next one, surfacing the stuck child names via the `OrphanCleanupHealthy` status condition instead of only a log line. The condition message tells you which case you're in:
+
+- **"awaiting retry (may self-resolve)"** -- a transient failure (5xx, network, or the PVC already gone). Usually clears on its own within a few reconcile cycles; no action needed unless it persists.
+- **"awaiting a manual permission fix (will not self-resolve on retry)"** -- a 401/403 on the PVC PATCH. This will not clear by waiting: check the operator's RBAC for `patch` on `persistentvolumeclaims`, whether its ServiceAccount token/credential is still valid, and whether a `ResourceQuota` or admission policy is rejecting the request.
 
 **Nothing left to clean up:** Once the detach succeeds and the orphaned `ServarrApp` CR is deleted, `OrphanCleanupHealthy` returns to `True` and any stuck-child names are cleared from the condition message.

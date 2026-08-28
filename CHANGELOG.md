@@ -16,6 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   that fires for every app whose env-supplied default image no longer matches the running
   operator's own built-in default (#638). `docs/installation.md` now recommends
   `--reset-then-reuse-values` (Helm 3.14+) over `--reuse-values` for upgrades.
+- Fix a stuck `MediaStack` orphan's `OrphanCleanupHealthy` condition reporting "may
+  self-resolve" for a PVC-detach failure that never will — a `401`/`403` (expired credential,
+  missing RBAC) is now labeled separately from a genuinely transient `5xx`/network failure, so
+  on-call doesn't wait on a retry that was never going to clear it (#610).
 
 ## [1.3.1] - 2026-08-27
 
