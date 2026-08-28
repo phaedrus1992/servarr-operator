@@ -170,22 +170,16 @@
       automerge: true,
     },
 
-    // Rust toolchain version (from custom regex manager)
+    // Rust toolchain version. Uses Renovate's native `rust-toolchain` manager
+    // (depType: toolchain) — this repo used to run its own custom regex manager
+    // for the same rust-toolchain.toml file, which duplicated the native manager
+    // once Renovate added first-party support, producing two separate PRs for
+    // the same bump (#628, #637).
     {
       groupName: 'Rust Toolchain',
       groupSlug: 'rust-toolchain',
-      matchDepNames: ['rust'],
-      matchManagers: ['custom.regex'],
-    },
-
-    // cargo-hawk runs with RUSTC_BOOTSTRAP=1 and hooks unstable compiler
-    // internals (rustc_interface, rustc_lexer) — keep version bumps human-
-    // reviewed like major updates, rather than auto-merging on the default
-    // non-major policy above (#572).
-    {
-      matchDepNames: ['cargo-hawk'],
-      matchManagers: ['custom.regex'],
-      automerge: false,
+      matchManagers: ['rust-toolchain'],
+      matchDepTypes: ['toolchain'],
     },
 
     // Container image versions in image-defaults.toml, and their mirror in
@@ -209,6 +203,19 @@
       groupName: null,
     },
 
+    // kube and k8s-openapi are version-locked: kube 4 requires k8s-openapi
+    // 0.28, so a major kube bump MUST ship with the matching k8s-openapi bump
+    // or the workspace ends up with two incompatible k8s-openapi versions that
+    // won't compile. Re-group them even on major (placed AFTER the
+    // major-isolation rule so this groupName overrides its null). Excludes
+    // schemars: it has a normal version range, not a lockstep coupling.
+    {
+      groupName: 'Rust Kubernetes crates',
+      groupSlug: 'rust-kubernetes',
+      matchManagers: ['cargo'],
+      matchPackageNames: ['/^kube/', '/^k8s/'],
+    },
+
     // Release branch maintenance: only patch-level updates.
     // Placed after all other rules so enabled:false wins.
     {
@@ -219,13 +226,30 @@
     },
     // Exception: Servarr app images track upstream feature releases closely,
     // so allow minor bumps (not major) on release/* branches too. Placed
-    // after the blanket disable rule above so it wins for this file.
+    // after the blanket disable rule above so it wins for this file. Must
+    // list both files for the same reason as the groupName rule above (#260):
+    // otherwise the values.yaml half of the bump stays disabled on release
+    // branches while the image-defaults.toml half is allowed through.
     {
       description: 'Allow minor Servarr image bumps on release/* branches',
-      matchFileNames: ['image-defaults.toml'],
+      matchFileNames: ['image-defaults.toml', 'charts/servarr-operator/values.yaml'],
       matchBaseBranches: ['/^release\\//'],
       matchUpdateTypes: ['minor'],
       enabled: true,
+    },
+
+    // GHCR images never get a releaseTimestamp from Renovate's docker
+    // datasource (release timestamp support is Docker-Hub-only), so under
+    // the global minimumReleaseAge + default minimumReleaseAgeBehaviour
+    // (timestamp-required), every release of a GHCR-hosted image sits
+    // "pending" forever and is never proposed, on any branch (#678).
+    // Fall back to treating an untimed GHCR release as stable; Docker-Hub
+    // images (most of the fleet) keep the full 7-day age gate.
+    {
+      description: 'Treat GHCR image releases as stable without a timestamp',
+      matchDatasources: ['docker'],
+      matchPackageNames: ['/^ghcr\\.io\\//'],
+      minimumReleaseAgeBehaviour: 'timestamp-optional',
     },
   ],
 
@@ -238,37 +262,6 @@
 
   // Custom managers for non-standard dependency sources
   customManagers: [
-    // Rust toolchain version in rust-toolchain.toml
-    {
-      customType: 'regex',
-      managerFilePatterns: [
-        '/(^|/)rust-toolchain\\.toml$/',
-      ],
-      matchStrings: [
-        'channel\\s*=\\s*"(?<currentValue>\\d+\\.\\d+(\\.\\d+)?)"',
-      ],
-      depNameTemplate: 'rust',
-      packageNameTemplate: 'rust-lang/rust',
-      datasourceTemplate: 'github-releases',
-    },
-
-    // cargo-hawk version pin in the CI install step and its documented
-    // manual-install instructions. Neither is covered by the cargo manager
-    // since it's a `cargo install --version` invocation inside a workflow
-    // `run:` step / doc code block, not a Cargo.toml dependency (#572).
-    {
-      customType: 'regex',
-      managerFilePatterns: [
-        '/(^|/)\\.github\\/workflows\\/ci\\.yaml$/',
-        '/(^|/)docs\\/contributing\\.md$/',
-      ],
-      matchStrings: [
-        '--version (?<currentValue>\\d+\\.\\d+\\.\\d+) cargo-hawk',
-      ],
-      depNameTemplate: 'cargo-hawk',
-      datasourceTemplate: 'crate',
-    },
-
     // Container image tags in image-defaults.toml
     {
       customType: 'regex',
