@@ -48,7 +48,7 @@ lazy_static = "=1.5.0"
 axum = "0.8.9"
 axum-server = { version = "0.8.0", features = ["tls-rustls"] }
 clap = { version = "=4.6.6", features = ["derive"] }
-flate2 = "=1.1.9"
+flate2 = "=1.1.10"
 base64 = "=0.22.1"
 servarr-api = { path = "../servarr-api" }
 overseerr = "0.1"
