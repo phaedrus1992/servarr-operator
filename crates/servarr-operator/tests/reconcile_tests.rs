@@ -2232,34 +2232,31 @@ async fn test_media_stack_reconcile_disabled_app() {
 // Test 9: MediaStack orphan cleanup -- deletes child not in spec
 // ---------------------------------------------------------------------------
 
-#[tokio::test]
-async fn test_media_stack_reconcile_orphan_cleanup() {
-    let mock_server = MockServer::start().await;
-    let client = mock_client(&mock_server.uri()).await;
-    let ctx = test_context(client);
-
-    // Stack has only Sonarr
-    let stack = Arc::new(make_media_stack("orphan-stack", "test"));
-
-    // PATCH child ServarrApp (the real one)
+/// Mounts the MediaStack orphan-cleanup mock set shared by every orphan-cleanup test: PATCH +
+/// GET for the real child (ready), a GET-by-label list returning the real child plus one
+/// orphan, a MediaStack status PATCH, and the MediaStack-list gauge GET. Callers mount their
+/// own PVC-detach and orphan-DELETE mocks on top, since those vary per test (#549).
+async fn mount_orphan_stack_mocks(
+    mock_server: &MockServer,
+    stack_name: &str,
+    child_name: &str,
+    orphan_name: &str,
+    ns: &str,
+) {
     Mock::given(method("PATCH"))
-        .and(path(
-            "/apis/servarr.dev/v1alpha1/namespaces/test/servarrapps/orphan-stack-sonarr",
-        ))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_json(servarrapp_response("orphan-stack-sonarr", "test")),
-        )
-        .mount(&mock_server)
+        .and(path(format!(
+            "/apis/servarr.dev/v1alpha1/namespaces/{ns}/servarrapps/{child_name}"
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_json(servarrapp_response(child_name, ns)))
+        .mount(mock_server)
         .await;
 
-    // GET child ServarrApp (real child, ready)
     Mock::given(method("GET"))
-        .and(path(
-            "/apis/servarr.dev/v1alpha1/namespaces/test/servarrapps/orphan-stack-sonarr",
-        ))
+        .and(path(format!(
+            "/apis/servarr.dev/v1alpha1/namespaces/{ns}/servarrapps/{child_name}"
+        )))
         .respond_with(ResponseTemplate::new(200).set_body_json({
-            let mut resp = servarrapp_response("orphan-stack-sonarr", "test");
+            let mut resp = servarrapp_response(child_name, ns);
             resp["status"] = json!({
                 "ready": true,
                 "readyReplicas": 1,
@@ -2268,14 +2265,13 @@ async fn test_media_stack_reconcile_orphan_cleanup() {
             });
             resp
         }))
-        .mount(&mock_server)
+        .mount(mock_server)
         .await;
 
-    // GET ServarrApps by label returns the real child AND an orphan
     Mock::given(method("GET"))
-        .and(path(
-            "/apis/servarr.dev/v1alpha1/namespaces/test/servarrapps",
-        ))
+        .and(path(format!(
+            "/apis/servarr.dev/v1alpha1/namespaces/{ns}/servarrapps"
+        )))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "apiVersion": "servarr.dev/v1alpha1",
             "kind": "ServarrAppList",
@@ -2285,8 +2281,8 @@ async fn test_media_stack_reconcile_orphan_cleanup() {
                     "apiVersion": "servarr.dev/v1alpha1",
                     "kind": "ServarrApp",
                     "metadata": {
-                        "name": "orphan-stack-sonarr",
-                        "namespace": "test",
+                        "name": child_name,
+                        "namespace": ns,
                         "uid": "sa-uid-real",
                         "resourceVersion": "200"
                     },
@@ -2296,8 +2292,8 @@ async fn test_media_stack_reconcile_orphan_cleanup() {
                     "apiVersion": "servarr.dev/v1alpha1",
                     "kind": "ServarrApp",
                     "metadata": {
-                        "name": "orphan-stack-old-radarr",
-                        "namespace": "test",
+                        "name": orphan_name,
+                        "namespace": ns,
                         "uid": "sa-uid-orphan",
                         "resourceVersion": "201"
                     },
@@ -2306,8 +2302,46 @@ async fn test_media_stack_reconcile_orphan_cleanup() {
             ]
         })))
         .named("list-servarrapps-with-orphan")
-        .mount(&mock_server)
+        .mount(mock_server)
         .await;
+
+    Mock::given(method("PATCH"))
+        .and(path(format!(
+            "/apis/servarr.dev/v1alpha1/namespaces/{ns}/mediastacks/{stack_name}/status"
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_json(mediastack_response(stack_name, ns)))
+        .mount(mock_server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "/apis/servarr.dev/v1alpha1/namespaces/{ns}/mediastacks"
+        )))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(empty_list("servarr.dev/v1alpha1", "MediaStackList")),
+        )
+        .mount(mock_server)
+        .await;
+}
+
+#[tokio::test]
+async fn test_media_stack_reconcile_orphan_cleanup() {
+    let mock_server = MockServer::start().await;
+    let client = mock_client(&mock_server.uri()).await;
+    let ctx = test_context(client);
+
+    // Stack has only Sonarr
+    let stack = Arc::new(make_media_stack("orphan-stack", "test"));
+
+    mount_orphan_stack_mocks(
+        &mock_server,
+        "orphan-stack",
+        "orphan-stack-sonarr",
+        "orphan-stack-old-radarr",
+        "test",
+    )
+    .await;
 
     // DELETE the orphaned child -- the controller should call this
     Mock::given(method("DELETE"))
@@ -2326,29 +2360,6 @@ async fn test_media_stack_reconcile_orphan_cleanup() {
         })))
         .expect(1)
         .named("delete-orphan")
-        .mount(&mock_server)
-        .await;
-
-    // PATCH MediaStack status
-    Mock::given(method("PATCH"))
-        .and(path(
-            "/apis/servarr.dev/v1alpha1/namespaces/test/mediastacks/orphan-stack/status",
-        ))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(mediastack_response("orphan-stack", "test")),
-        )
-        .mount(&mock_server)
-        .await;
-
-    // GET MediaStack list (for gauge)
-    Mock::given(method("GET"))
-        .and(path(
-            "/apis/servarr.dev/v1alpha1/namespaces/test/mediastacks",
-        ))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_json(empty_list("servarr.dev/v1alpha1", "MediaStackList")),
-        )
         .mount(&mock_server)
         .await;
 
@@ -2409,72 +2420,14 @@ async fn test_media_stack_reconcile_orphan_cleanup_runs_before_apply() {
     // Stack has only Sonarr
     let stack = Arc::new(make_media_stack("migrate-stack", "test"));
 
-    // PATCH child ServarrApp (the real one)
-    Mock::given(method("PATCH"))
-        .and(path(
-            "/apis/servarr.dev/v1alpha1/namespaces/test/servarrapps/migrate-stack-sonarr",
-        ))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_json(servarrapp_response("migrate-stack-sonarr", "test")),
-        )
-        .mount(&mock_server)
-        .await;
-
-    // GET child ServarrApp (real child, ready)
-    Mock::given(method("GET"))
-        .and(path(
-            "/apis/servarr.dev/v1alpha1/namespaces/test/servarrapps/migrate-stack-sonarr",
-        ))
-        .respond_with(ResponseTemplate::new(200).set_body_json({
-            let mut resp = servarrapp_response("migrate-stack-sonarr", "test");
-            resp["status"] = json!({
-                "ready": true,
-                "readyReplicas": 1,
-                "observedGeneration": 1,
-                "conditions": []
-            });
-            resp
-        }))
-        .mount(&mock_server)
-        .await;
-
-    // GET ServarrApps by label returns the real child AND a stale orphan from a rename
-    Mock::given(method("GET"))
-        .and(path(
-            "/apis/servarr.dev/v1alpha1/namespaces/test/servarrapps",
-        ))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "apiVersion": "servarr.dev/v1alpha1",
-            "kind": "ServarrAppList",
-            "metadata": {},
-            "items": [
-                {
-                    "apiVersion": "servarr.dev/v1alpha1",
-                    "kind": "ServarrApp",
-                    "metadata": {
-                        "name": "migrate-stack-sonarr",
-                        "namespace": "test",
-                        "uid": "sa-uid-real",
-                        "resourceVersion": "200"
-                    },
-                    "spec": { "app": "Sonarr" }
-                },
-                {
-                    "apiVersion": "servarr.dev/v1alpha1",
-                    "kind": "ServarrApp",
-                    "metadata": {
-                        "name": "migrate-stack-old-radarr",
-                        "namespace": "test",
-                        "uid": "sa-uid-orphan",
-                        "resourceVersion": "201"
-                    },
-                    "spec": { "app": "Radarr" }
-                }
-            ]
-        })))
-        .mount(&mock_server)
-        .await;
+    mount_orphan_stack_mocks(
+        &mock_server,
+        "migrate-stack",
+        "migrate-stack-sonarr",
+        "migrate-stack-old-radarr",
+        "test",
+    )
+    .await;
 
     // PATCH the orphan's config PVC to strip its ownerReference (must happen before the
     // ServarrApp DELETE below).
@@ -2506,29 +2459,6 @@ async fn test_media_stack_reconcile_orphan_cleanup_runs_before_apply() {
             }
         })))
         .expect(1)
-        .mount(&mock_server)
-        .await;
-
-    // PATCH MediaStack status
-    Mock::given(method("PATCH"))
-        .and(path(
-            "/apis/servarr.dev/v1alpha1/namespaces/test/mediastacks/migrate-stack/status",
-        ))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(mediastack_response("migrate-stack", "test")),
-        )
-        .mount(&mock_server)
-        .await;
-
-    // GET MediaStack list (for gauge)
-    Mock::given(method("GET"))
-        .and(path(
-            "/apis/servarr.dev/v1alpha1/namespaces/test/mediastacks",
-        ))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_json(empty_list("servarr.dev/v1alpha1", "MediaStackList")),
-        )
         .mount(&mock_server)
         .await;
 
@@ -2625,72 +2555,14 @@ async fn test_media_stack_reconcile_orphan_cleanup_skips_delete_when_pvc_detach_
     // Stack has only Sonarr
     let stack = Arc::new(make_media_stack("detach-fail-stack", "test"));
 
-    // PATCH child ServarrApp (the real one)
-    Mock::given(method("PATCH"))
-        .and(path(
-            "/apis/servarr.dev/v1alpha1/namespaces/test/servarrapps/detach-fail-stack-sonarr",
-        ))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_json(servarrapp_response("detach-fail-stack-sonarr", "test")),
-        )
-        .mount(&mock_server)
-        .await;
-
-    // GET child ServarrApp (real child, ready)
-    Mock::given(method("GET"))
-        .and(path(
-            "/apis/servarr.dev/v1alpha1/namespaces/test/servarrapps/detach-fail-stack-sonarr",
-        ))
-        .respond_with(ResponseTemplate::new(200).set_body_json({
-            let mut resp = servarrapp_response("detach-fail-stack-sonarr", "test");
-            resp["status"] = json!({
-                "ready": true,
-                "readyReplicas": 1,
-                "observedGeneration": 1,
-                "conditions": []
-            });
-            resp
-        }))
-        .mount(&mock_server)
-        .await;
-
-    // GET ServarrApps by label returns the real child AND an orphan
-    Mock::given(method("GET"))
-        .and(path(
-            "/apis/servarr.dev/v1alpha1/namespaces/test/servarrapps",
-        ))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "apiVersion": "servarr.dev/v1alpha1",
-            "kind": "ServarrAppList",
-            "metadata": {},
-            "items": [
-                {
-                    "apiVersion": "servarr.dev/v1alpha1",
-                    "kind": "ServarrApp",
-                    "metadata": {
-                        "name": "detach-fail-stack-sonarr",
-                        "namespace": "test",
-                        "uid": "sa-uid-real",
-                        "resourceVersion": "200"
-                    },
-                    "spec": { "app": "Sonarr" }
-                },
-                {
-                    "apiVersion": "servarr.dev/v1alpha1",
-                    "kind": "ServarrApp",
-                    "metadata": {
-                        "name": "detach-fail-stack-old-radarr",
-                        "namespace": "test",
-                        "uid": "sa-uid-orphan",
-                        "resourceVersion": "201"
-                    },
-                    "spec": { "app": "Radarr" }
-                }
-            ]
-        })))
-        .mount(&mock_server)
-        .await;
+    mount_orphan_stack_mocks(
+        &mock_server,
+        "detach-fail-stack",
+        "detach-fail-stack-sonarr",
+        "detach-fail-stack-old-radarr",
+        "test",
+    )
+    .await;
 
     // PATCH the orphan's config PVC to strip its ownerReference -- fails with a non-404
     // error, simulating a transient API problem.
@@ -2732,30 +2604,6 @@ async fn test_media_stack_reconcile_orphan_cleanup_skips_delete_when_pvc_detach_
         .mount(&mock_server)
         .await;
 
-    // PATCH MediaStack status
-    Mock::given(method("PATCH"))
-        .and(path(
-            "/apis/servarr.dev/v1alpha1/namespaces/test/mediastacks/detach-fail-stack/status",
-        ))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_json(mediastack_response("detach-fail-stack", "test")),
-        )
-        .mount(&mock_server)
-        .await;
-
-    // GET MediaStack list (for gauge)
-    Mock::given(method("GET"))
-        .and(path(
-            "/apis/servarr.dev/v1alpha1/namespaces/test/mediastacks",
-        ))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_json(empty_list("servarr.dev/v1alpha1", "MediaStackList")),
-        )
-        .mount(&mock_server)
-        .await;
-
     let result = servarr_operator::media_stack_controller::reconcile(stack, ctx).await;
 
     assert!(
@@ -2765,7 +2613,9 @@ async fn test_media_stack_reconcile_orphan_cleanup_skips_delete_when_pvc_detach_
     // _pvc_mock / DELETE mock drop verifies expect(1) / expect(0) above: the PVC detach
     // was attempted exactly once, and the child delete never happened.
 
-    // The stuck orphan must be visible on MediaStack status, not just in pod logs.
+    // The stuck orphan must be visible on MediaStack status, not just in pod logs, and a
+    // transient (non-RBAC) failure must be labeled as such so on-call knows it may
+    // self-resolve on retry (#610).
     let requests = mock_server.received_requests().await.unwrap_or_default();
     let status_body: serde_json::Value = requests
         .iter()
@@ -2787,12 +2637,121 @@ async fn test_media_stack_reconcile_orphan_cleanup_skips_delete_when_pvc_detach_
         .expect("OrphanCleanupHealthy condition should be set");
     assert_eq!(orphan_condition["status"], "False");
     assert_eq!(orphan_condition["reason"], "PvcDetachFailed");
+    let message = orphan_condition["message"].as_str().unwrap_or_default();
     assert!(
-        orphan_condition["message"]
-            .as_str()
-            .unwrap_or_default()
-            .contains("detach-fail-stack-old-radarr"),
+        message.contains("detach-fail-stack-old-radarr"),
         "condition message should name the stuck orphan, got: {orphan_condition}"
+    );
+    assert!(
+        message.contains("may self-resolve") && !message.contains("RBAC"),
+        "a 500 detach failure should be labeled transient, not RBAC, got: {orphan_condition}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Test 9d: MediaStack orphan cleanup labels a 403 detach failure as RBAC-denied (#610)
+// ---------------------------------------------------------------------------
+
+/// Follow-up to #562: a `403` on the PVC ownerReference-detach PATCH means the operator's
+/// ServiceAccount lacks permission -- it will never clear on its own the way a transient
+/// 5xx/network error might. The stuck orphan must still not be deleted (same invariant as the
+/// transient case), but the status Condition should tell on-call this needs a manual RBAC fix
+/// rather than "wait for the next reconcile".
+#[tokio::test]
+async fn test_media_stack_reconcile_orphan_cleanup_labels_403_as_rbac_denied() {
+    let mock_server = MockServer::start().await;
+    let client = mock_client(&mock_server.uri()).await;
+    let ctx = test_context(client);
+
+    let stack = Arc::new(make_media_stack("rbac-fail-stack", "test"));
+
+    mount_orphan_stack_mocks(
+        &mock_server,
+        "rbac-fail-stack",
+        "rbac-fail-stack-sonarr",
+        "rbac-fail-stack-old-radarr",
+        "test",
+    )
+    .await;
+
+    // PATCH the orphan's config PVC to strip its ownerReference -- fails with 403, simulating
+    // the operator's ServiceAccount lacking the RBAC permission to patch PVCs.
+    Mock::given(method("PATCH"))
+        .and(path(
+            "/api/v1/namespaces/test/persistentvolumeclaims/rbac-fail-stack-old-radarr-config",
+        ))
+        .respond_with(ResponseTemplate::new(403).set_body_json(json!({
+            "apiVersion": "v1",
+            "kind": "Status",
+            "metadata": {},
+            "status": "Failure",
+            "message": "persistentvolumeclaims is forbidden: User cannot patch resource",
+            "reason": "Forbidden",
+            "code": 403
+        })))
+        .expect(1)
+        .named("patch-pvc-detach-forbidden")
+        .mount(&mock_server)
+        .await;
+
+    // The orphaned child must NOT be deleted -- expect(0) is verified when mock_server drops.
+    Mock::given(method("DELETE"))
+        .and(path(
+            "/apis/servarr.dev/v1alpha1/namespaces/test/servarrapps/rbac-fail-stack-old-radarr",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "apiVersion": "servarr.dev/v1alpha1",
+            "kind": "ServarrApp",
+            "metadata": {
+                "name": "rbac-fail-stack-old-radarr",
+                "namespace": "test",
+                "uid": "sa-uid-orphan",
+                "resourceVersion": "201"
+            }
+        })))
+        .expect(0)
+        .named("delete-orphan-must-not-happen")
+        .mount(&mock_server)
+        .await;
+
+    let result = servarr_operator::media_stack_controller::reconcile(stack, ctx).await;
+
+    assert!(
+        result.is_ok(),
+        "reconcile should still succeed even when one orphan's PVC detach is forbidden, got: \
+         {result:?}"
+    );
+
+    let requests = mock_server.received_requests().await.unwrap_or_default();
+    let status_body: serde_json::Value = requests
+        .iter()
+        .find(|r| {
+            r.method == wiremock::http::Method::PATCH
+                && r.url
+                    .path()
+                    .ends_with("/mediastacks/rbac-fail-stack/status")
+        })
+        .expect("MediaStack status PATCH should have been sent")
+        .body_json()
+        .expect("status patch body should be valid JSON");
+    let conditions = status_body["status"]["conditions"]
+        .as_array()
+        .expect("status.conditions should be an array");
+    let orphan_condition = conditions
+        .iter()
+        .find(|c| c["conditionType"] == "OrphanCleanupHealthy")
+        .expect("OrphanCleanupHealthy condition should be set");
+    assert_eq!(orphan_condition["status"], "False");
+    assert_eq!(orphan_condition["reason"], "PvcDetachFailed");
+    let message = orphan_condition["message"].as_str().unwrap_or_default();
+    assert!(
+        message.contains("rbac-fail-stack-old-radarr"),
+        "condition message should name the stuck orphan, got: {orphan_condition}"
+    );
+    assert!(
+        message.contains("RBAC") && message.contains("will not self-resolve"),
+        "a 403 detach failure should be labeled as an RBAC denial that needs a manual fix, \
+         got: {orphan_condition}"
     );
 }
 
