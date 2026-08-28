@@ -4120,8 +4120,8 @@ fn json_is_subset(desired: &serde_json::Value, actual: &serde_json::Value) -> bo
 #[cfg(test)]
 mod tests {
     use super::cleanup::{
-        ClassifyCleanupSeverity, CleanupSeverity, SonarrSeerr, cleanup_prowlarr_registration_body,
-        cleanup_seerr_registration_body, seerr_remove_server,
+        ClassifyCleanupSeverity, CleanupSeverity, RetryOutlook, SonarrSeerr,
+        cleanup_prowlarr_registration_body, cleanup_seerr_registration_body, seerr_remove_server,
     };
     use super::*;
     use serde_json::json;
@@ -7221,6 +7221,9 @@ mod tests {
         let event = &events[0];
         assert_eq!(event["type"], "Warning");
         assert_eq!(event["reason"], "CleanupFailed");
+        // #669: the tenant-visible Event note deliberately does NOT vary by RetryOutlook (see
+        // finish_cleanup's comment) -- that distinction is operator-log-only, so this stays an
+        // exact match against the sanitized status summary alone.
         assert_eq!(event["note"], "Kubernetes API error (status: 403)");
         let note = event["note"].as_str().expect("note is a string");
         assert!(
@@ -7344,6 +7347,7 @@ mod tests {
         let event = &events[0];
         assert_eq!(event["type"], "Warning");
         assert_eq!(event["reason"], "CleanupFailed");
+        // #669: see the sibling Prowlarr test -- RetryOutlook stays operator-log-only.
         assert_eq!(event["note"], "Kubernetes API error (status: 403)");
         let note = event["note"].as_str().expect("note is a string");
         assert!(
@@ -7683,6 +7687,155 @@ mod tests {
                 "status {status} should be {expected:?}"
             );
         }
+    }
+
+    // ---- RetryOutlook classification tests (#669) ----
+
+    #[test]
+    fn kube_error_retry_outlook_by_status_code() {
+        for (code, expected) in [
+            // Any 4xx except 429 means the request itself is rejected -- deterministic given
+            // the same input, so it needs a manual fix rather than a passive retry.
+            (400, RetryOutlook::NeedsManualFix),
+            (401, RetryOutlook::NeedsManualFix),
+            (403, RetryOutlook::NeedsManualFix),
+            (409, RetryOutlook::NeedsManualFix),
+            // 429 (rate limit) and 5xx are the genuinely retry-friendly cases.
+            (429, RetryOutlook::MaySelfResolve),
+            (500, RetryOutlook::MaySelfResolve),
+            (503, RetryOutlook::MaySelfResolve),
+        ] {
+            assert_eq!(
+                api_status_error(code).retry_outlook(),
+                expected,
+                "status {code} should be {expected:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn kube_error_retry_outlook_needs_manual_fix_for_deterministic_client_variants() {
+        // #669 review (silent-failure-hunter): a match-arm-level catch-all would silently
+        // default any new/rare kube::Error variant to MaySelfResolve, exactly the failure mode
+        // this trait's doc comment says not to allow. Exhaustive match instead -- this test
+        // spot-checks a sample of the deterministic-config variants land on NeedsManualFix.
+        assert_eq!(
+            kube::Error::TlsRequired.retry_outlook(),
+            RetryOutlook::NeedsManualFix
+        );
+        assert_eq!(
+            kube::Error::LinesCodecMaxLineLengthExceeded.retry_outlook(),
+            RetryOutlook::NeedsManualFix
+        );
+    }
+
+    #[test]
+    fn kube_error_retry_outlook_may_self_resolve_for_transport_variants() {
+        assert_eq!(
+            kube::Error::ReadEvents(std::io::Error::other("boom")).retry_outlook(),
+            RetryOutlook::MaySelfResolve
+        );
+    }
+
+    #[test]
+    fn secret_error_kube_retry_outlook_by_status_code() {
+        for (code, expected) in [
+            (403, RetryOutlook::NeedsManualFix),
+            (500, RetryOutlook::MaySelfResolve),
+        ] {
+            let err = servarr_api::SecretError::Kube(api_status_error(code));
+            assert_eq!(
+                err.retry_outlook(),
+                expected,
+                "status {code} should be {expected:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn secret_error_malformed_secret_needs_manual_fix() {
+        // A missing key or non-UTF8 value needs a human to fix the Secret's contents -- it
+        // will never clear on its own, unlike the cleanup_severity classification (which keeps
+        // it Transient so the finalizer isn't dropped while the fix is pending).
+        let errs = [
+            servarr_api::SecretError::NoData { name: "s".into() },
+            servarr_api::SecretError::KeyNotFound {
+                name: "s".into(),
+                key: "k".into(),
+            },
+            servarr_api::SecretError::InvalidUtf8 {
+                name: "s".into(),
+                key: "k".into(),
+            },
+        ];
+        for err in errs {
+            assert_eq!(
+                err.retry_outlook(),
+                RetryOutlook::NeedsManualFix,
+                "{err:?} should need a manual fix"
+            );
+        }
+    }
+
+    #[test]
+    fn api_error_retry_outlook_by_variant() {
+        assert_eq!(
+            servarr_api::ApiError::ApiResponse {
+                status: 401,
+                body: String::new(),
+            }
+            .retry_outlook(),
+            RetryOutlook::NeedsManualFix,
+            "401 from the downstream *arr app"
+        );
+        assert_eq!(
+            servarr_api::ApiError::ApiResponse {
+                status: 403,
+                body: String::new(),
+            }
+            .retry_outlook(),
+            RetryOutlook::NeedsManualFix,
+            "403 from the downstream *arr app"
+        );
+        assert_eq!(
+            servarr_api::ApiError::ApiResponse {
+                status: 400,
+                body: String::new(),
+            }
+            .retry_outlook(),
+            RetryOutlook::NeedsManualFix,
+            "400 (malformed request) from the downstream *arr app"
+        );
+        assert_eq!(
+            servarr_api::ApiError::ApiResponse {
+                status: 429,
+                body: String::new(),
+            }
+            .retry_outlook(),
+            RetryOutlook::MaySelfResolve,
+            "429 (rate limit) is genuinely retry-friendly"
+        );
+        assert_eq!(
+            servarr_api::ApiError::ApiResponse {
+                status: 500,
+                body: String::new(),
+            }
+            .retry_outlook(),
+            RetryOutlook::MaySelfResolve,
+            "500 from the downstream *arr app"
+        );
+        assert_eq!(
+            servarr_api::ApiError::InvalidApiKey.retry_outlook(),
+            RetryOutlook::NeedsManualFix
+        );
+        assert_eq!(
+            servarr_api::ApiError::OperationFailed {
+                message: "nope".into()
+            }
+            .retry_outlook(),
+            RetryOutlook::MaySelfResolve,
+            "free-text rejection can't be reliably classified further"
+        );
     }
 
     // ---- CleanupSeverity::Terminal wrapper behavior tests (#451) ----
