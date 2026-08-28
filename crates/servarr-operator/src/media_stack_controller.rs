@@ -645,8 +645,19 @@ async fn reconcile_nfs_server(
     Ok(None)
 }
 
+/// Whether `e` proves the target the caller just tried to patch/delete is already gone, so the
+/// caller can drop it silently instead of warning.
+///
+/// Deliberately does **not** adopt `controller::cleanup::ClassifyCleanupSeverity` (see #659):
+/// that trait's Terminal/Transient duality exists to decide whether a finalizer keeps the CR
+/// around for a retry, with a Warning Event published on the Transient path. Every call site
+/// here is a best-effort orphan-cleanup step during normal reconciliation (detach a PVC owner
+/// ref, delete an orphaned child/NFS resource) — there's no finalizer, no retry decision to
+/// make, and no Event to publish; a non-404 error just gets logged and reconciliation moves on.
+/// Sharing the underlying 404 check (not the retry semantics built on it) is enough — see
+/// `servarr_api::k8s::is_kube_not_found`.
 fn is_not_found(e: &kube::Error) -> bool {
-    matches!(e, kube::Error::Api(e) if e.code == 404)
+    servarr_api::k8s::is_kube_not_found(e)
 }
 
 async fn patch_status(
