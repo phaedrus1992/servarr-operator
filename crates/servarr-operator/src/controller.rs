@@ -447,7 +447,11 @@ pub async fn reconcile(app: Arc<ServarrApp>, ctx: Arc<Context>) -> Result<Action
     // by the ServarrApp CR, not the Deployment (see servarr_resources::pvc),
     // so deleting the Deployment never touches persisted data.
     match deploy_api.get(&name).await {
-        Err(kube::Error::Api(err)) if err.code == 404 => {}
+        // Not adopting `cleanup::ClassifyCleanupSeverity` here (see #660): this is a normal
+        // reconcile-path get-or-create check, not a finalizer/cleanup path — no
+        // Terminal/Transient retry duality, no Event to publish. Sharing the underlying 404
+        // check is enough; see `servarr_api::k8s::is_kube_not_found`.
+        Err(e) if servarr_api::k8s::is_kube_not_found(&e) => {}
         Err(e) => return Err(Error::Kube(e)),
         Ok(existing) => {
             // Only ever delete a Deployment this ServarrApp owns. A foreign
@@ -558,7 +562,7 @@ pub async fn reconcile(app: Arc<ServarrApp>, ctx: Arc<Context>) -> Result<Action
             Ok(_) => {
                 // PVC exists, don't modify (immutable fields)
             }
-            Err(kube::Error::Api(err)) if err.code == 404 => {
+            Err(e) if servarr_api::k8s::is_kube_not_found(&e) => {
                 pvc_api
                     .patch(pvc_name, &pp, &Patch::Apply(pvc))
                     .await
@@ -986,7 +990,7 @@ async fn ensure_api_key_secret(client: &Client, app: &ServarrApp) -> Result<(), 
     // Only create if the Secret does not already exist.
     match secret_api.get(&secret_name).await {
         Ok(_) => return Ok(()),
-        Err(kube::Error::Api(err)) if err.code == 404 => {}
+        Err(e) if servarr_api::k8s::is_kube_not_found(&e) => {}
         Err(e) => return Err(Error::Kube(e)),
     }
 
@@ -3665,8 +3669,8 @@ async fn sync_maintainerr_servers(
         match servarr_api::read_secret_key(client, &ns, secret_name, "plex-token").await {
             Ok(token) => plex_token = Some(token),
             // 404 = secret not found, intentional-skip case when Plex is optional
-            Err(servarr_api::SecretError::Kube(kube::Error::Api(ref api_err)))
-                if api_err.code == 404 =>
+            Err(servarr_api::SecretError::Kube(ref e))
+                if servarr_api::k8s::is_kube_not_found(e) =>
             {
                 debug!(
                     maintainerr = %maintainerr_name,
