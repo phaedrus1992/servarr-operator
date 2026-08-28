@@ -29,23 +29,15 @@ const TIER_TIMEOUT_SECS: i64 = 300; // 5 minutes
 
 #[derive(Debug, Error)]
 pub enum Error {
-    #[error("Kubernetes API error: {0}")]
+    /// Message is already log-safe: [`kube_err_summary`] strips raw API server response content
+    /// before this variant's `Display` ever renders it, so no separate sanitizer method is
+    /// needed for logging.
+    #[error("Kubernetes API error: {}", kube_err_summary(.0))]
     Kube(#[source] kube::Error),
     #[error("Serialization error: {0}")]
     Serialization(#[source] serde_json::Error),
     #[error("Internal error: {0}")]
     Internal(&'static str),
-}
-
-impl Error {
-    /// Returns a log-safe summary. The `Kube` variant delegates to [`kube_err_summary`]; the
-    /// other variants already only carry curated messages, never raw external response content.
-    fn log_summary(&self) -> String {
-        match self {
-            Self::Kube(e) => kube_err_summary(e),
-            other => other.to_string(),
-        }
-    }
 }
 
 pub fn print_crd() -> Result<()> {
@@ -682,7 +674,7 @@ async fn patch_status(
 
 pub fn error_policy(_stack: Arc<MediaStack>, error: &Error, _ctx: Arc<Context>) -> Action {
     increment_stack_reconcile_total("error");
-    warn!(error = %error.log_summary(), "media-stack reconciliation failed, requeuing");
+    warn!(error = %error, "media-stack reconciliation failed, requeuing");
     Action::requeue(Duration::from_secs(60))
 }
 
@@ -701,7 +693,7 @@ mod tests {
     }
 
     #[test]
-    fn error_log_summary_kube_variant_drops_message_keeps_status_code() {
+    fn error_display_kube_variant_drops_message_keeps_status_code() {
         let status = kube::core::Status {
             code: 403,
             message: "secrets \"super-secret-name\" is forbidden: User cannot get".to_string(),
@@ -709,7 +701,7 @@ mod tests {
             ..Default::default()
         };
         let err = Error::Kube(kube::Error::Api(Box::new(status)));
-        let summary = err.log_summary();
+        let summary = err.to_string();
         assert!(
             summary.contains("403"),
             "summary should keep the status code: {summary}"
@@ -718,12 +710,6 @@ mod tests {
             !summary.contains("super-secret-name"),
             "summary must not leak the raw API server message: {summary}"
         );
-    }
-
-    #[test]
-    fn error_log_summary_non_kube_variant_passes_through_unchanged() {
-        let err = Error::Internal("stack name is empty");
-        assert_eq!(err.log_summary(), err.to_string());
     }
 
     #[test]
