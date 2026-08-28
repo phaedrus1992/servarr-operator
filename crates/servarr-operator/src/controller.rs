@@ -170,6 +170,32 @@ pub async fn run(client: kube::Client, server_state: crate::server::ServerState)
     Ok(())
 }
 
+/// Publishes the `DeprecatedImageOverride` Warning Event for an app resolving its image via the
+/// legacy `DEFAULT_IMAGE_OVERSEERR_*` env var fallback (#534). Advisory only -- callers should
+/// log rather than fail the reconcile on an Events-API hiccup.
+async fn publish_deprecated_image_override(
+    recorder: &Recorder,
+    obj_ref: &k8s_openapi::api::core::v1::ObjectReference,
+    app_type: &str,
+) -> kube::Result<()> {
+    recorder
+        .publish(
+            &Event {
+                type_: EventType::Warning,
+                reason: "DeprecatedImageOverride".into(),
+                note: Some(format!(
+                    "image resolved via deprecated DEFAULT_IMAGE_OVERSEERR_* env var \
+                     fallback — rename defaultImages.overseerr to defaultImages.{app_type} \
+                     in your Helm values"
+                )),
+                action: "BuildDeployment".into(),
+                secondary: None,
+            },
+            obj_ref,
+        )
+        .await
+}
+
 pub async fn reconcile(app: Arc<ServarrApp>, ctx: Arc<Context>) -> Result<Action, Error> {
     let client = &ctx.client;
     let name = app.name_any();
@@ -348,22 +374,7 @@ pub async fn reconcile(app: Arc<ServarrApp>, ctx: Arc<Context>) -> Result<Action
     // never fail the reconcile over an Events-API hiccup for a deprecation notice.
     if app.spec.image.is_none()
         && ctx.legacy_image_override_apps.contains(app_type)
-        && let Err(e) = recorder
-            .publish(
-                &Event {
-                    type_: EventType::Warning,
-                    reason: "DeprecatedImageOverride".into(),
-                    note: Some(format!(
-                        "image resolved via deprecated DEFAULT_IMAGE_OVERSEERR_* env var \
-                         fallback — rename defaultImages.overseerr to defaultImages.{app_type} \
-                         in your Helm values"
-                    )),
-                    action: "BuildDeployment".into(),
-                    secondary: None,
-                },
-                &obj_ref,
-            )
-            .await
+        && let Err(e) = publish_deprecated_image_override(&recorder, &obj_ref, app_type).await
     {
         warn!(%name, error = %kube_err_summary(&e), "failed to publish DeprecatedImageOverride event");
     }
@@ -4335,6 +4346,56 @@ mod tests {
     fn error_public_summary_non_kube_variant_passes_through_unchanged() {
         let err = Error::AppDefaults("missing entry for AppType::Radarr".to_string());
         assert_eq!(err.public_summary(), err.to_string());
+    }
+
+    // ---- publish_deprecated_image_override (#549 extraction) ----
+    //
+    // Unit-testable independently of the full reconcile wiremock harness: only the Events-API
+    // POST this function itself makes is mocked.
+
+    #[tokio::test]
+    async fn publish_deprecated_image_override_posts_expected_event() {
+        let mock_server = MockServer::start().await;
+        let client = crate::testutils::build_mock_client(&mock_server.uri()).await;
+        let recorder = Recorder::new(
+            client,
+            kube::runtime::events::Reporter {
+                controller: "test-controller".into(),
+                instance: None,
+            },
+        );
+        let obj_ref = k8s_openapi::api::core::v1::ObjectReference {
+            kind: Some("ServarrApp".into()),
+            name: Some("my-seerr".into()),
+            namespace: Some("test".into()),
+            uid: Some("app-uid-1".into()),
+            ..Default::default()
+        };
+
+        Mock::given(method("POST"))
+            .and(path("/apis/events.k8s.io/v1/namespaces/test/events"))
+            .and(body_partial_json(json!({
+                "reason": "DeprecatedImageOverride",
+                "type": "Warning"
+            })))
+            .respond_with(ResponseTemplate::new(201).set_body_json(json!({
+                "apiVersion": "events.k8s.io/v1",
+                "kind": "Event",
+                "metadata": {
+                    "name": "test-event",
+                    "namespace": "test",
+                    "uid": "event-uid-1",
+                    "resourceVersion": "300"
+                }
+            })))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let result = publish_deprecated_image_override(&recorder, &obj_ref, "seerr").await;
+
+        assert!(result.is_ok(), "publish should succeed, got: {result:?}");
+        // The POST mock's expect(1) is verified when mock_server drops.
     }
 
     // ---- result_to_condition golden tests ----
