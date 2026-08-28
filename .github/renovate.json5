@@ -237,6 +237,20 @@
       matchUpdateTypes: ['minor'],
       enabled: true,
     },
+
+    // GHCR images never get a releaseTimestamp from Renovate's docker
+    // datasource (release timestamp support is Docker-Hub-only), so under
+    // the global minimumReleaseAge + default minimumReleaseAgeBehaviour
+    // (timestamp-required), every release of a GHCR-hosted image sits
+    // "pending" forever and is never proposed, on any branch (#678).
+    // Fall back to treating an untimed GHCR release as stable; Docker-Hub
+    // images (most of the fleet) keep the full 7-day age gate.
+    {
+      description: 'Treat GHCR image releases as stable without a timestamp',
+      matchDatasources: ['docker'],
+      matchPackageNames: ['/^ghcr\\.io\\//'],
+      minimumReleaseAgeBehaviour: 'timestamp-optional',
+    },
   ],
 
   // CVE fixes: vulnerabilityAlerts defaults give us separate PRs (groupName: null),
