@@ -2614,8 +2614,8 @@ async fn test_media_stack_reconcile_orphan_cleanup_skips_delete_when_pvc_detach_
     // was attempted exactly once, and the child delete never happened.
 
     // The stuck orphan must be visible on MediaStack status, not just in pod logs, and a
-    // transient (non-RBAC) failure must be labeled as such so on-call knows it may
-    // self-resolve on retry (#610).
+    // transient failure must be labeled as such so on-call knows it may self-resolve on
+    // retry (#610).
     let requests = mock_server.received_requests().await.unwrap_or_default();
     let status_body: serde_json::Value = requests
         .iter()
@@ -2643,116 +2643,126 @@ async fn test_media_stack_reconcile_orphan_cleanup_skips_delete_when_pvc_detach_
         "condition message should name the stuck orphan, got: {orphan_condition}"
     );
     assert!(
-        message.contains("may self-resolve") && !message.contains("RBAC"),
-        "a 500 detach failure should be labeled transient, not RBAC, got: {orphan_condition}"
+        message.contains("may self-resolve") && !message.contains("will not self-resolve"),
+        "a 500 detach failure should be labeled transient, not permission-denied, got: \
+         {orphan_condition}"
     );
 }
 
 // ---------------------------------------------------------------------------
-// Test 9d: MediaStack orphan cleanup labels a 403 detach failure as RBAC-denied (#610)
+// Test 9d: MediaStack orphan cleanup labels a 401/403 detach failure as a permission
+// denial that needs a manual fix (#610)
 // ---------------------------------------------------------------------------
 
-/// Follow-up to #562: a `403` on the PVC ownerReference-detach PATCH means the operator's
-/// ServiceAccount lacks permission -- it will never clear on its own the way a transient
-/// 5xx/network error might. The stuck orphan must still not be deleted (same invariant as the
-/// transient case), but the status Condition should tell on-call this needs a manual RBAC fix
-/// rather than "wait for the next reconcile".
+/// Follow-up to #562: a `401`/`403` on the PVC ownerReference-detach PATCH means the request
+/// was rejected for who's asking, not what's asked -- it will never clear on its own the way a
+/// transient 5xx/network error might. The stuck orphan must still not be deleted (same
+/// invariant as the transient case), but the status Condition should tell on-call this needs a
+/// manual fix rather than "wait for the next reconcile". Covers both status codes in one test
+/// via a table, since they exercise the same classification branch (#610 review: a prior draft
+/// classified only 403, silently mislabeling a 401 credential failure as self-resolving).
 #[tokio::test]
-async fn test_media_stack_reconcile_orphan_cleanup_labels_403_as_rbac_denied() {
-    let mock_server = MockServer::start().await;
-    let client = mock_client(&mock_server.uri()).await;
-    let ctx = test_context(client);
+async fn test_media_stack_reconcile_orphan_cleanup_labels_401_and_403_as_permission_denied() {
+    for (status_code, stack_suffix) in [(401u16, "401"), (403u16, "403")] {
+        let mock_server = MockServer::start().await;
+        let client = mock_client(&mock_server.uri()).await;
+        let ctx = test_context(client);
 
-    let stack = Arc::new(make_media_stack("rbac-fail-stack", "test"));
+        let stack_name = format!("perm-fail-stack-{stack_suffix}");
+        let child_name = format!("{stack_name}-sonarr");
+        let orphan_name = format!("{stack_name}-old-radarr");
+        let stack = Arc::new(make_media_stack(&stack_name, "test"));
 
-    mount_orphan_stack_mocks(
-        &mock_server,
-        "rbac-fail-stack",
-        "rbac-fail-stack-sonarr",
-        "rbac-fail-stack-old-radarr",
-        "test",
-    )
-    .await;
+        mount_orphan_stack_mocks(&mock_server, &stack_name, &child_name, &orphan_name, "test")
+            .await;
 
-    // PATCH the orphan's config PVC to strip its ownerReference -- fails with 403, simulating
-    // the operator's ServiceAccount lacking the RBAC permission to patch PVCs.
-    Mock::given(method("PATCH"))
-        .and(path(
-            "/api/v1/namespaces/test/persistentvolumeclaims/rbac-fail-stack-old-radarr-config",
-        ))
-        .respond_with(ResponseTemplate::new(403).set_body_json(json!({
-            "apiVersion": "v1",
-            "kind": "Status",
-            "metadata": {},
-            "status": "Failure",
-            "message": "persistentvolumeclaims is forbidden: User cannot patch resource",
-            "reason": "Forbidden",
-            "code": 403
-        })))
-        .expect(1)
-        .named("patch-pvc-detach-forbidden")
-        .mount(&mock_server)
-        .await;
+        // PATCH the orphan's config PVC to strip its ownerReference -- fails with 401/403. The
+        // seeded API-server message must never leak into the tenant-visible condition (only the
+        // status code and static prose should).
+        Mock::given(method("PATCH"))
+            .and(path(format!(
+                "/api/v1/namespaces/test/persistentvolumeclaims/{orphan_name}-config"
+            )))
+            .respond_with(ResponseTemplate::new(status_code).set_body_json(json!({
+                "apiVersion": "v1",
+                "kind": "Status",
+                "metadata": {},
+                "status": "Failure",
+                "message": "SEEDED_API_SERVER_MESSAGE_MUST_NOT_LEAK",
+                "reason": "Forbidden",
+                "code": status_code
+            })))
+            .expect(1)
+            .named("patch-pvc-detach-forbidden")
+            .mount(&mock_server)
+            .await;
 
-    // The orphaned child must NOT be deleted -- expect(0) is verified when mock_server drops.
-    Mock::given(method("DELETE"))
-        .and(path(
-            "/apis/servarr.dev/v1alpha1/namespaces/test/servarrapps/rbac-fail-stack-old-radarr",
-        ))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "apiVersion": "servarr.dev/v1alpha1",
-            "kind": "ServarrApp",
-            "metadata": {
-                "name": "rbac-fail-stack-old-radarr",
-                "namespace": "test",
-                "uid": "sa-uid-orphan",
-                "resourceVersion": "201"
-            }
-        })))
-        .expect(0)
-        .named("delete-orphan-must-not-happen")
-        .mount(&mock_server)
-        .await;
+        // The orphaned child must NOT be deleted -- expect(0) is verified when mock_server drops.
+        Mock::given(method("DELETE"))
+            .and(path(format!(
+                "/apis/servarr.dev/v1alpha1/namespaces/test/servarrapps/{orphan_name}"
+            )))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "apiVersion": "servarr.dev/v1alpha1",
+                "kind": "ServarrApp",
+                "metadata": {
+                    "name": orphan_name,
+                    "namespace": "test",
+                    "uid": "sa-uid-orphan",
+                    "resourceVersion": "201"
+                }
+            })))
+            .expect(0)
+            .named("delete-orphan-must-not-happen")
+            .mount(&mock_server)
+            .await;
 
-    let result = servarr_operator::media_stack_controller::reconcile(stack, ctx).await;
+        let result = servarr_operator::media_stack_controller::reconcile(stack, ctx).await;
 
-    assert!(
-        result.is_ok(),
-        "reconcile should still succeed even when one orphan's PVC detach is forbidden, got: \
-         {result:?}"
-    );
+        assert!(
+            result.is_ok(),
+            "reconcile should still succeed even when one orphan's PVC detach is forbidden \
+             (status {status_code}), got: {result:?}"
+        );
 
-    let requests = mock_server.received_requests().await.unwrap_or_default();
-    let status_body: serde_json::Value = requests
-        .iter()
-        .find(|r| {
-            r.method == wiremock::http::Method::PATCH
-                && r.url
-                    .path()
-                    .ends_with("/mediastacks/rbac-fail-stack/status")
-        })
-        .expect("MediaStack status PATCH should have been sent")
-        .body_json()
-        .expect("status patch body should be valid JSON");
-    let conditions = status_body["status"]["conditions"]
-        .as_array()
-        .expect("status.conditions should be an array");
-    let orphan_condition = conditions
-        .iter()
-        .find(|c| c["conditionType"] == "OrphanCleanupHealthy")
-        .expect("OrphanCleanupHealthy condition should be set");
-    assert_eq!(orphan_condition["status"], "False");
-    assert_eq!(orphan_condition["reason"], "PvcDetachFailed");
-    let message = orphan_condition["message"].as_str().unwrap_or_default();
-    assert!(
-        message.contains("rbac-fail-stack-old-radarr"),
-        "condition message should name the stuck orphan, got: {orphan_condition}"
-    );
-    assert!(
-        message.contains("RBAC") && message.contains("will not self-resolve"),
-        "a 403 detach failure should be labeled as an RBAC denial that needs a manual fix, \
-         got: {orphan_condition}"
-    );
+        let requests = mock_server.received_requests().await.unwrap_or_default();
+        let status_body: serde_json::Value = requests
+            .iter()
+            .find(|r| {
+                r.method == wiremock::http::Method::PATCH
+                    && r.url
+                        .path()
+                        .ends_with(&format!("/mediastacks/{stack_name}/status"))
+            })
+            .expect("MediaStack status PATCH should have been sent")
+            .body_json()
+            .expect("status patch body should be valid JSON");
+        let conditions = status_body["status"]["conditions"]
+            .as_array()
+            .expect("status.conditions should be an array");
+        let orphan_condition = conditions
+            .iter()
+            .find(|c| c["conditionType"] == "OrphanCleanupHealthy")
+            .expect("OrphanCleanupHealthy condition should be set");
+        assert_eq!(orphan_condition["status"], "False");
+        assert_eq!(orphan_condition["reason"], "PvcDetachFailed");
+        let message = orphan_condition["message"].as_str().unwrap_or_default();
+        assert!(
+            message.contains(&orphan_name),
+            "condition message should name the stuck orphan (status {status_code}), got: \
+             {orphan_condition}"
+        );
+        assert!(
+            message.contains("will not self-resolve"),
+            "a {status_code} detach failure should be labeled as a permission denial that \
+             needs a manual fix, got: {orphan_condition}"
+        );
+        assert!(
+            !message.contains("SEEDED_API_SERVER_MESSAGE_MUST_NOT_LEAK"),
+            "the raw API-server message must never reach the tenant-visible condition \
+             (status {status_code}), got: {orphan_condition}"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------

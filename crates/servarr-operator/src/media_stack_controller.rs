@@ -393,13 +393,15 @@ pub async fn reconcile(stack: Arc<MediaStack>, ctx: Arc<Context>) -> Result<Acti
             &now,
         ));
     } else {
-        // #610: distinguish an RBAC denial (won't self-resolve without a manual fix) from a
-        // transient failure (may clear on its own next reconcile) so on-call doesn't have to
-        // guess from operator logs alone.
+        // #610: distinguish a permission denial (won't self-resolve without a manual fix) from
+        // a transient failure (may clear on its own next reconcile) so on-call doesn't have to
+        // guess from operator logs alone. "Permission fix" rather than "RBAC fix": a 401/403 can
+        // also come from an expired credential, a ResourceQuota, or an admission policy, not
+        // only a Role/RoleBinding.
         let mut causes = Vec::new();
         if !stuck_orphans.forbidden.is_empty() {
             causes.push(format!(
-                "{} awaiting a manual RBAC fix (will not self-resolve on retry): {}",
+                "{} awaiting a manual permission fix (will not self-resolve on retry): {}",
                 stuck_orphans.forbidden.len(),
                 stuck_orphans.forbidden.join(", ")
             ));
@@ -608,13 +610,13 @@ fn is_not_found(e: &kube::Error) -> bool {
     servarr_api::k8s::is_kube_not_found(e)
 }
 
-/// Why a PVC-detach step failed, for on-call triage (#610): an RBAC denial needs a manual
-/// permission fix and will never clear on retry, while a transient error (5xx, network) may
-/// resolve on its own next reconcile. On-call can't tell these apart from an identical `warn!`
-/// + forever-retry line alone.
+/// Why a PVC-detach step failed, for on-call triage (#610): a permission denial needs a manual
+/// fix and will never clear on retry, while a transient error (5xx, network) may resolve on its
+/// own next reconcile. On-call can't tell these apart from an identical `warn!` +
+/// forever-retry line alone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DetachFailureCause {
-    /// A `403` API response.
+    /// A `401`/`403` API response, or a `kube::Error::Auth` (credential/exec-plugin) failure.
     Forbidden,
     /// Any other failure (5xx, network, an unreachable PVC spec).
     Transient,
@@ -622,7 +624,14 @@ enum DetachFailureCause {
 
 impl DetachFailureCause {
     fn from_kube_error(e: &kube::Error) -> Self {
-        if matches!(e, kube::Error::Api(status) if status.code == 403) {
+        // 401 and 403 both mean "the request was rejected for who's asking, not what's
+        // asked" -- neither self-resolves on retry the way a 5xx/network blip can.
+        // `kube::Error::Auth` is the same class one layer earlier: the client couldn't even
+        // attach credentials (e.g. an exec-plugin failure), so it never reached the API server
+        // to get a status code at all.
+        if matches!(e, kube::Error::Api(status) if status.code == 401 || status.code == 403)
+            || matches!(e, kube::Error::Auth(_))
+        {
             Self::Forbidden
         } else {
             Self::Transient
@@ -631,7 +640,7 @@ impl DetachFailureCause {
 
     fn as_str(self) -> &'static str {
         match self {
-            Self::Forbidden => "rbac-denied",
+            Self::Forbidden => "permission-denied",
             Self::Transient => "transient",
         }
     }
@@ -651,8 +660,9 @@ impl DetachFailureCause {
 /// Names of orphaned children whose PVC detach didn't unambiguously succeed this reconcile,
 /// split by whether the failure is expected to self-resolve on retry (#610).
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[must_use]
 struct StuckOrphans {
-    /// Blocked on a `403` -- will not self-resolve without an RBAC fix.
+    /// Blocked on a `401`/`403`/auth failure -- will not self-resolve without a permission fix.
     forbidden: Vec<String>,
     /// Blocked on any other failure -- may self-resolve on retry.
     transient: Vec<String>,
@@ -671,8 +681,11 @@ impl StuckOrphans {
 /// Deletes `ServarrApp` children no longer present in `desired_children`, first detaching their
 /// PVC ownership so cascading GC on the CR delete doesn't take the PVC (and the user's config
 /// data) down with it. Returns the children whose PVC detach didn't unambiguously succeed this
-/// reconcile -- callers should surface these via status so a stuck orphan is visible via
+/// reconcile -- callers must surface these via status so a stuck orphan is visible via
 /// `kubectl describe`/status instead of only a pod log line (#562 follow-up).
+///
+/// Returns `StuckOrphans`, which is itself `#[must_use]` -- that alone makes discarding this
+/// call a warning, so the function isn't separately annotated (clippy's `double_must_use`).
 async fn cleanup_orphaned_children(
     sa_api: &Api<ServarrApp>,
     pvc_api: &Api<PersistentVolumeClaim>,
@@ -932,6 +945,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cleanup_orphaned_children_classifies_401_as_forbidden() {
+        // #610 review: an earlier draft classified only 403, silently treating an expired or
+        // rotated ServiceAccount token (401) as "may self-resolve on retry" when it never will.
+        let mock_server = wiremock::MockServer::start().await;
+        let client = crate::testutils::build_mock_client(&mock_server.uri()).await;
+        let sa_api = Api::<ServarrApp>::namespaced(client.clone(), "test");
+        let pvc_api = Api::<PersistentVolumeClaim>::namespaced(client.clone(), "test");
+
+        wiremock::Mock::given(wiremock::matchers::method("PATCH"))
+            .and(wiremock::matchers::path(
+                "/api/v1/namespaces/test/persistentvolumeclaims/orphan-app-config",
+            ))
+            .respond_with(
+                wiremock::ResponseTemplate::new(401).set_body_json(serde_json::json!({
+                    "apiVersion": "v1",
+                    "kind": "Status",
+                    "status": "Failure",
+                    "reason": "Unauthorized",
+                    "code": 401
+                })),
+            )
+            .mount(&mock_server)
+            .await;
+
+        let existing = orphan_list(vec![make_orphan("orphan-app", "test")]);
+        let desired: HashSet<String> = HashSet::new();
+
+        let stuck =
+            cleanup_orphaned_children(&sa_api, &pvc_api, "stack", &desired, &existing).await;
+
+        assert_eq!(stuck.forbidden, vec!["orphan-app".to_string()]);
+        assert!(stuck.transient.is_empty(), "got {stuck:?}");
+    }
+
+    #[tokio::test]
     async fn cleanup_orphaned_children_classifies_500_as_transient() {
         let mock_server = wiremock::MockServer::start().await;
         let client = crate::testutils::build_mock_client(&mock_server.uri()).await;
@@ -978,5 +1026,39 @@ mod tests {
             DetachFailureCause::Transient.most_severe(DetachFailureCause::Transient),
             DetachFailureCause::Transient
         );
+    }
+
+    mod stuck_orphans_proptests {
+        use super::*;
+        use proptest::prelude::*;
+
+        fn any_cause() -> impl Strategy<Value = DetachFailureCause> {
+            proptest::sample::select(&[
+                DetachFailureCause::Forbidden,
+                DetachFailureCause::Transient,
+            ])
+        }
+
+        proptest! {
+            #[test]
+            fn most_severe_is_commutative_and_idempotent(a in any_cause(), b in any_cause()) {
+                prop_assert_eq!(a.most_severe(b), b.most_severe(a));
+                prop_assert_eq!(a.most_severe(a), a);
+            }
+
+            #[test]
+            fn len_and_is_empty_agree(
+                forbidden in proptest::collection::vec("[a-z-]{1,8}", 0..4),
+                transient in proptest::collection::vec("[a-z-]{1,8}", 0..4),
+            ) {
+                let stuck = StuckOrphans { forbidden: forbidden.clone(), transient: transient.clone() };
+                prop_assert_eq!(stuck.len(), forbidden.len() + transient.len());
+                // Deliberately comparing `len() == 0` against `is_empty()` -- this is the
+                // invariant under test, not a style choice `is_empty()` would make tautological.
+                #[expect(clippy::len_zero, reason = "cross-checking is_empty() against len()")]
+                let len_is_zero = stuck.len() == 0;
+                prop_assert_eq!(stuck.is_empty(), len_is_zero);
+            }
+        }
     }
 }
