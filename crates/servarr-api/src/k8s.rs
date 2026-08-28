@@ -73,15 +73,24 @@ pub fn kube_err_public_summary(e: &kube::Error) -> String {
     }
 }
 
-/// Returns `true` when `e` is a 404 from the Kubernetes API server — the object doesn't exist.
+/// Returns `true` when `e` means the API server reports the object as not found.
+///
+/// Checks `status.code == 404` **or** [`kube::core::Status::is_not_found`]. Neither alone is
+/// enough: `kube-core`'s `is_not_found()` is effectively `reason == "NotFound"` — its
+/// `code == 404` fallback only fires when `reason` isn't one of the library's known reason
+/// strings, which "NotFound" always is, so a `Status` carrying `code: 404` with no `reason` set
+/// (the plain, code-only case this predicate always matched, and what this crate's own error
+/// paths and test doubles construct) would stop matching if this delegated to `is_not_found()`
+/// alone. Checking `code == 404` directly keeps that case working; `is_not_found()` on top
+/// additionally catches a `Status` that carries the reason but not the numeric code.
 ///
 /// Shared low-level predicate: `servarr-operator`'s finalizer-cleanup path
 /// (`ClassifyCleanupSeverity`) and its ordinary reconcile-path get-or-create/optional-skip
-/// checks both need "was this a 404", but only the cleanup path also needs the
+/// checks both need "was this not-found", but only the cleanup path also needs the
 /// Terminal/Transient retry duality built on top of it. This function is the shared core; each
-/// caller decides what a 404 *means* for its own control flow.
+/// caller decides what a not-found result *means* for its own control flow.
 pub fn is_kube_not_found(e: &kube::Error) -> bool {
-    matches!(e, kube::Error::Api(status) if status.code == 404)
+    matches!(e, kube::Error::Api(status) if status.code == 404 || status.is_not_found())
 }
 
 /// Read a single key from a Kubernetes Secret.
@@ -360,6 +369,18 @@ mod tests {
         assert!(!is_kube_not_found(
             &kube::Error::LinesCodecMaxLineLengthExceeded
         ));
+    }
+
+    #[test]
+    fn is_kube_not_found_true_for_reason_only_not_found_with_no_404_code() {
+        // A Status can carry reason == "NotFound" without the numeric code set (code is
+        // suggested, not guaranteed) — this must still count as not-found.
+        let err = kube::Error::Api(Box::new(kube::core::Status {
+            code: 0,
+            reason: "NotFound".to_string(),
+            ..Default::default()
+        }));
+        assert!(is_kube_not_found(&err));
     }
 
     #[test]
