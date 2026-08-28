@@ -328,6 +328,26 @@ Upgrading from a specific release line? See [Upgrading from 1.2.x to 1.3.x](upgr
 version-specific migration steps (manifest renames, Helm value renames, and other upgrade-time
 gotchas beyond the generic steps above).
 
+### `--reuse-values` can pin you to an old default image
+
+`helm upgrade --reuse-values` reuses the *entire* previous release's computed values, not just
+what you passed via `--set`/`-f`. If you never set `defaultImages.<app>` yourself, that value
+still came from the old chart's `values.yaml` default -- and `--reuse-values` freezes it, so a
+routine upgrade won't pick up the new chart's bumped image tag for that app.
+
+The operator detects this and publishes a `StaleDefaultImage` Warning Event
+(`kubectl describe servarrapp <name>`) when a `defaultImages.<app>` value no longer matches the
+running operator's own built-in default. To avoid it in the first place, use
+`--reset-then-reuse-values` (Helm 3.14+) instead of `--reuse-values`: it resets values to the new
+chart's defaults first, then reapplies only what you actually passed via `--set`/`-f` on top.
+
+```bash
+helm upgrade servarr-operator \
+  oci://ghcr.io/phaedrus1992/servarr/servarr-operator \
+  --namespace servarr \
+  --reset-then-reuse-values
+```
+
 ## Uninstalling
 
 1. Remove the Helm release:

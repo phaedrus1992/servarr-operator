@@ -15,7 +15,9 @@ use kube::{Client, Resource, ResourceExt};
 use servarr_api::AppKind;
 use servarr_api::TenantSafeMessage;
 use servarr_api::k8s::{kube_err_public_summary, kube_err_summary};
-use servarr_crds::{AppConfig, AppType, Condition, ServarrApp, ServarrAppStatus, condition_types};
+use servarr_crds::{
+    AppConfig, AppDefaults, AppType, Condition, ServarrApp, ServarrAppStatus, condition_types,
+};
 use thiserror::Error;
 use tokio::time::Duration;
 use tracing::{debug, error, info, warn};
@@ -344,6 +346,50 @@ pub async fn reconcile(app: Arc<ServarrApp>, ctx: Arc<Context>) -> Result<Action
             .await
     {
         warn!(%name, error = %kube_err_summary(&e), "failed to publish DeprecatedImageOverride event");
+    }
+
+    // Issue #638: even a correctly-named DEFAULT_IMAGE_<APP>_* env var can go stale after
+    // `helm upgrade --reuse-values`, which freezes the *entire* previous release's computed
+    // values -- including a defaultImages.<app> value that only ever resolved from the
+    // chart's own values.yaml default, not from anything the user passed via --set/-f. Compare
+    // the env-supplied override against this binary's own compiled-in default (image-defaults
+    // .toml, embedded at build time) so a routine version bump doesn't silently keep running
+    // the old image with nothing but a startup log line to notice it. Skip apps already
+    // covered by the legacy-rename warning above -- that's the same underlying value, and a
+    // second Event for it would be redundant. This is advisory: a real, intentional pin that
+    // happens to differ from the current default is indistinguishable from a stale one, so the
+    // message must not assert staleness as fact.
+    if app.spec.image.is_none()
+        && !ctx.legacy_image_override_apps.contains(app_type)
+        && let Some(env_override) = ctx.image_overrides.get(app_type)
+        && let Ok(builtin) = AppDefaults::try_for_app(&app.spec.app)
+        && (env_override.repository != builtin.image.repository
+            || env_override.tag != builtin.image.tag)
+        && let Err(e) = recorder
+            .publish(
+                &Event {
+                    type_: EventType::Warning,
+                    reason: "StaleDefaultImage".into(),
+                    note: Some(format!(
+                        "image resolved via defaultImages.{app_type} Helm value \
+                         ({env_repo}:{env_tag}) which differs from this operator version's \
+                         built-in default ({builtin_repo}:{builtin_tag}) -- if this is left \
+                         over from `helm upgrade --reuse-values`, re-run with \
+                         --reset-then-reuse-values (Helm 3.14+) or remove the override; if \
+                         intentional, ignore this warning",
+                        env_repo = env_override.repository,
+                        env_tag = env_override.tag,
+                        builtin_repo = builtin.image.repository,
+                        builtin_tag = builtin.image.tag,
+                    )),
+                    action: "BuildDeployment".into(),
+                    secondary: None,
+                },
+                &obj_ref,
+            )
+            .await
+    {
+        warn!(%name, error = %kube_err_summary(&e), "failed to publish StaleDefaultImage event");
     }
 
     // #542: appConfig.transmission.auth is superseded by adminCredentials when both are
