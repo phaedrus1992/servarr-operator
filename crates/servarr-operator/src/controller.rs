@@ -51,7 +51,10 @@ const SEERR_FINALIZER: &str = "servarr.dev/overseerr-sync";
 
 #[derive(Debug, Error)]
 pub enum Error {
-    #[error("Kubernetes API error: {0}")]
+    /// Message is already log-safe: [`kube_err_summary`] strips raw API server response content
+    /// before this variant's `Display` ever renders it, so no separate sanitizer method is
+    /// needed for logging (see [`Self::public_summary`] for the stricter tenant-facing summary).
+    #[error("Kubernetes API error: {}", kube_err_summary(.0))]
     Kube(#[source] kube::Error),
     #[error("Serialization error: {0}")]
     Serialization(#[source] serde_json::Error),
@@ -62,17 +65,9 @@ pub enum Error {
 }
 
 impl Error {
-    /// Returns a log-safe summary. The `Kube` variant delegates to [`kube_err_summary`]; the
-    /// other variants already only carry curated messages, never raw external response content.
-    pub fn log_summary(&self) -> String {
-        match self {
-            Self::Kube(e) => kube_err_summary(e),
-            other => other.to_string(),
-        }
-    }
-
-    /// Returns a tenant-safe summary. The `Kube` variant delegates to
-    /// [`kube_err_public_summary`]; the other variants are safe as-is (see [`Self::log_summary`]).
+    /// Returns a tenant-safe summary, stricter than the already-log-safe `Display` output (e.g.
+    /// collapsing some `Kube` variants further via [`kube_err_public_summary`]) for surfacing in
+    /// CR status fields visible to the tenant.
     pub fn public_summary(&self) -> String {
         match self {
             Self::Kube(e) => kube_err_public_summary(e),
@@ -1576,7 +1571,7 @@ fn is_health_poll_throttled(
     current - last < chrono::Duration::seconds(i64::from(interval))
 }
 
-pub(crate) async fn check_api_health(
+async fn check_api_health(
     client: &Client,
     app: &ServarrApp,
     transmission_access: Option<&Result<TransmissionAccess, String>>,
@@ -2236,25 +2231,25 @@ fn build_download_health_condition(
     )
 }
 
-pub(crate) struct StatusConditions {
-    pub health: Option<Condition>,
-    pub update: Option<Condition>,
-    pub admin_creds: Option<Condition>,
+struct StatusConditions {
+    health: Option<Condition>,
+    update: Option<Condition>,
+    admin_creds: Option<Condition>,
     /// Bazarr cross-app sync result (only set for Bazarr apps with sync enabled).
-    pub bazarr_sync: Option<Condition>,
+    bazarr_sync: Option<Condition>,
     /// Subgen → Jellyfin sync result (only set for Subgen apps with sync enabled).
-    pub subgen_sync: Option<Condition>,
+    subgen_sync: Option<Condition>,
     /// Prowlarr cross-app sync result (only set for Prowlarr apps with sync enabled).
-    pub prowlarr_sync: Option<Condition>,
+    prowlarr_sync: Option<Condition>,
     /// Seerr cross-app sync result (only set for Seerr apps with sync enabled).
-    pub seerr_sync: Option<Condition>,
+    seerr_sync: Option<Condition>,
     /// Maintainerr cross-app sync result (only set for Maintainerr apps with sync enabled).
-    pub maintainerr_sync: Option<Condition>,
+    maintainerr_sync: Option<Condition>,
     /// Backup restore result (only set when a restore was attempted this reconcile).
-    pub restore: Option<Condition>,
+    restore: Option<Condition>,
     /// Download-client data health (only set for Transmission apps with health checking
     /// enabled — see [`check_download_client_health`]).
-    pub download_data: Option<Condition>,
+    download_data: Option<Condition>,
 }
 
 /// The condition vocabulary for a reconcile sub-step: the type plus the
@@ -2290,7 +2285,7 @@ fn result_to_condition<E: Into<TenantSafeMessage>>(
     }
 }
 
-pub(crate) async fn update_status(
+async fn update_status(
     client: &Client,
     app: &ServarrApp,
     conditions: StatusConditions,
@@ -2447,12 +2442,12 @@ pub(crate) async fn update_status(
 pub fn error_policy(app: Arc<ServarrApp>, error: &Error, ctx: Arc<Context>) -> Action {
     let app_type = app.spec.app.as_str();
     increment_reconcile_total(app_type, "error");
-    warn!(error = %error.log_summary(), "reconciliation failed, requeuing");
+    warn!(error = %error, "reconciliation failed, requeuing");
 
     let recorder = Recorder::new(ctx.client.clone(), ctx.reporter.clone());
     let obj_ref = app.object_ref(&());
     // The Event note is tenant-visible (readable via `kubectl get events` in the app's
-    // namespace), so it must go through the stricter public_summary(), not log_summary().
+    // namespace), so it must go through the stricter public_summary(), not the plain Display.
     let event_msg = error.public_summary();
     tokio::spawn(async move {
         let _ = recorder
@@ -2504,7 +2499,7 @@ async fn maybe_run_backup(
         Err(e) => {
             warn!(error = %e.log_summary(), "backup: failed to read API key");
             // status.backupStatus.lastBackupResult is tenant-visible, so it must go through
-            // the stricter public_summary(), not log_summary().
+            // the stricter public_summary(), not the plain Display.
             return Some(servarr_crds::BackupStatus {
                 last_backup_result: Some(format!("secret read error: {}", e.public_summary())),
                 ..Default::default()
@@ -2952,27 +2947,27 @@ async fn try_restore(
 /// A discovered *arr app in the namespace with its service URL and API key.
 #[derive(Debug)]
 pub(crate) struct DiscoveredApp {
-    pub(crate) name: String,
-    pub(crate) app_type: AppType,
+    name: String,
+    app_type: AppType,
     /// Hostname component (e.g. `"sonarr.default.svc"`).
-    pub(crate) host: String,
+    host: String,
     /// Port component, matching the `i32` type used by `ServicePort.port`.
-    pub(crate) port: i32,
-    pub(crate) api_key: String,
-    pub(crate) instance: Option<String>,
+    port: i32,
+    api_key: String,
+    instance: Option<String>,
 }
 
 impl DiscoveredApp {
     /// Compute the base URL from host and port components.
     /// Issue #14: Compute on demand instead of storing redundantly.
-    pub(crate) fn base_url(&self) -> String {
+    fn base_url(&self) -> String {
         format!("http://{}:{}", self.host, self.port)
     }
 }
 
 /// Discover all Servarr v3 apps (Sonarr/Radarr/Lidarr) in a namespace
 /// and resolve their service URLs and API keys.
-pub(crate) async fn discover_namespace_apps(
+async fn discover_namespace_apps(
     client: &Client,
     namespace: &str,
 ) -> Result<Vec<DiscoveredApp>, TenantSafeMessage> {
@@ -3297,8 +3292,8 @@ async fn cleanup_prowlarr_registration(
 /// A cleanup body's failure: the `error` side carries full detail for the operator log, the
 /// `tenant_msg` side is tenant-safe for the Kubernetes Event, and `severity` tells the wrapper
 /// (via [`finish_cleanup`]) whether to retry or treat the target as already gone. Call sites keep
-/// the log-only sanitizer variant (`log_summary()` / `kube_err_summary()`) for `error`, and route
-/// the same error through `TenantSafeMessage` for `tenant_msg`.
+/// the already-log-safe `Display` (backed by `kube_err_summary()` for the `Kube` variant) for
+/// `error`, and route the same error through `TenantSafeMessage` for `tenant_msg`.
 #[derive(Debug)]
 struct CleanupFailure {
     error: anyhow::Error,
@@ -4686,10 +4681,10 @@ mod tests {
     use wiremock::matchers::{body_json, body_partial_json, header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
-    // ---- Error::log_summary ----
+    // ---- Error::Display (log-safe by construction — see kube_err_summary) ----
 
     #[test]
-    fn error_log_summary_kube_variant_drops_message_keeps_status_code() {
+    fn error_display_kube_variant_drops_message_keeps_status_code() {
         let status = kube::core::Status {
             code: 403,
             message: "secrets \"super-secret-name\" is forbidden: User cannot get".to_string(),
@@ -4697,7 +4692,7 @@ mod tests {
             ..Default::default()
         };
         let err = Error::Kube(kube::Error::Api(Box::new(status)));
-        let summary = err.log_summary();
+        let summary = err.to_string();
         assert!(
             summary.contains("403"),
             "summary should keep the status code: {summary}"
@@ -4706,12 +4701,6 @@ mod tests {
             !summary.contains("super-secret-name"),
             "summary must not leak the raw API server message: {summary}"
         );
-    }
-
-    #[test]
-    fn error_log_summary_non_kube_variant_passes_through_unchanged() {
-        let err = Error::AppDefaults("missing entry for AppType::Radarr".to_string());
-        assert_eq!(err.log_summary(), err.to_string());
     }
 
     #[test]
@@ -6444,10 +6433,10 @@ mod tests {
 
     // ---- maybe_run_backup ----
 
-    /// For the `Api` variant specifically, `log_summary()` and `public_summary()` collapse to the
-    /// same status-code string — this guards that equivalence, not the log-only-vs-tenant-safe
-    /// distinction (see `maybe_run_backup_secret_read_error_sanitizes_backup_status` below for
-    /// that, which uses a non-`Api` `kube::Error` to force the two methods to actually diverge).
+    /// For the `Api` variant specifically, the log-safe `Display` and `public_summary()` collapse
+    /// to the same status-code string — this guards that equivalence, not the log-only-vs-tenant-
+    /// safe distinction (see `maybe_run_backup_secret_read_error_sanitizes_backup_status` below
+    /// for that, which uses a non-`Api` `kube::Error` to force the two to actually diverge).
     #[tokio::test]
     async fn maybe_run_backup_secret_read_error_sanitizes_status_message() {
         let mock_server = MockServer::start().await;

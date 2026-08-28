@@ -96,7 +96,7 @@ impl SabnzbdClient {
     /// Set a single misc config value via `set_config`.
     ///
     /// Calls `?mode=set_config&section={section}&keyword={keyword}&value={value}&apikey={key}&output=json`.
-    pub async fn set_config(
+    pub(crate) async fn set_config(
         &self,
         section: &str,
         keyword: &str,

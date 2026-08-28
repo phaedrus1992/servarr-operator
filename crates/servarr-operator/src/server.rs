@@ -32,7 +32,7 @@ impl ServerState {
     }
 
     /// Mark the operator as ready (call after CRD registration).
-    pub fn set_ready(&self) {
+    pub(crate) fn set_ready(&self) {
         self.ready.store(true, Ordering::Relaxed);
     }
 }

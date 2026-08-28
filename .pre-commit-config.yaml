@@ -66,7 +66,11 @@ repos:
         name: cargo hawk (dead/unnecessary-pub surface)
         # servarr_api and servarr_crds are excluded: their pub surface is a genuine
         # cross-crate boundary consumed by sibling workspace crates, not dead code.
-        # Non-blocking (no -D) until the existing findings are triaged — see #568/#569.
+        # #568/#569's findings are triaged; controller::Error::{log_summary,public_summary}
+        # and media_stack_controller::Error::log_summary stay pub on purpose (their Error
+        # enums are externally constructible, and these are the only sanitized renderers
+        # for them — narrowing them would leave the leaky Display impl as the sole external
+        # accessor). Non-blocking (no -D) since those 3 findings are permanent by design.
         entry: cargo hawk check --manifest-path Cargo.toml --exclude-crate servarr_api --exclude-crate servarr_crds -W hawk::unnecessary_public -W hawk::unnecessary_restricted_visibility
         language: system
         pass_filenames: false

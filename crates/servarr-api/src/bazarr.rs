@@ -44,7 +44,7 @@ impl BazarrClient {
     /// # Errors
     ///
     /// Returns `ApiError` if the request fails or the server returns a non-2xx status.
-    pub async fn post_settings(&self, form: &[(&str, &str)]) -> Result<(), ApiError> {
+    pub(crate) async fn post_settings(&self, form: &[(&str, &str)]) -> Result<(), ApiError> {
         let url = format!("{}/api/system/settings", self.base_url);
         let resp = self
             .http
