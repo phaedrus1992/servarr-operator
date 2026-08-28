@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased] - ReleaseDate
 
+### Fixed
+
+- Fix any app's default image silently sticking on a `helm upgrade --reuse-values` upgrade —
+  generalizes the 1.3.1 Seerr-only stale-image detection into a `StaleDefaultImage` Warning Event
+  that fires for every app whose env-supplied default image no longer matches the running
+  operator's own built-in default (#638). `docs/installation.md` now recommends
+  `--reset-then-reuse-values` (Helm 3.14+) over `--reuse-values` for upgrades.
+
 ## [1.3.1] - 2026-08-27
 
 Closes out the Overseerr → Seerr migration started in 1.3.0 — the CRD schema now accepts the

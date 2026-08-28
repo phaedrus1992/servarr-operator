@@ -12,12 +12,23 @@ use kube::runtime::controller::Action;
 use kube::runtime::events::Reporter;
 use serde_json::json;
 use servarr_crds::{
-    AppType, MediaStack, MediaStackSpec, NfsServerSpec, ServarrApp, ServarrAppSpec, StackApp,
+    AppDefaults, AppType, MediaStack, MediaStackSpec, NfsServerSpec, ServarrApp, ServarrAppSpec,
+    StackApp,
 };
 use servarr_operator::context::Context;
 use tokio::time::Duration;
 use wiremock::matchers::{method, path, path_regex};
-use wiremock::{Mock, MockServer, ResponseTemplate};
+use wiremock::{Mock, MockServer, Request, ResponseTemplate};
+
+/// Matches a request whose body contains `needle` -- used to fail only one specific Event
+/// publish (by its `reason`) while leaving other POSTs to the same path/method unaffected.
+struct BodyContains(&'static str);
+
+impl wiremock::Match for BodyContains {
+    fn matches(&self, request: &Request) -> bool {
+        String::from_utf8_lossy(&request.body).contains(self.0)
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Helper: build a kube::Client pointing at the wiremock server
@@ -94,6 +105,95 @@ fn test_context_with_legacy_seerr_override(client: kube::Client) -> Arc<Context>
         client,
         image_overrides,
         legacy_image_override_apps,
+        reporter: Reporter {
+            controller: "test-controller".into(),
+            instance: None,
+        },
+        watch_namespace: Some("test".into()),
+        app_api_base_override: None,
+    })
+}
+
+/// A context whose "sonarr" image override is present but differs from this operator
+/// binary's compiled-in default -- simulating a `helm upgrade --reuse-values` that froze a
+/// stale `defaultImages.sonarr` value from an older chart (#638).
+fn test_context_with_stale_sonarr_override(client: kube::Client) -> Arc<Context> {
+    let mut image_overrides = HashMap::new();
+    image_overrides.insert(
+        "sonarr".to_string(),
+        servarr_crds::ImageSpec {
+            repository: "linuxserver/sonarr".into(),
+            tag: "3.0.0".into(),
+            digest: String::new(),
+            pull_policy: "IfNotPresent".into(),
+        },
+    );
+    Arc::new(Context {
+        client,
+        image_overrides,
+        legacy_image_override_apps: std::collections::HashSet::new(),
+        reporter: Reporter {
+            controller: "test-controller".into(),
+            instance: None,
+        },
+        watch_namespace: Some("test".into()),
+        app_api_base_override: None,
+    })
+}
+
+/// A context whose "sonarr" image override exactly matches this operator binary's
+/// compiled-in default -- must not trigger the staleness warning (#638). Reads the default
+/// from `AppDefaults` rather than hardcoding a version so this test doesn't drift out of sync
+/// with `image-defaults.toml`.
+fn test_context_with_current_sonarr_override(client: kube::Client) -> Arc<Context> {
+    let builtin =
+        AppDefaults::try_for_app(&AppType::Sonarr).expect("sonarr must have image defaults");
+    let mut image_overrides = HashMap::new();
+    image_overrides.insert(
+        "sonarr".to_string(),
+        servarr_crds::ImageSpec {
+            repository: builtin.image.repository,
+            tag: builtin.image.tag,
+            digest: String::new(),
+            pull_policy: "IfNotPresent".into(),
+        },
+    );
+    Arc::new(Context {
+        client,
+        image_overrides,
+        legacy_image_override_apps: std::collections::HashSet::new(),
+        reporter: Reporter {
+            controller: "test-controller".into(),
+            instance: None,
+        },
+        watch_namespace: Some("test".into()),
+        app_api_base_override: None,
+    })
+}
+
+/// A context whose "sonarr" image override sets only `repository` (as `DEFAULT_IMAGE_SONARR_REPO`
+/// with no matching `_TAG` renders) and that repository matches this operator binary's builtin --
+/// the actually-deployed image (after `ImageSpec::merge_with` fills the empty tag from the
+/// builtin) is identical to the builtin, so this must not trigger the staleness warning (#638).
+/// Comparing the *raw* override instead of the merged, effective image would report a phantom
+/// tag mismatch here every reconcile.
+fn test_context_with_partial_repo_only_sonarr_override(client: kube::Client) -> Arc<Context> {
+    let builtin =
+        AppDefaults::try_for_app(&AppType::Sonarr).expect("sonarr must have image defaults");
+    let mut image_overrides = HashMap::new();
+    image_overrides.insert(
+        "sonarr".to_string(),
+        servarr_crds::ImageSpec {
+            repository: builtin.image.repository,
+            tag: String::new(),
+            digest: String::new(),
+            pull_policy: "IfNotPresent".into(),
+        },
+    );
+    Arc::new(Context {
+        client,
+        image_overrides,
+        legacy_image_override_apps: std::collections::HashSet::new(),
         reporter: Reporter {
             controller: "test-controller".into(),
             instance: None,
@@ -767,6 +867,571 @@ async fn test_seerr_reconcile_skips_legacy_override_warning_when_image_pinned() 
         "reconcile must not publish DeprecatedImageOverride when spec.image is explicitly \
          set -- the CR's own image always outranks the env fallback, so warning about the \
          fallback would be misleading, requests: {requests:?}"
+    );
+}
+
+/// Regression test: a `DEFAULT_IMAGE_SONARR_*` override that differs from this
+/// operator binary's compiled-in default publishes a Warning Event -- the general case of
+/// #638, distinct from the Seerr-only rename detection above.
+#[tokio::test]
+async fn test_sonarr_reconcile_warns_on_stale_default_image() {
+    let mock_server = MockServer::start().await;
+    let client = mock_client(&mock_server.uri()).await;
+    let ctx = test_context_with_stale_sonarr_override(client);
+
+    let spec = ServarrAppSpec {
+        app: AppType::Sonarr,
+        ..Default::default()
+    };
+    let mut app = ServarrApp::new("test-sonarr", spec);
+    app.metadata.namespace = Some("test".into());
+    app.metadata.uid = Some("test-uid-sonarr".into());
+    app.metadata.resource_version = Some("1".into());
+    app.metadata.generation = Some(1);
+    let app = Arc::new(app);
+
+    Mock::given(method("PATCH"))
+        .and(path(
+            "/apis/apps/v1/namespaces/test/deployments/test-sonarr",
+        ))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(deployment_response(
+                "test-sonarr",
+                "test",
+                "sonarr",
+            )),
+        )
+        .mount(&mock_server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path(
+            "/apis/apps/v1/namespaces/test/deployments/test-sonarr",
+        ))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(deployment_response(
+                "test-sonarr",
+                "test",
+                "sonarr",
+            )),
+        )
+        .mount(&mock_server)
+        .await;
+
+    Mock::given(method("PATCH"))
+        .and(path("/api/v1/namespaces/test/services/test-sonarr"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(service_response("test-sonarr", "test")),
+        )
+        .mount(&mock_server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path_regex(
+            r"/api/v1/namespaces/test/persistentvolumeclaims/.*",
+        ))
+        .respond_with(ResponseTemplate::new(404).set_body_json(json!({
+            "apiVersion": "v1",
+            "kind": "Status",
+            "metadata": {},
+            "status": "Failure",
+            "message": "not found",
+            "reason": "NotFound",
+            "code": 404
+        })))
+        .mount(&mock_server)
+        .await;
+
+    Mock::given(method("PATCH"))
+        .and(path_regex(
+            r"/api/v1/namespaces/test/persistentvolumeclaims/.*",
+        ))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(pvc_response("test-sonarr-config", "test")),
+        )
+        .mount(&mock_server)
+        .await;
+
+    Mock::given(method("PATCH"))
+        .and(path(
+            "/apis/networking.k8s.io/v1/namespaces/test/networkpolicies/test-sonarr",
+        ))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(networkpolicy_response("test-sonarr", "test")),
+        )
+        .mount(&mock_server)
+        .await;
+
+    Mock::given(method("PATCH"))
+        .and(path(
+            "/apis/servarr.dev/v1alpha1/namespaces/test/servarrapps/test-sonarr/status",
+        ))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(servarrapp_response("test-sonarr", "test")),
+        )
+        .mount(&mock_server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/apis/events.k8s.io/v1/namespaces/test/events"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(event_response()))
+        .mount(&mock_server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path(
+            "/apis/servarr.dev/v1alpha1/namespaces/test/servarrapps",
+        ))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(empty_list("servarr.dev/v1alpha1", "ServarrAppList")),
+        )
+        .mount(&mock_server)
+        .await;
+
+    let result = servarr_operator::controller::reconcile(app, ctx).await;
+    assert!(result.is_ok(), "reconcile should succeed, got: {result:?}");
+
+    let requests = mock_server.received_requests().await.unwrap_or_default();
+    let stale_default_event = requests.iter().any(|r| {
+        r.method == wiremock::http::Method::POST
+            && r.url.path() == "/apis/events.k8s.io/v1/namespaces/test/events"
+            && serde_json::from_slice::<serde_json::Value>(&r.body).is_ok_and(|body| {
+                body["reason"] == "StaleDefaultImage" && body["type"] == "Warning"
+            })
+    });
+    assert!(
+        stale_default_event,
+        "reconcile should publish a Warning Event with reason StaleDefaultImage when the \
+         env-supplied image override differs from this operator's built-in default (#638), \
+         requests: {requests:?}"
+    );
+}
+
+/// Regression test: an image override that exactly matches this operator binary's built-in
+/// default must not trigger the staleness warning -- there's nothing stale about it (#638).
+#[tokio::test]
+async fn test_sonarr_reconcile_skips_stale_warning_when_override_matches_builtin() {
+    let mock_server = MockServer::start().await;
+    let client = mock_client(&mock_server.uri()).await;
+    let ctx = test_context_with_current_sonarr_override(client);
+
+    let spec = ServarrAppSpec {
+        app: AppType::Sonarr,
+        ..Default::default()
+    };
+    let mut app = ServarrApp::new("test-sonarr-fresh", spec);
+    app.metadata.namespace = Some("test".into());
+    app.metadata.uid = Some("test-uid-sonarr-fresh".into());
+    app.metadata.resource_version = Some("1".into());
+    app.metadata.generation = Some(1);
+    let app = Arc::new(app);
+
+    Mock::given(method("PATCH"))
+        .and(path(
+            "/apis/apps/v1/namespaces/test/deployments/test-sonarr-fresh",
+        ))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(deployment_response(
+                "test-sonarr-fresh",
+                "test",
+                "sonarr",
+            )),
+        )
+        .mount(&mock_server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path(
+            "/apis/apps/v1/namespaces/test/deployments/test-sonarr-fresh",
+        ))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(deployment_response(
+                "test-sonarr-fresh",
+                "test",
+                "sonarr",
+            )),
+        )
+        .mount(&mock_server)
+        .await;
+
+    Mock::given(method("PATCH"))
+        .and(path("/api/v1/namespaces/test/services/test-sonarr-fresh"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(service_response("test-sonarr-fresh", "test")),
+        )
+        .mount(&mock_server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path_regex(
+            r"/api/v1/namespaces/test/persistentvolumeclaims/.*",
+        ))
+        .respond_with(ResponseTemplate::new(404).set_body_json(json!({
+            "apiVersion": "v1",
+            "kind": "Status",
+            "metadata": {},
+            "status": "Failure",
+            "message": "not found",
+            "reason": "NotFound",
+            "code": 404
+        })))
+        .mount(&mock_server)
+        .await;
+
+    Mock::given(method("PATCH"))
+        .and(path_regex(
+            r"/api/v1/namespaces/test/persistentvolumeclaims/.*",
+        ))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(pvc_response("test-sonarr-fresh-config", "test")),
+        )
+        .mount(&mock_server)
+        .await;
+
+    Mock::given(method("PATCH"))
+        .and(path(
+            "/apis/networking.k8s.io/v1/namespaces/test/networkpolicies/test-sonarr-fresh",
+        ))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(networkpolicy_response("test-sonarr-fresh", "test")),
+        )
+        .mount(&mock_server)
+        .await;
+
+    Mock::given(method("PATCH"))
+        .and(path(
+            "/apis/servarr.dev/v1alpha1/namespaces/test/servarrapps/test-sonarr-fresh/status",
+        ))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(servarrapp_response("test-sonarr-fresh", "test")),
+        )
+        .mount(&mock_server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/apis/events.k8s.io/v1/namespaces/test/events"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(event_response()))
+        .mount(&mock_server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path(
+            "/apis/servarr.dev/v1alpha1/namespaces/test/servarrapps",
+        ))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(empty_list("servarr.dev/v1alpha1", "ServarrAppList")),
+        )
+        .mount(&mock_server)
+        .await;
+
+    let result = servarr_operator::controller::reconcile(app, ctx).await;
+    assert!(result.is_ok(), "reconcile should succeed, got: {result:?}");
+
+    let requests = mock_server.received_requests().await.unwrap_or_default();
+    let stale_default_event = requests.iter().any(|r| {
+        r.method == wiremock::http::Method::POST
+            && r.url.path() == "/apis/events.k8s.io/v1/namespaces/test/events"
+            && serde_json::from_slice::<serde_json::Value>(&r.body)
+                .is_ok_and(|body| body["reason"] == "StaleDefaultImage")
+    });
+    assert!(
+        !stale_default_event,
+        "reconcile must not publish StaleDefaultImage when the override already matches \
+         this operator's built-in default -- there's nothing stale about it, \
+         requests: {requests:?}"
+    );
+}
+
+/// Regression test: a repository-only override (`DEFAULT_IMAGE_SONARR_REPO` set, no matching
+/// `_TAG`) that matches the builtin repository must not warn, even though the raw override's
+/// `tag` field is empty and would naively look "different" from the builtin's non-empty tag.
+/// `deployment::build` merges the empty tag from the builtin default before deploying, so the
+/// actually-running image is not stale (#638).
+#[tokio::test]
+async fn test_sonarr_reconcile_skips_stale_warning_for_partial_repo_only_override() {
+    let mock_server = MockServer::start().await;
+    let client = mock_client(&mock_server.uri()).await;
+    let ctx = test_context_with_partial_repo_only_sonarr_override(client);
+
+    let spec = ServarrAppSpec {
+        app: AppType::Sonarr,
+        ..Default::default()
+    };
+    let mut app = ServarrApp::new("test-sonarr-partial", spec);
+    app.metadata.namespace = Some("test".into());
+    app.metadata.uid = Some("test-uid-sonarr-partial".into());
+    app.metadata.resource_version = Some("1".into());
+    app.metadata.generation = Some(1);
+    let app = Arc::new(app);
+
+    Mock::given(method("PATCH"))
+        .and(path(
+            "/apis/apps/v1/namespaces/test/deployments/test-sonarr-partial",
+        ))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(deployment_response(
+                "test-sonarr-partial",
+                "test",
+                "sonarr",
+            )),
+        )
+        .mount(&mock_server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path(
+            "/apis/apps/v1/namespaces/test/deployments/test-sonarr-partial",
+        ))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(deployment_response(
+                "test-sonarr-partial",
+                "test",
+                "sonarr",
+            )),
+        )
+        .mount(&mock_server)
+        .await;
+
+    Mock::given(method("PATCH"))
+        .and(path("/api/v1/namespaces/test/services/test-sonarr-partial"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(service_response("test-sonarr-partial", "test")),
+        )
+        .mount(&mock_server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path_regex(
+            r"/api/v1/namespaces/test/persistentvolumeclaims/.*",
+        ))
+        .respond_with(ResponseTemplate::new(404).set_body_json(json!({
+            "apiVersion": "v1",
+            "kind": "Status",
+            "metadata": {},
+            "status": "Failure",
+            "message": "not found",
+            "reason": "NotFound",
+            "code": 404
+        })))
+        .mount(&mock_server)
+        .await;
+
+    Mock::given(method("PATCH"))
+        .and(path_regex(
+            r"/api/v1/namespaces/test/persistentvolumeclaims/.*",
+        ))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(pvc_response("test-sonarr-partial-config", "test")),
+        )
+        .mount(&mock_server)
+        .await;
+
+    Mock::given(method("PATCH"))
+        .and(path(
+            "/apis/networking.k8s.io/v1/namespaces/test/networkpolicies/test-sonarr-partial",
+        ))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(networkpolicy_response("test-sonarr-partial", "test")),
+        )
+        .mount(&mock_server)
+        .await;
+
+    Mock::given(method("PATCH"))
+        .and(path(
+            "/apis/servarr.dev/v1alpha1/namespaces/test/servarrapps/test-sonarr-partial/status",
+        ))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(servarrapp_response("test-sonarr-partial", "test")),
+        )
+        .mount(&mock_server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/apis/events.k8s.io/v1/namespaces/test/events"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(event_response()))
+        .mount(&mock_server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path(
+            "/apis/servarr.dev/v1alpha1/namespaces/test/servarrapps",
+        ))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(empty_list("servarr.dev/v1alpha1", "ServarrAppList")),
+        )
+        .mount(&mock_server)
+        .await;
+
+    let result = servarr_operator::controller::reconcile(app, ctx).await;
+    assert!(result.is_ok(), "reconcile should succeed, got: {result:?}");
+
+    let requests = mock_server.received_requests().await.unwrap_or_default();
+    let stale_default_event = requests.iter().any(|r| {
+        r.method == wiremock::http::Method::POST
+            && r.url.path() == "/apis/events.k8s.io/v1/namespaces/test/events"
+            && serde_json::from_slice::<serde_json::Value>(&r.body)
+                .is_ok_and(|body| body["reason"] == "StaleDefaultImage")
+    });
+    assert!(
+        !stale_default_event,
+        "reconcile must not publish StaleDefaultImage for a repository-only override whose \
+         repository matches the builtin -- the merged, effective tag inherits the builtin and \
+         is not stale, requests: {requests:?}"
+    );
+}
+
+/// Regression test: if the Events API rejects the StaleDefaultImage publish, reconcile must
+/// still succeed -- this is an advisory Event, not load-bearing, matching the existing
+/// DeprecatedImageOverride precedent this block is modeled on (#638).
+#[tokio::test]
+async fn test_sonarr_reconcile_survives_stale_warning_event_publish_failure() {
+    let mock_server = MockServer::start().await;
+    let client = mock_client(&mock_server.uri()).await;
+    let ctx = test_context_with_stale_sonarr_override(client);
+
+    let spec = ServarrAppSpec {
+        app: AppType::Sonarr,
+        ..Default::default()
+    };
+    let mut app = ServarrApp::new("test-sonarr-publish-fail", spec);
+    app.metadata.namespace = Some("test".into());
+    app.metadata.uid = Some("test-uid-sonarr-publish-fail".into());
+    app.metadata.resource_version = Some("1".into());
+    app.metadata.generation = Some(1);
+    let app = Arc::new(app);
+
+    Mock::given(method("PATCH"))
+        .and(path(
+            "/apis/apps/v1/namespaces/test/deployments/test-sonarr-publish-fail",
+        ))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(deployment_response(
+                "test-sonarr-publish-fail",
+                "test",
+                "sonarr",
+            )),
+        )
+        .mount(&mock_server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path(
+            "/apis/apps/v1/namespaces/test/deployments/test-sonarr-publish-fail",
+        ))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(deployment_response(
+                "test-sonarr-publish-fail",
+                "test",
+                "sonarr",
+            )),
+        )
+        .mount(&mock_server)
+        .await;
+
+    Mock::given(method("PATCH"))
+        .and(path(
+            "/api/v1/namespaces/test/services/test-sonarr-publish-fail",
+        ))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(service_response("test-sonarr-publish-fail", "test")),
+        )
+        .mount(&mock_server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path_regex(
+            r"/api/v1/namespaces/test/persistentvolumeclaims/.*",
+        ))
+        .respond_with(ResponseTemplate::new(404).set_body_json(json!({
+            "apiVersion": "v1",
+            "kind": "Status",
+            "metadata": {},
+            "status": "Failure",
+            "message": "not found",
+            "reason": "NotFound",
+            "code": 404
+        })))
+        .mount(&mock_server)
+        .await;
+
+    Mock::given(method("PATCH"))
+        .and(path_regex(
+            r"/api/v1/namespaces/test/persistentvolumeclaims/.*",
+        ))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(pvc_response("test-sonarr-publish-fail-config", "test")),
+        )
+        .mount(&mock_server)
+        .await;
+
+    Mock::given(method("PATCH"))
+        .and(path(
+            "/apis/networking.k8s.io/v1/namespaces/test/networkpolicies/test-sonarr-publish-fail",
+        ))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(networkpolicy_response("test-sonarr-publish-fail", "test")),
+        )
+        .mount(&mock_server)
+        .await;
+
+    Mock::given(method("PATCH"))
+        .and(path(
+            "/apis/servarr.dev/v1alpha1/namespaces/test/servarrapps/test-sonarr-publish-fail/status",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(servarrapp_response(
+            "test-sonarr-publish-fail",
+            "test",
+        )))
+        .mount(&mock_server)
+        .await;
+
+    // Only the StaleDefaultImage publish fails -- the reconcile-completion event (which IS
+    // load-bearing, see the final `.map_err(Error::Kube)?` in `reconcile`) must still succeed,
+    // or this test would conflate an unrelated, pre-existing failure mode with the one it's
+    // actually checking.
+    Mock::given(method("POST"))
+        .and(path("/apis/events.k8s.io/v1/namespaces/test/events"))
+        .and(BodyContains("StaleDefaultImage"))
+        .respond_with(ResponseTemplate::new(500))
+        .with_priority(1)
+        .mount(&mock_server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/apis/events.k8s.io/v1/namespaces/test/events"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(event_response()))
+        .mount(&mock_server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path(
+            "/apis/servarr.dev/v1alpha1/namespaces/test/servarrapps",
+        ))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(empty_list("servarr.dev/v1alpha1", "ServarrAppList")),
+        )
+        .mount(&mock_server)
+        .await;
+
+    let result = servarr_operator::controller::reconcile(app, ctx).await;
+    assert!(
+        result.is_ok(),
+        "reconcile must succeed even when the advisory StaleDefaultImage Event fails to \
+         publish, got: {result:?}"
     );
 }
 
