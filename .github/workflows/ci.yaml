@@ -135,10 +135,13 @@ jobs:
         run: rustup component add rustc-dev llvm-tools-preview
 
       - name: Install cargo-hawk
-        # The exact "--version X.Y.Z cargo-hawk" text is matched by a Renovate
-        # custom regex manager (.github/renovate.json5) — keep this phrasing
-        # if the line is ever edited, or version bumps silently stop.
-        run: RUSTC_BOOTSTRAP=1 cargo install --locked --version 0.1.12 cargo-hawk
+        # Unpinned on purpose: cargo-hawk hooks unstable rustc-internal APIs, so a
+        # binary built against one toolchain often won't even compile against the next. A
+        # pinned version left CI red every time Renovate bumped rust-toolchain.toml until
+        # someone noticed and bumped this pin separately. Floating to latest always builds
+        # against whatever cargo-hawk release is current for the active toolchain — matches
+        # how cargo-deny and cargo-llvm-cov are installed below (also unpinned).
+        run: RUSTC_BOOTSTRAP=1 cargo install --locked cargo-hawk
 
       - name: Run cargo-hawk
         # servarr_api and servarr_crds are excluded: their pub surface is a genuine

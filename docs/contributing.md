@@ -18,14 +18,19 @@ prek install
 The hooks run `cargo fmt`, `actionlint`, `zizmor`, `helm lint`, `cargo clippy`, `cargo test`, and
 `cargo hawk` (dead/unnecessary-pub lint) on every commit.
 
-`cargo hawk` needs [cargo-hawk](https://github.com/astral-sh/hawk), which pins the `1.97.1`
-toolchain internally (matching `rust-toolchain.toml`) and hooks compiler internals, so it also
-needs the `rustc-dev` and `llvm-tools-preview` components. Install it once:
+`cargo hawk` needs [cargo-hawk](https://github.com/astral-sh/hawk), which hooks compiler
+internals and pins itself to whatever toolchain is active at install time (see
+`rust-toolchain.toml`), so it also needs the `rustc-dev` and `llvm-tools-preview` components.
+Install it once:
 
 ```bash
 rustup component add rustc-dev llvm-tools-preview
-RUSTC_BOOTSTRAP=1 cargo install --locked --version 0.1.12 cargo-hawk
+RUSTC_BOOTSTRAP=1 cargo install --locked cargo-hawk
 ```
+
+Deliberately unpinned — cargo-hawk hooks unstable rustc-internal APIs, so a binary built against
+one toolchain often won't even compile against the next. Reinstall it after a `rust-toolchain.toml`
+bump if `cargo hawk` starts failing to build.
 
 `RUSTC_BOOTSTRAP=1` only scopes to that one install command — it does not affect `cargo build`,
 `cargo test`, or any other command in your shell. The hook currently runs non-blocking (`-W`, not

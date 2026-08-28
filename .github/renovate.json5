@@ -170,22 +170,16 @@
       automerge: true,
     },
 
-    // Rust toolchain version (from custom regex manager)
+    // Rust toolchain version. Uses Renovate's native `rust-toolchain` manager
+    // (depType: toolchain) — this repo used to run its own custom regex manager
+    // for the same rust-toolchain.toml file, which duplicated the native manager
+    // once Renovate added first-party support, producing two separate PRs for
+    // the same bump (#628, #637).
     {
       groupName: 'Rust Toolchain',
       groupSlug: 'rust-toolchain',
-      matchDepNames: ['rust'],
-      matchManagers: ['custom.regex'],
-    },
-
-    // cargo-hawk runs with RUSTC_BOOTSTRAP=1 and hooks unstable compiler
-    // internals (rustc_interface, rustc_lexer) — keep version bumps human-
-    // reviewed like major updates, rather than auto-merging on the default
-    // non-major policy above (#572).
-    {
-      matchDepNames: ['cargo-hawk'],
-      matchManagers: ['custom.regex'],
-      automerge: false,
+      matchManagers: ['rust-toolchain'],
+      matchDepTypes: ['toolchain'],
     },
 
     // Container image versions in image-defaults.toml, and their mirror in
@@ -254,37 +248,6 @@
 
   // Custom managers for non-standard dependency sources
   customManagers: [
-    // Rust toolchain version in rust-toolchain.toml
-    {
-      customType: 'regex',
-      managerFilePatterns: [
-        '/(^|/)rust-toolchain\\.toml$/',
-      ],
-      matchStrings: [
-        'channel\\s*=\\s*"(?<currentValue>\\d+\\.\\d+(\\.\\d+)?)"',
-      ],
-      depNameTemplate: 'rust',
-      packageNameTemplate: 'rust-lang/rust',
-      datasourceTemplate: 'github-releases',
-    },
-
-    // cargo-hawk version pin in the CI install step and its documented
-    // manual-install instructions. Neither is covered by the cargo manager
-    // since it's a `cargo install --version` invocation inside a workflow
-    // `run:` step / doc code block, not a Cargo.toml dependency (#572).
-    {
-      customType: 'regex',
-      managerFilePatterns: [
-        '/(^|/)\\.github\\/workflows\\/ci\\.yaml$/',
-        '/(^|/)docs\\/contributing\\.md$/',
-      ],
-      matchStrings: [
-        '--version (?<currentValue>\\d+\\.\\d+\\.\\d+) cargo-hawk',
-      ],
-      depNameTemplate: 'cargo-hawk',
-      datasourceTemplate: 'crate',
-    },
-
     // Container image tags in image-defaults.toml
     {
       customType: 'regex',
