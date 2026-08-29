@@ -1,7 +1,7 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use servarr_operator::{
-    context, controller, crd_check, media_stack_controller, server, telemetry, webhook,
+    context, controller, crd_check, env, media_stack_controller, server, telemetry, webhook,
 };
 use tracing::{error, info};
 
@@ -84,9 +84,7 @@ async fn main() -> Result<()> {
     let state = server::ServerState::new();
 
     // Optionally start the webhook server if WEBHOOK_ENABLED=true
-    let webhook_enabled = std::env::var("WEBHOOK_ENABLED")
-        .map(|v| v == "true" || v == "1")
-        .unwrap_or(false);
+    let webhook_enabled = env::var_bool("WEBHOOK_ENABLED", false);
 
     if webhook_enabled {
         let webhook_config = webhook::WebhookConfig::default();
