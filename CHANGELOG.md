@@ -32,13 +32,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   anything (#487).
 - Fix the reserved-mount collision error to always name the `mountPath` the user actually wrote,
   instead of sometimes showing the reserved path's own literal (#712).
-- Fix a stuck orphan's `OrphanCleanupHealthy` condition reporting "may self-resolve" for a
-  `spec.persistence` mount-path collision that never will — it's now labeled separately from a
-  genuinely transient PVC-detach failure, so on-call knows the fix is editing the CR, not
-  waiting on a retry (#673).
+- Fix a stuck orphan's PVC ownerReference never getting detached when `spec.persistence` has a
+  mount-path collision the webhook missed — `cleanup_orphaned_children` now falls back to a
+  namespace-wide PVC lookup scoped by ownerReference (never by label, so it can't touch a PVC it
+  doesn't own) instead of giving up, so the child's PVC — and any later stack delete — stays
+  protected even when the spec can't be resolved (#673, #719).
 - Fix the admission webhook silently admitting a `ServarrApp`/`MediaStack` with zero persistence
   validation when its app type had no compiled defaults — it now rejects the object instead
   (#716).
+- Fix the admission webhook silently admitting an UPDATE whose stored spec fails to parse (or is
+  missing entirely) — `validate_identity_immutable` now rejects the object instead of skipping
+  the `spec.app`/`spec.instance` immutability check (#720).
+- Fix `MediaStack` child-readiness read-back treating a real API/network error the same as "not
+  ready yet" — a failed status read now warns with the underlying error instead of silently
+  falling through to `false` (#721).
+- Fix a stuck orphan's failed child delete (after a successful PVC detach) being visible only in
+  operator logs — it now surfaces via the `OrphanCleanupHealthy` status condition like the other
+  failure buckets (#722).
 
 ### Changed
 
