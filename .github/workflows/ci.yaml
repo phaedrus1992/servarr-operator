@@ -190,21 +190,32 @@ jobs:
         with:
           tool: cargo-llvm-cov
 
+      - name: Check the coverage gate script
+        run: bash scripts/check-coverage_test.sh
+
       - name: Run tests with coverage
         run: |
-          set -o pipefail  # propagate cargo-llvm-cov's exit code through the tee pipe
-          threshold=$(cat .coverage-threshold)
-          cargo llvm-cov --workspace --fail-under-lines "$threshold" --summary-only 2>&1 | tee /tmp/coverage-summary.txt
+          set -euo pipefail
+          mkdir -p .tmp
+          cargo llvm-cov --workspace --json --output-path .tmp/coverage.json
+
+      # Enforces the aggregate threshold and the per-file floors from the report above, so
+      # coverage is measured once. Its exit status is the step's status — no pipe, no tee.
+      - name: Enforce coverage gates
+        run: |
+          # pipefail is required, not decorative: without it the tee masks the gate's exit
+          # code and the whole check becomes a no-op, which is what #70 had to fix.
+          set -euo pipefail
+          bash scripts/check-coverage.sh .tmp/coverage.json | tee .tmp/coverage-summary.txt
 
       - name: Post coverage summary
         if: always()
         run: |
+          set -euo pipefail
           {
             echo "### Code Coverage"
             echo ""
             echo '```'
-            tail -5 /tmp/coverage-summary.txt
+            cat .tmp/coverage-summary.txt 2>/dev/null || echo "coverage did not run"
             echo '```'
-            echo ""
-            echo "Threshold: $(cat .coverage-threshold)% lines"
           } >> "$GITHUB_STEP_SUMMARY"

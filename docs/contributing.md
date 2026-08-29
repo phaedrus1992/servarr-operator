@@ -76,6 +76,50 @@ chore: update dependencies [snapshot]
 
 Flags can be combined freely. `workflow_dispatch` runs treat all flags as enabled.
 
+## Coverage Gates
+
+CI enforces two coverage gates. Both read one `cargo llvm-cov` JSON report, so coverage is
+measured once per run.
+
+| Gate | File | What it does |
+|------|------|--------------|
+| Aggregate | `.coverage-threshold` | Workspace line coverage must reach this percent. |
+| Per file | `.coverage-floors` | Each file's line coverage must reach its own floor. |
+
+The aggregate gate on its own can pass while one module sits far below the line and another
+sits near 100%. The per-file floors catch that.
+
+Run both gates locally:
+
+```bash
+mkdir -p .tmp
+cargo llvm-cov --workspace --json --output-path .tmp/coverage.json
+scripts/check-coverage.sh .tmp/coverage.json
+```
+
+On macOS, `cargo llvm-cov` finds Homebrew's `llvm-profdata`, which is newer than the Rust
+profiler. It then fails with `raw profile version mismatch`. Point it at the toolchain's own
+copy instead:
+
+```bash
+B="$HOME/.rustup/toolchains/$(rustc -vV | awk '/host/{print $2}')/lib/rustlib/$(rustc -vV | awk '/host/{print $2}')/bin"
+LLVM_COV="$B/llvm-cov" LLVM_PROFDATA="$B/llvm-profdata" cargo llvm-cov --workspace --json --output-path .tmp/coverage.json
+```
+
+The variable names are `LLVM_COV` and `LLVM_PROFDATA`. Setting `PATH` does not work.
+
+### Working with the floors
+
+- A file with no entry of its own uses the `*` floor. A new module added without tests fails
+  the gate rather than passing unnoticed.
+- Each floor sits a couple of points below where the file measured when it was written, so a
+  refactor that moves a line or two does not fail the build.
+- The script reports files that sit well above their floor. Raise those floors deliberately.
+- **Never lower a floor to make CI pass.** Add the missing tests instead.
+- `main.rs` and `telemetry.rs` carry honest low floors. They are process wiring and are hard
+  to unit-test. They stay in the report rather than being excluded, because dropping a file
+  from the denominator raises the number by measuring less code.
+
 ## Running the Smoke Test Locally
 
 The smoke test requires Docker and `kubectl`:

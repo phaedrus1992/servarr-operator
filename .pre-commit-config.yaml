@@ -56,11 +56,19 @@ repos:
 
       - id: cargo-test-coverage
         name: cargo test (with coverage)
-        entry: bash -c 'threshold=$(cat .coverage-threshold); cargo llvm-cov --workspace --fail-under-lines "$threshold" --summary-only'
+        entry: bash -c 'mkdir -p .tmp && cargo llvm-cov --workspace --json --output-path .tmp/coverage.json && bash scripts/check-coverage.sh .tmp/coverage.json'
         language: system
         pass_filenames: false
         stages: [pre-push]
         always_run: true
+
+      - id: check-coverage-script
+        name: tests for the coverage gate script
+        entry: bash scripts/check-coverage_test.sh
+        language: system
+        pass_filenames: false
+        files: ^scripts/check-coverage(_test)?\.sh$
+        stages: [pre-push]
 
       - id: cargo-hawk
         name: cargo hawk (dead/unnecessary-pub surface)
