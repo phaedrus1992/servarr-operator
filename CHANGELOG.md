@@ -27,12 +27,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `BackupCompleted`, `BackupFailed`, and others) silently discarding a publish failure with no
   log line — all now warn and increment a new `servarr_operator_event_publish_failures_total`
   metric, so persistent Events-API breakage is visible instead of only missing Events (#646).
+- Reject a literal `..` segment in a persistence `mountPath` outright, instead of silently
+  accepting one that reaches the pod spec as a non-canonical string when it doesn't collide with
+  anything (#487).
+- Fix the reserved-mount collision error to always name the `mountPath` the user actually wrote,
+  instead of sometimes showing the reserved path's own literal (#712).
 
 ### Changed
 
 - `Condition::fail` now requires a sanitized message type instead of a plain string, closing a
   gap where a future code change could have leaked raw API-server error detail into a
   tenant-visible status Condition. No existing Condition message changes as a result (#668).
+- Persistence mount-path collision detection now resolves known base-image symlink aliases
+  (`/var/run` -> `/run`, `/var/lock` -> `/run/lock`) before comparing, so an override spelled
+  through the symlinked form now correctly collides with the reserved real path — a spec that
+  previously applied cleanly through this gap is now rejected (#484).
+- Add a volume-*name* collision guard alongside the existing mount-path one — a user-supplied
+  volume name colliding with an operator-reserved name, or via the `nfs-<name>` prefix an NFS
+  mount gets in the actual pod spec, is now rejected (#485).
+- All persistence collision checks (mount-path, volume-name, and the `..` rejection above) now
+  also run at CRD admission time via the validating webhook, instead of only at reconcile — a
+  colliding spec is rejected at `kubectl apply` time instead of only failing on the next
+  reconcile (#486).
 
 ## [1.3.1] - 2026-08-27
 
