@@ -503,6 +503,30 @@ async fn validate_no_duplicate_instance(
     }
 }
 
+/// Unwraps a `try_for_app` result for a validator, rejecting the CR instead of silently
+/// admitting it if the lookup ever fails (#716). Takes the already-computed `Result` (rather
+/// than calling `try_for_app` itself) so the failure path is unit-testable directly — `AppType`
+/// is a closed enum with an `image-defaults.toml` entry for every variant
+/// (`AppDefaults::validate_all_passes_for_every_app_type`), so this branch can't be driven from
+/// a real spec, only from a synthetic `Err` in a test.
+fn require_defaults(
+    result: Result<AppDefaults, String>,
+    app: &AppType,
+    context: &str,
+    errors: &mut Vec<String>,
+) -> Option<AppDefaults> {
+    match result {
+        Ok(defaults) => Some(defaults),
+        Err(_) => {
+            errors.push(format!(
+                "internal error: no compiled defaults for app type '{app}' -- {context} could \
+                 not be validated; this indicates a broken image-defaults.toml entry"
+            ));
+            None
+        }
+    }
+}
+
 /// Runs the same merge + collision checks `AppDefaults::resolve_persistence` runs at
 /// reconcile time — same-list duplicate volume/nfsMount names, mount-path collisions,
 /// volume-name collisions (including a name matching one the operator reserves for itself),
@@ -510,15 +534,12 @@ async fn validate_no_duplicate_instance(
 /// `kubectl apply` time instead of only surfacing later as a reconcile-time `ReconcileError`
 /// (#486).
 fn validate_persistence_collisions(spec: &ServarrAppSpec, errors: &mut Vec<String>) {
-    // `try_for_app` fails only when `image-defaults.toml` has no entry for this `AppType` or
-    // carries an unrecognized security profile — `AppDefaults::validate_all()` is meant to
-    // catch that at operator startup, before any CR reaches this webhook. Silently skipping
-    // the check here (rather than erroring) is safe rather than a fail-open hole: reconcile
-    // independently calls the same `try_for_app`/`resolve_persistence` and does not swallow
-    // that error (see `deployment.rs`'s builders and `controller.rs`'s error handling), so a
-    // broken defaults table still hard-fails the reconcile even if admission let the object
-    // through (mirrors the same pattern in `validate_removed_default_volumes` below).
-    let Ok(defaults) = AppDefaults::try_for_app(&spec.app) else {
+    let Some(defaults) = require_defaults(
+        AppDefaults::try_for_app(&spec.app),
+        &spec.app,
+        "persistence",
+        errors,
+    ) else {
         return;
     };
     if let Err(e) = defaults.resolve_persistence_for_spec(spec) {
@@ -536,7 +557,12 @@ fn validate_removed_default_volumes(spec: &ServarrAppSpec, errors: &mut Vec<Stri
     if persistence.removed_default_volumes.is_empty() {
         return;
     }
-    let Ok(defaults) = AppDefaults::try_for_app(&spec.app) else {
+    let Some(defaults) = require_defaults(
+        AppDefaults::try_for_app(&spec.app),
+        &spec.app,
+        "removedDefaultVolumes",
+        errors,
+    ) else {
         return;
     };
     for name in &persistence.removed_default_volumes {
@@ -1183,6 +1209,36 @@ mod tests {
         validate_gateway_hosts(&spec, &mut errors);
         assert_eq!(errors.len(), 1);
         assert!(errors[0].contains("TCP"));
+    }
+
+    // ── require_defaults (#716) ──
+
+    #[test]
+    fn require_defaults_ok_returns_defaults_no_error() {
+        let mut errors = Vec::new();
+        let defaults = AppDefaults::try_for_app(&AppType::Sonarr).unwrap();
+        let result = require_defaults(Ok(defaults), &AppType::Sonarr, "persistence", &mut errors);
+        assert!(result.is_some());
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn require_defaults_err_pushes_error_and_returns_none() {
+        let mut errors = Vec::new();
+        let result = require_defaults(
+            Err("no image defaults for app: bogus".to_string()),
+            &AppType::Sonarr,
+            "persistence",
+            &mut errors,
+        );
+        assert!(result.is_none());
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("persistence"), "got: {}", errors[0]);
+        assert!(
+            errors[0].contains(&AppType::Sonarr.to_string()),
+            "got: {}",
+            errors[0]
+        );
     }
 
     // ── validate_persistence_collisions ──

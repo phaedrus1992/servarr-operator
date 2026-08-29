@@ -32,6 +32,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   anything (#487).
 - Fix the reserved-mount collision error to always name the `mountPath` the user actually wrote,
   instead of sometimes showing the reserved path's own literal (#712).
+- Fix a stuck orphan's `OrphanCleanupHealthy` condition reporting "may self-resolve" for a
+  `spec.persistence` mount-path collision that never will — it's now labeled separately from a
+  genuinely transient PVC-detach failure, so on-call knows the fix is editing the CR, not
+  waiting on a retry (#673).
+- Fix the admission webhook silently admitting a `ServarrApp`/`MediaStack` with zero persistence
+  validation when its app type had no compiled defaults — it now rejects the object instead
+  (#716).
 
 ### Changed
 
