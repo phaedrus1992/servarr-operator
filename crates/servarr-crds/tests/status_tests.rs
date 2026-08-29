@@ -1,3 +1,4 @@
+use servarr_api::TenantSafeMessage;
 use servarr_crds::*;
 
 // ---------------------------------------------------------------------------
@@ -29,7 +30,7 @@ fn condition_fail_creates_false_condition_with_all_fields() {
     let cond = Condition::fail(
         condition_types::DEGRADED,
         "PodCrashLooping",
-        "container restarted 5 times",
+        TenantSafeMessage::new("container restarted 5 times"),
         "2025-06-01T13:00:00Z",
     );
 
@@ -84,7 +85,7 @@ fn set_condition_updates_existing_condition_of_same_type() {
     status.set_condition(Condition::fail(
         condition_types::DEPLOYMENT_READY,
         "RolloutFailed",
-        "replica set timed out",
+        TenantSafeMessage::new("replica set timed out"),
         "2025-06-01T01:00:00Z",
     ));
 
@@ -123,7 +124,7 @@ fn set_condition_tracks_multiple_different_condition_types() {
     status.set_condition(Condition::fail(
         condition_types::NETWORK_POLICY_READY,
         "PolicyMissing",
-        "not yet created",
+        TenantSafeMessage::new("not yet created"),
         "2025-06-01T00:00:02Z",
     ));
 
@@ -201,7 +202,7 @@ fn servarr_app_status_serde_roundtrip_with_conditions_and_backup() {
             Condition::fail(
                 condition_types::UPDATE_AVAILABLE,
                 "NewVersion",
-                "v4.1.0 available",
+                TenantSafeMessage::new("v4.1.0 available"),
                 "2025-06-01T11:00:00Z",
             ),
         ],
@@ -310,7 +311,7 @@ fn subgen_sync_ready_condition_reflects_sync_failure() {
     status.set_condition(Condition::fail(
         condition_types::SUBGEN_SYNC_READY,
         "JellyfinUnavailable",
-        "no Jellyfin CR found in namespace media",
+        TenantSafeMessage::new("no Jellyfin CR found in namespace media"),
         "2025-06-01T00:00:00Z",
     ));
     let cond = status
@@ -350,7 +351,7 @@ fn restore_ready_condition_reflects_restore_failure() {
     status.set_condition(Condition::fail(
         condition_types::RESTORE_READY,
         "RestoreFailed",
-        "failed to scale down for restore: connection refused",
+        TenantSafeMessage::new("failed to scale down for restore: connection refused"),
         "2025-06-01T00:00:00Z",
     ));
     let cond = status
@@ -382,7 +383,7 @@ fn new_sync_condition_types_survive_serde_roundtrip() {
             Condition::fail(
                 condition_types::SUBGEN_SYNC_READY,
                 "JellyfinUnavailable",
-                "no Jellyfin CR found in namespace media",
+                TenantSafeMessage::new("no Jellyfin CR found in namespace media"),
                 "2025-06-01T00:00:01Z",
             ),
             Condition::ok(
@@ -400,7 +401,7 @@ fn new_sync_condition_types_survive_serde_roundtrip() {
             Condition::fail(
                 condition_types::SEERR_SYNC_READY,
                 "SyncFailed",
-                "Seerr unreachable",
+                TenantSafeMessage::new("Seerr unreachable"),
                 "2025-06-01T00:00:04Z",
             ),
         ],
@@ -457,7 +458,7 @@ fn condition_ok_and_fail_with_empty_strings() {
     assert_eq!(ok.status, "True");
     assert!(ok.condition_type.is_empty());
 
-    let fail = Condition::fail("", "", "", "");
+    let fail = Condition::fail("", "", TenantSafeMessage::new(""), "");
     assert_eq!(fail.status, "False");
     assert!(fail.condition_type.is_empty());
 }
@@ -474,7 +475,12 @@ fn set_condition_on_status_with_preexisting_conditions() {
     };
 
     // Update the middle one
-    status.set_condition(Condition::fail("Beta", "Failed", "oops", "t4"));
+    status.set_condition(Condition::fail(
+        "Beta",
+        "Failed",
+        TenantSafeMessage::new("oops"),
+        "t4",
+    ));
     assert_eq!(status.conditions.len(), 3);
     assert_eq!(status.conditions[1].status, "False");
     assert_eq!(status.conditions[1].reason, "Failed");

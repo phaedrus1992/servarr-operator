@@ -11,6 +11,9 @@ schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 indexmap = { version = "=2.14.1", features = ["serde"] }
+# Only for the TenantSafeMessage newtype -- Condition::fail (#668) takes one so the
+# sanitized-string guarantee is enforced by the compiler, not just convention.
+servarr-api = { path = "../servarr-api" }
 
 [build-dependencies]
 toml = "=1.1.4"

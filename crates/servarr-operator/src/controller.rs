@@ -1224,7 +1224,9 @@ async fn sync_admin_credentials(
                     return Some(Condition::fail(
                         condition_types::ADMIN_CREDENTIALS_CONFIGURED,
                         "NoApiKey",
-                        "SABnzbd credential sync requires apiKeySecret to be set",
+                        TenantSafeMessage::new(
+                            "SABnzbd credential sync requires apiKeySecret to be set",
+                        ),
                         &now,
                     ));
                 }
@@ -1306,7 +1308,9 @@ async fn sync_admin_credentials(
                     return Some(Condition::fail(
                         condition_types::ADMIN_CREDENTIALS_CONFIGURED,
                         "NoApiKey",
-                        "Seerr credential sync requires apiKeySecret to be set",
+                        TenantSafeMessage::new(
+                            "Seerr credential sync requires apiKeySecret to be set",
+                        ),
                         &now,
                     ));
                 }
@@ -1394,7 +1398,7 @@ async fn sync_admin_credentials(
             Condition::fail(
                 condition_types::ADMIN_CREDENTIALS_CONFIGURED,
                 "SyncFailed",
-                msg,
+                TenantSafeMessage::new(msg.as_str()),
                 &now,
             )
         }
@@ -1740,7 +1744,7 @@ async fn check_api_health(
         Ok(false) => Condition::fail(
             condition_types::APP_HEALTHY,
             "Unhealthy",
-            "API responded unhealthy",
+            TenantSafeMessage::new("API responded unhealthy"),
             &now,
         ),
         Err(msg) => Condition {
@@ -1814,7 +1818,7 @@ async fn check_update_available(
         None => Condition::fail(
             condition_types::UPDATE_AVAILABLE,
             "UpToDate",
-            "Running latest version",
+            TenantSafeMessage::new("Running latest version"),
             now,
         ),
     })
@@ -2250,13 +2254,13 @@ fn build_download_health_condition(
     Condition::fail(
         condition_types::DOWNLOAD_DATA_HEALTHY,
         "MissingDataDetected",
-        &format!(
+        TenantSafeMessage::new(format!(
             "{stale_count} torrent(s) reporting missing data ({recovered} recovered, {} removed, \
              {} confirmed orphaned but not removed, {} pending verify)",
             outcome.removed.len(),
             outcome.confirmed_orphaned.len(),
             outcome.still_pending.len(),
-        ),
+        )),
         now,
     )
 }
@@ -2310,7 +2314,7 @@ fn result_to_condition<E: Into<TenantSafeMessage>>(
         Err(e) => {
             let msg: TenantSafeMessage = e.into();
             warn!(%name, error = %msg, "{}", spec.fail_log);
-            Condition::fail(spec.condition_type, spec.fail_reason, msg.as_ref(), now)
+            Condition::fail(spec.condition_type, spec.fail_reason, msg, now)
         }
     }
 }
@@ -2375,7 +2379,7 @@ async fn update_status(
         status.set_condition(Condition::fail(
             condition_types::DEPLOYMENT_READY,
             "ReplicasUnavailable",
-            &format!("{ready_replicas} replica(s) ready"),
+            TenantSafeMessage::new(format!("{ready_replicas} replica(s) ready")),
             &now,
         ));
     }
@@ -2392,7 +2396,7 @@ async fn update_status(
     status.set_condition(Condition::fail(
         condition_types::PROGRESSING,
         "ReconcileComplete",
-        "Reconciliation finished",
+        TenantSafeMessage::new("Reconciliation finished"),
         &now,
     ));
 
@@ -2408,7 +2412,7 @@ async fn update_status(
         Condition::fail(
             condition_types::READY,
             "DeploymentNotReady",
-            &format!("{ready_replicas} replica(s) ready"),
+            TenantSafeMessage::new(format!("{ready_replicas} replica(s) ready")),
             &now,
         )
     });
@@ -2425,7 +2429,7 @@ async fn update_status(
         status.set_condition(Condition::fail(
             condition_types::DEGRADED,
             "AllHealthy",
-            "All resources healthy",
+            TenantSafeMessage::new("All resources healthy"),
             &now,
         ));
     }
