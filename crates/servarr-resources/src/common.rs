@@ -7,7 +7,13 @@ use std::collections::BTreeMap;
 const MANAGER: &str = "servarr-operator";
 
 pub(crate) fn log_app_defaults_error(app: &ServarrApp, error: &str) {
-    tracing::error!(app_type = ?app.spec.app, error, "failed to get app defaults");
+    tracing::error!(
+        app = %app_name(app),
+        namespace = %app_namespace(app),
+        app_type = ?app.spec.app,
+        error,
+        "failed to resolve app defaults"
+    );
 }
 
 pub fn app_name(app: &ServarrApp) -> String {

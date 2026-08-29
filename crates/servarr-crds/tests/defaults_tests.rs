@@ -22,7 +22,7 @@ fn make_app(app_type: AppType) -> ServarrApp {
 
 #[test]
 fn ssh_bastion_uses_custom_security_profile() {
-    let defaults = AppDefaults::for_app(&AppType::SshBastion).unwrap();
+    let defaults = AppDefaults::try_for_app(&AppType::SshBastion).unwrap();
     assert!(matches!(
         defaults.security.profile_type,
         SecurityProfileType::Custom
@@ -31,7 +31,7 @@ fn ssh_bastion_uses_custom_security_profile() {
 
 #[test]
 fn ssh_bastion_runs_as_root() {
-    let defaults = AppDefaults::for_app(&AppType::SshBastion).unwrap();
+    let defaults = AppDefaults::try_for_app(&AppType::SshBastion).unwrap();
     assert_eq!(defaults.security.user, 0);
     assert_eq!(defaults.security.group, 0);
     assert_eq!(defaults.uid, 0);
@@ -40,7 +40,7 @@ fn ssh_bastion_runs_as_root() {
 
 #[test]
 fn ssh_bastion_has_required_capabilities() {
-    let defaults = AppDefaults::for_app(&AppType::SshBastion).unwrap();
+    let defaults = AppDefaults::try_for_app(&AppType::SshBastion).unwrap();
     let caps = &defaults.security.capabilities_add;
 
     let required = [
@@ -58,13 +58,13 @@ fn ssh_bastion_has_required_capabilities() {
 
 #[test]
 fn ssh_bastion_drops_all_capabilities() {
-    let defaults = AppDefaults::for_app(&AppType::SshBastion).unwrap();
+    let defaults = AppDefaults::try_for_app(&AppType::SshBastion).unwrap();
     assert_eq!(defaults.security.capabilities_drop, vec!["ALL".to_string()]);
 }
 
 #[test]
 fn ssh_bastion_security_flags() {
-    let defaults = AppDefaults::for_app(&AppType::SshBastion).unwrap();
+    let defaults = AppDefaults::try_for_app(&AppType::SshBastion).unwrap();
     assert_eq!(defaults.security.run_as_non_root, Some(false));
     assert_eq!(defaults.security.read_only_root_filesystem, Some(false));
     assert_eq!(defaults.security.allow_privilege_escalation, Some(false));
@@ -72,7 +72,7 @@ fn ssh_bastion_security_flags() {
 
 #[test]
 fn ssh_bastion_service_port_is_ssh() {
-    let defaults = AppDefaults::for_app(&AppType::SshBastion).unwrap();
+    let defaults = AppDefaults::try_for_app(&AppType::SshBastion).unwrap();
     assert_eq!(defaults.service.ports.len(), 1);
     assert_eq!(defaults.service.ports[0].name, "ssh");
     assert_eq!(defaults.service.ports[0].protocol, "TCP");
@@ -81,7 +81,7 @@ fn ssh_bastion_service_port_is_ssh() {
 
 #[test]
 fn ssh_bastion_has_host_keys_volume() {
-    let defaults = AppDefaults::for_app(&AppType::SshBastion).unwrap();
+    let defaults = AppDefaults::try_for_app(&AppType::SshBastion).unwrap();
     assert_eq!(defaults.persistence.volumes.len(), 1);
     let vol = &defaults.persistence.volumes[0];
     assert_eq!(vol.name, "host-keys");
@@ -96,55 +96,21 @@ fn ssh_bastion_has_host_keys_volume() {
 
 #[test]
 fn resolve_persistence_keeps_host_keys_with_no_override() {
-    let defaults = AppDefaults::for_app(&AppType::SshBastion).unwrap();
+    let defaults = AppDefaults::try_for_app(&AppType::SshBastion).unwrap();
     let app = make_app(AppType::SshBastion);
 
-    let persistence = defaults.resolve_persistence(&app);
+    let persistence = defaults.resolve_persistence(&app).unwrap();
 
     assert_eq!(persistence.volumes.len(), 1);
     assert_eq!(persistence.volumes[0].name, "host-keys");
     assert_eq!(persistence.volumes[0].mount_path, "/etc/ssh/keys");
 }
 
-/// A MediaStack-injected (or hand-written) persistence override that names
-/// unrelated volumes must not silently drop `host-keys` — that's the exact
-/// "REMOTE HOST IDENTIFICATION HAS CHANGED" regression from #305.
-#[test]
-fn resolve_persistence_restores_host_keys_dropped_by_override() {
-    let defaults = AppDefaults::for_app(&AppType::SshBastion).unwrap();
-    let mut app = make_app(AppType::SshBastion);
-    app.spec.persistence = Some(PersistenceSpec {
-        volumes: vec![PvcVolume {
-            name: "config".into(),
-            mount_path: "/config".into(),
-            access_mode: "ReadWriteOnce".into(),
-            size: "1Gi".into(),
-            storage_class: "fast-ssd".into(),
-            existing_claim_name: None,
-        }],
-        nfs_mounts: vec![],
-    });
-
-    let persistence = defaults.resolve_persistence(&app);
-
-    assert!(
-        persistence.volumes.iter().any(|v| v.name == "config"),
-        "user-specified volume must survive"
-    );
-    let host_keys = persistence
-        .volumes
-        .iter()
-        .find(|v| v.name == "host-keys")
-        .expect("host-keys volume must not be dropped by an unrelated persistence override");
-    assert_eq!(host_keys.mount_path, "/etc/ssh/keys");
-    assert_eq!(host_keys.size, "10Mi");
-}
-
 /// An override that explicitly names `host-keys` (e.g. to change its
 /// storage class or size) must win over the compiled default.
 #[test]
 fn resolve_persistence_respects_explicit_host_keys_override() {
-    let defaults = AppDefaults::for_app(&AppType::SshBastion).unwrap();
+    let defaults = AppDefaults::try_for_app(&AppType::SshBastion).unwrap();
     let mut app = make_app(AppType::SshBastion);
     app.spec.persistence = Some(PersistenceSpec {
         volumes: vec![PvcVolume {
@@ -156,116 +122,155 @@ fn resolve_persistence_respects_explicit_host_keys_override() {
             existing_claim_name: None,
         }],
         nfs_mounts: vec![],
+        ..Default::default()
     });
 
-    let persistence = defaults.resolve_persistence(&app);
+    let persistence = defaults.resolve_persistence(&app).unwrap();
 
     assert_eq!(persistence.volumes.len(), 1);
     assert_eq!(persistence.volumes[0].size, "50Mi");
     assert_eq!(persistence.volumes[0].storage_class, "custom-class");
 }
 
-/// Volume restoration generalizes beyond SshBastion (#367): Sonarr's compiled
-/// `config` and `downloads` volumes are just as load-bearing as SshBastion's
-/// `host-keys` — an unrelated override must not silently drop them.
-#[test]
-fn resolve_persistence_restores_dropped_default_volumes_for_any_app_type() {
-    let defaults = AppDefaults::for_app(&AppType::Sonarr).unwrap();
-    let mut app = make_app(AppType::Sonarr);
-    app.spec.persistence = Some(PersistenceSpec {
-        volumes: vec![PvcVolume {
-            name: "data".into(),
-            mount_path: "/data".into(),
-            access_mode: "ReadWriteOnce".into(),
-            size: "10Gi".into(),
-            storage_class: String::new(),
-            existing_claim_name: None,
-        }],
-        nfs_mounts: vec![],
-    });
-
-    let persistence = defaults.resolve_persistence(&app);
-
-    assert!(
-        persistence.volumes.iter().any(|v| v.name == "data"),
-        "user-specified volume must survive"
-    );
-    assert!(
-        persistence.volumes.iter().any(|v| v.name == "config"),
-        "Sonarr's default config volume must not be silently dropped"
-    );
-    assert!(
-        persistence.volumes.iter().any(|v| v.name == "downloads"),
-        "Sonarr's default downloads volume must not be silently dropped"
-    );
-    assert!(!persistence.volumes.iter().any(|v| v.name == "host-keys"));
+/// Minimal `PvcVolume` for override volumes in tests where only the name and
+/// mount_path matter.
+fn vol(name: &str, mount_path: &str) -> PvcVolume {
+    PvcVolume {
+        name: name.into(),
+        mount_path: mount_path.into(),
+        access_mode: "ReadWriteOnce".into(),
+        size: "1Gi".into(),
+        storage_class: String::new(),
+        existing_claim_name: None,
+    }
 }
 
-/// Subgen's `models` volume (added conditionally in `try_for_app`, not one of
-/// the base security-profile volumes) must also survive a dropped override.
+/// Volume restoration (#305, generalized beyond SshBastion by #367) applies
+/// to every app type's compiled default volumes: an unrelated persistence
+/// override must not silently drop them.
 #[test]
-fn resolve_persistence_restores_subgen_models_volume() {
-    let defaults = AppDefaults::for_app(&AppType::Subgen).unwrap();
-    let mut app = make_app(AppType::Subgen);
-    app.spec.persistence = Some(PersistenceSpec {
-        volumes: vec![PvcVolume {
-            name: "unrelated".into(),
-            mount_path: "/unrelated".into(),
-            access_mode: "ReadWriteOnce".into(),
-            size: "1Gi".into(),
-            storage_class: String::new(),
-            existing_claim_name: None,
-        }],
-        nfs_mounts: vec![],
-    });
+fn resolve_persistence_restores_dropped_default_volume() {
+    let cases: &[(AppType, &str, &str)] = &[
+        (AppType::SshBastion, "host-keys", "/etc/ssh/keys"),
+        (AppType::Sonarr, "config", "/config"),
+        (AppType::Sonarr, "downloads", "/downloads"),
+        (AppType::Subgen, "models", "/subgen/models"),
+        // Maintainerr's config volume is relocated to /opt/data (#131); the
+        // restored volume must carry that relocation, not the generic /config.
+        (AppType::Maintainerr, "config", "/opt/data"),
+    ];
 
-    let persistence = defaults.resolve_persistence(&app);
+    for (app_type, expected_name, expected_mount_path) in cases.iter().cloned() {
+        let defaults = AppDefaults::try_for_app(&app_type).unwrap();
+        let mut app = make_app(app_type.clone());
+        app.spec.persistence = Some(PersistenceSpec {
+            volumes: vec![vol("unrelated", "/unrelated")],
+            nfs_mounts: vec![],
+            ..Default::default()
+        });
 
-    let models = persistence
-        .volumes
-        .iter()
-        .find(|v| v.name == "models")
-        .expect("Subgen's models volume must not be dropped by an unrelated override");
-    assert_eq!(models.mount_path, "/subgen/models");
+        let persistence = defaults
+            .resolve_persistence(&app)
+            .unwrap_or_else(|e| panic!("resolve_persistence failed for {app_type:?}: {e}"));
+
+        assert!(
+            persistence.volumes.iter().any(|v| v.name == "unrelated"),
+            "user-specified volume must survive for {app_type:?}"
+        );
+        let restored = persistence
+            .volumes
+            .iter()
+            .find(|v| v.name == expected_name)
+            .unwrap_or_else(|| {
+                panic!(
+                    "{expected_name} must not be dropped by an unrelated override for {app_type:?}"
+                )
+            });
+        assert_eq!(
+            restored.mount_path, expected_mount_path,
+            "wrong mount_path for {expected_name} on {app_type:?}"
+        );
+    }
 }
 
-/// Maintainerr's `config` volume is relocated to `/opt/data` (#131); the
-/// restored volume must carry that relocation, not the generic `/config`.
+/// `PersistenceSpec::merge_with` carries the override's own tombstones
+/// through even when the base has none.
 #[test]
-fn resolve_persistence_restores_maintainerr_config_with_relocated_mount() {
-    let defaults = AppDefaults::for_app(&AppType::Maintainerr).unwrap();
-    let mut app = make_app(AppType::Maintainerr);
-    app.spec.persistence = Some(PersistenceSpec {
+fn persistence_merge_with_carries_removed_default_volumes() {
+    let override_spec = PersistenceSpec {
+        volumes: vec![],
+        nfs_mounts: vec![],
+        removed_default_volumes: vec!["downloads".into()],
+    };
+    let base = PersistenceSpec {
         volumes: vec![PvcVolume {
-            name: "unrelated".into(),
-            mount_path: "/unrelated".into(),
+            name: "downloads".into(),
+            mount_path: "/downloads".into(),
             access_mode: "ReadWriteOnce".into(),
-            size: "1Gi".into(),
+            size: "100Gi".into(),
             storage_class: String::new(),
             existing_claim_name: None,
         }],
         nfs_mounts: vec![],
-    });
+        removed_default_volumes: vec![],
+    };
 
-    let persistence = defaults.resolve_persistence(&app);
+    let merged = override_spec.merge_with(&base);
 
-    let config = persistence
-        .volumes
-        .iter()
-        .find(|v| v.name == "config")
-        .expect("Maintainerr's config volume must not be dropped by an unrelated override");
-    assert_eq!(config.mount_path, "/opt/data");
+    assert_eq!(
+        merged.removed_default_volumes,
+        vec!["downloads".to_string()]
+    );
+}
+
+/// A base-layer tombstone (e.g. a MediaStack's `spec.defaults.persistence`)
+/// is a removal policy, not an overridable value — it must survive a member
+/// app that sets its own persistence override, or the tombstoned volume
+/// silently comes back and collides (#386).
+#[test]
+fn persistence_merge_with_unions_removed_default_volumes_from_base() {
+    let override_spec = PersistenceSpec {
+        volumes: vec![PvcVolume {
+            name: "media".into(),
+            mount_path: "/media".into(),
+            access_mode: "ReadWriteOnce".into(),
+            size: "50Gi".into(),
+            storage_class: String::new(),
+            existing_claim_name: None,
+        }],
+        nfs_mounts: vec![],
+        removed_default_volumes: vec!["config".into()],
+    };
+    let base = PersistenceSpec {
+        volumes: vec![],
+        nfs_mounts: vec![],
+        removed_default_volumes: vec!["downloads".into()],
+    };
+
+    let merged = override_spec.merge_with(&base);
+
+    assert_eq!(merged.removed_default_volumes.len(), 2);
+    assert!(
+        merged
+            .removed_default_volumes
+            .contains(&"downloads".to_string())
+    );
+    assert!(
+        merged
+            .removed_default_volumes
+            .contains(&"config".to_string())
+    );
 }
 
 #[test]
 fn ssh_bastion_has_no_nfs_mounts() {
-    let defaults = AppDefaults::for_app(&AppType::SshBastion).unwrap();
+    let defaults = AppDefaults::try_for_app(&AppType::SshBastion).unwrap();
     assert!(defaults.persistence.nfs_mounts.is_empty());
 }
 
 #[test]
 fn ssh_bastion_resources() {
-    let defaults = AppDefaults::for_app(&AppType::SshBastion).unwrap();
+    let defaults = AppDefaults::try_for_app(&AppType::SshBastion).unwrap();
     assert_eq!(defaults.resources.limits.cpu, "500m");
     assert_eq!(defaults.resources.limits.memory, "256Mi");
     assert_eq!(defaults.resources.requests.cpu, "100m");
@@ -274,7 +279,7 @@ fn ssh_bastion_resources() {
 
 #[test]
 fn ssh_bastion_has_tz_env() {
-    let defaults = AppDefaults::for_app(&AppType::SshBastion).unwrap();
+    let defaults = AppDefaults::try_for_app(&AppType::SshBastion).unwrap();
     assert_eq!(defaults.env.len(), 1);
     assert_eq!(defaults.env[0].name, "TZ");
     assert_eq!(defaults.env[0].value, "UTC");
@@ -282,7 +287,7 @@ fn ssh_bastion_has_tz_env() {
 
 #[test]
 fn ssh_bastion_has_no_app_config() {
-    let defaults = AppDefaults::for_app(&AppType::SshBastion).unwrap();
+    let defaults = AppDefaults::try_for_app(&AppType::SshBastion).unwrap();
     assert!(defaults.app_config.is_none());
 }
 
@@ -292,7 +297,7 @@ fn ssh_bastion_has_no_app_config() {
 
 #[test]
 fn ssh_bastion_uses_tcp_probes() {
-    let defaults = AppDefaults::for_app(&AppType::SshBastion).unwrap();
+    let defaults = AppDefaults::try_for_app(&AppType::SshBastion).unwrap();
 
     assert!(matches!(
         defaults.probes.liveness.probe_type,
@@ -306,7 +311,7 @@ fn ssh_bastion_uses_tcp_probes() {
 
 #[test]
 fn tcp_probe_liveness_parameters() {
-    let defaults = AppDefaults::for_app(&AppType::SshBastion).unwrap();
+    let defaults = AppDefaults::try_for_app(&AppType::SshBastion).unwrap();
     let liveness = &defaults.probes.liveness;
 
     assert_eq!(liveness.initial_delay_seconds, 30);
@@ -321,7 +326,7 @@ fn tcp_probe_liveness_parameters() {
 
 #[test]
 fn tcp_probe_readiness_parameters() {
-    let defaults = AppDefaults::for_app(&AppType::SshBastion).unwrap();
+    let defaults = AppDefaults::try_for_app(&AppType::SshBastion).unwrap();
     let readiness = &defaults.probes.readiness;
 
     assert_eq!(readiness.initial_delay_seconds, 10);
@@ -332,7 +337,7 @@ fn tcp_probe_readiness_parameters() {
 
 #[test]
 fn tcp_probes_have_empty_command() {
-    let defaults = AppDefaults::for_app(&AppType::SshBastion).unwrap();
+    let defaults = AppDefaults::try_for_app(&AppType::SshBastion).unwrap();
     assert!(defaults.probes.liveness.command.is_empty());
     assert!(defaults.probes.readiness.command.is_empty());
 }
@@ -351,7 +356,7 @@ fn http_apps_use_http_probes_not_tcp() {
     ];
 
     for app_type in &http_apps {
-        let defaults = AppDefaults::for_app(app_type).unwrap();
+        let defaults = AppDefaults::try_for_app(app_type).unwrap();
         assert!(
             matches!(defaults.probes.liveness.probe_type, ProbeType::Http),
             "{app_type} should use Http liveness probe"
@@ -376,7 +381,7 @@ fn http_apps_liveness_timeout_tolerates_dotnet_gc_pauses() {
     let dotnet_apps = vec![AppType::Sonarr, AppType::Radarr, AppType::Lidarr];
 
     for app_type in &dotnet_apps {
-        let defaults = AppDefaults::for_app(app_type).unwrap();
+        let defaults = AppDefaults::try_for_app(app_type).unwrap();
         assert_eq!(
             defaults.probes.liveness.timeout_seconds, 5,
             "{app_type} liveness timeout should tolerate brief GC-pause stalls"
@@ -518,7 +523,7 @@ fn subgen_sync_spec_default_values() {
 
 #[test]
 fn subgen_has_models_pvc() {
-    let defaults = AppDefaults::for_app(&AppType::Subgen).unwrap();
+    let defaults = AppDefaults::try_for_app(&AppType::Subgen).unwrap();
     let has_models = defaults
         .persistence
         .volumes
@@ -532,7 +537,7 @@ fn subgen_has_models_pvc() {
 
 #[test]
 fn subgen_default_env_includes_transcribe_device() {
-    let defaults = AppDefaults::for_app(&AppType::Subgen).unwrap();
+    let defaults = AppDefaults::try_for_app(&AppType::Subgen).unwrap();
     let has_device = defaults
         .env
         .iter()
@@ -542,7 +547,7 @@ fn subgen_default_env_includes_transcribe_device() {
 
 #[test]
 fn subgen_default_env_includes_whisper_model() {
-    let defaults = AppDefaults::for_app(&AppType::Subgen).unwrap();
+    let defaults = AppDefaults::try_for_app(&AppType::Subgen).unwrap();
     let has_model = defaults
         .env
         .iter()
@@ -552,7 +557,7 @@ fn subgen_default_env_includes_whisper_model() {
 
 #[test]
 fn bazarr_defaults_are_linuxserver_profile() {
-    let defaults = AppDefaults::for_app(&AppType::Bazarr).unwrap();
+    let defaults = AppDefaults::try_for_app(&AppType::Bazarr).unwrap();
     // Bazarr uses linuxserver security profile — verify it builds without panicking
     // (build.rs codegen would have panicked at compile time if image-defaults.toml was
     // wrong)
@@ -564,7 +569,7 @@ fn bazarr_defaults_are_linuxserver_profile() {
 // ---------------------------------------------------------------------------
 
 fn assert_download_memory(app: &AppType) {
-    let defaults = AppDefaults::for_app(app).unwrap();
+    let defaults = AppDefaults::try_for_app(app).unwrap();
     assert_eq!(defaults.resources.limits.memory, "1Gi");
     assert_eq!(defaults.resources.requests.memory, "256Mi");
 }
@@ -585,7 +590,7 @@ fn download_apps_get_higher_memory_default() {
 #[test]
 fn non_download_apps_keep_lower_memory_default() {
     // Prowlarr is an indexer, not a download client
-    let defaults = AppDefaults::for_app(&AppType::Prowlarr).unwrap();
+    let defaults = AppDefaults::try_for_app(&AppType::Prowlarr).unwrap();
     assert_eq!(defaults.resources.limits.memory, "512Mi");
     assert_eq!(defaults.resources.requests.memory, "128Mi");
 }
@@ -598,7 +603,7 @@ fn non_download_apps_keep_lower_memory_default() {
 fn maintainerr_config_volume_mount_path() {
     // Issue #131: Maintainerr v3 stores data at /opt/data, not /config
     let defaults =
-        AppDefaults::for_app(&AppType::Maintainerr).expect("Maintainerr defaults should load");
+        AppDefaults::try_for_app(&AppType::Maintainerr).expect("Maintainerr defaults should load");
     let config_vol = defaults
         .persistence
         .volumes
@@ -632,7 +637,7 @@ fn maintainerr_config_volume_mount_path_via_try_for_app() {
 fn maintainerr_has_higher_memory_for_large_scans() {
     // Issue #138: Maintainerr needs ≥1Gi for large library scans
     let defaults =
-        AppDefaults::for_app(&AppType::Maintainerr).expect("Maintainerr defaults should load");
+        AppDefaults::try_for_app(&AppType::Maintainerr).expect("Maintainerr defaults should load");
     assert_eq!(
         defaults.resources.limits.memory, "2Gi",
         "Maintainerr needs 2Gi memory limit for large library scans"
@@ -646,7 +651,7 @@ fn maintainerr_has_higher_memory_for_large_scans() {
 #[test]
 fn subgen_has_higher_memory_for_whisper_inference() {
     // Subgen uses Whisper medium model by default, needs ≥1.5Gi memory
-    let defaults = AppDefaults::for_app(&AppType::Subgen).expect("Subgen defaults should load");
+    let defaults = AppDefaults::try_for_app(&AppType::Subgen).expect("Subgen defaults should load");
     assert_eq!(
         defaults.resources.limits.memory, "2Gi",
         "Subgen needs 2Gi memory limit for Whisper inference"
@@ -656,10 +661,295 @@ fn subgen_has_higher_memory_for_whisper_inference() {
         "Subgen should request 512Mi"
     );
 }
+/// An admin who explicitly tombstones a default volume via
+/// `removedDefaultVolumes` must have it actually removed — not silently
+/// restored by the very safety net #367 added (#376).
+#[test]
+fn resolve_persistence_honors_removed_default_volumes_tombstone() {
+    let defaults = AppDefaults::try_for_app(&AppType::Sonarr).unwrap();
+    let mut app = make_app(AppType::Sonarr);
+    app.spec.persistence = Some(PersistenceSpec {
+        volumes: vec![],
+        nfs_mounts: vec![],
+        removed_default_volumes: vec!["downloads".into()],
+    });
+
+    let persistence = defaults.resolve_persistence(&app).unwrap();
+
+    assert!(
+        !persistence.volumes.iter().any(|v| v.name == "downloads"),
+        "tombstoned default volume must not be restored"
+    );
+    assert!(
+        persistence.volumes.iter().any(|v| v.name == "config"),
+        "non-tombstoned default volumes must still be restored"
+    );
+}
+
+/// Two persistence entries claiming the same `mount_path` produce an invalid
+/// pod spec downstream (two `volumeMounts` at one path) — this must fail the
+/// reconcile loudly instead of silently reaching the API server (#376).
+#[test]
+fn resolve_persistence_errors_on_mount_path_collision() {
+    let defaults = AppDefaults::try_for_app(&AppType::Sonarr).unwrap();
+    let mut app = make_app(AppType::Sonarr);
+    app.spec.persistence = Some(PersistenceSpec {
+        volumes: vec![],
+        nfs_mounts: vec![NfsMount {
+            name: "downloads-nfs".into(),
+            server: "nas.local".into(),
+            path: "/export/downloads".into(),
+            mount_path: "/downloads".into(),
+            read_only: false,
+        }],
+        removed_default_volumes: vec![],
+    });
+
+    let err = defaults.resolve_persistence(&app).expect_err(
+        "an NFS mount colliding with the still-restored 'downloads' default PVC must fail loudly",
+    );
+
+    assert!(
+        err.contains("/downloads"),
+        "error should name the colliding mount_path, got: {err}"
+    );
+}
+
+/// Tombstoning the colliding default volume (rather than leaving it to
+/// collide) is exactly how an admin is meant to resolve this (#376) — it
+/// must not also trip the collision check.
+#[test]
+fn resolve_persistence_removed_default_volume_allows_nfs_mount_at_same_path() {
+    let defaults = AppDefaults::try_for_app(&AppType::Sonarr).unwrap();
+    let mut app = make_app(AppType::Sonarr);
+    app.spec.persistence = Some(PersistenceSpec {
+        volumes: vec![],
+        nfs_mounts: vec![NfsMount {
+            name: "downloads-nfs".into(),
+            server: "nas.local".into(),
+            path: "/export/downloads".into(),
+            mount_path: "/downloads".into(),
+            read_only: false,
+        }],
+        removed_default_volumes: vec!["downloads".into()],
+    });
+
+    let persistence = defaults.resolve_persistence(&app).expect(
+        "tombstoning the colliding default volume must let the override's NFS mount through",
+    );
+
+    assert!(
+        !persistence.volumes.iter().any(|v| v.name == "downloads"),
+        "tombstoned default volume must not be restored"
+    );
+    assert!(
+        persistence
+            .nfs_mounts
+            .iter()
+            .any(|m| m.mount_path == "/downloads")
+    );
+    assert!(
+        persistence.volumes.iter().any(|v| v.name == "config"),
+        "other default volumes must still be restored"
+    );
+}
+
+/// Every override-mount collision case #402 (and its follow-up) covers:
+/// trailing/doubled-slash normalization against a compiled default, `..`
+/// traversal normalization (#465), and each fixed operator-injected mount
+/// `build_volume_mounts` adds outside `PersistenceSpec` (present only under
+/// the app type + config listed). Negative cases confirm `/run/secrets/admin`
+/// is reserved only when `adminCredentials` is actually set, and that a `..`
+/// path resolving somewhere non-reserved is accepted rather than rejected
+/// outright.
+#[test]
+fn resolve_persistence_mount_path_collisions() {
+    struct Case {
+        app_type: AppType,
+        setup: fn(&mut ServarrApp),
+        mount_path: &'static str,
+        expect_collision: bool,
+        // `find_mount_path_collision` names the *reserved* entry's raw path in
+        // the error, not the colliding override's — for a `..` traversal case
+        // those differ, so the assertion needle must be overridable per case
+        // instead of always deriving from `mount_path` (#465).
+        expect_err_contains: Option<&'static str>,
+    }
+    fn no_setup(_app: &mut ServarrApp) {}
+    fn with_admin_credentials(app: &mut ServarrApp) {
+        app.spec.admin_credentials = Some(AdminCredentialsSpec {
+            secret_name: "transmission-admin".into(),
+        });
+    }
+    fn with_prowlarr_custom_definitions(app: &mut ServarrApp) {
+        app.spec.app_config = Some(AppConfig::Prowlarr(ProwlarrConfig {
+            custom_definitions: vec![IndexerDefinition {
+                name: "my-tracker".into(),
+                content: "---".into(),
+            }],
+        }));
+    }
+    fn with_ssh_bastion_authorized_key(app: &mut ServarrApp) {
+        app.spec.app_config = Some(AppConfig::SshBastion(SshBastionConfig {
+            users: vec![SshUser {
+                name: "alice".into(),
+                uid: 1000,
+                gid: 1000,
+                public_keys: "ssh-ed25519 AAAA...".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }));
+    }
+
+    let cases = [
+        Case {
+            app_type: AppType::Sonarr,
+            setup: no_setup,
+            mount_path: "/downloads/",
+            expect_collision: true,
+            expect_err_contains: None,
+        },
+        Case {
+            app_type: AppType::Sonarr,
+            setup: no_setup,
+            mount_path: "/downloads//",
+            expect_collision: true,
+            expect_err_contains: None,
+        },
+        Case {
+            app_type: AppType::Transmission,
+            setup: no_setup,
+            mount_path: "/watch",
+            expect_collision: true,
+            expect_err_contains: None,
+        },
+        Case {
+            app_type: AppType::Transmission,
+            setup: with_admin_credentials,
+            mount_path: "/run/secrets/admin",
+            expect_collision: true,
+            expect_err_contains: None,
+        },
+        Case {
+            app_type: AppType::Transmission,
+            setup: no_setup,
+            mount_path: "/run/secrets/admin",
+            expect_collision: false,
+            expect_err_contains: None,
+        },
+        Case {
+            app_type: AppType::Transmission,
+            setup: with_admin_credentials,
+            mount_path: "/custom-cont-init.d/99-transmission-auth.sh",
+            expect_collision: true,
+            expect_err_contains: None,
+        },
+        Case {
+            app_type: AppType::Prowlarr,
+            setup: with_prowlarr_custom_definitions,
+            mount_path: "/config/Definitions/Custom",
+            expect_collision: true,
+            expect_err_contains: None,
+        },
+        Case {
+            app_type: AppType::SshBastion,
+            setup: with_ssh_bastion_authorized_key,
+            mount_path: "/etc/authorized_keys",
+            expect_collision: true,
+            expect_err_contains: None,
+        },
+        Case {
+            app_type: AppType::Transmission,
+            setup: no_setup,
+            mount_path: "/watch/foo/../../watch",
+            expect_collision: true,
+            expect_err_contains: Some("reserved by the operator"),
+        },
+        Case {
+            app_type: AppType::Sonarr,
+            setup: no_setup,
+            mount_path: "/downloads/../music",
+            expect_collision: false,
+            expect_err_contains: None,
+        },
+    ];
+
+    for case in cases {
+        let defaults = AppDefaults::try_for_app(&case.app_type).unwrap();
+        let mut app = make_app(case.app_type.clone());
+        (case.setup)(&mut app);
+        app.spec.persistence = Some(PersistenceSpec {
+            volumes: vec![],
+            nfs_mounts: vec![NfsMount {
+                name: "override-nfs".into(),
+                server: "nas.local".into(),
+                path: "/export".into(),
+                mount_path: case.mount_path.into(),
+                read_only: false,
+            }],
+            removed_default_volumes: vec![],
+        });
+
+        let result = defaults.resolve_persistence(&app);
+        if case.expect_collision {
+            let err = match result {
+                Err(e) => e,
+                Ok(_) => panic!(
+                    "expected a collision for {:?} at '{}'",
+                    case.app_type, case.mount_path
+                ),
+            };
+            let needle = case
+                .expect_err_contains
+                .unwrap_or_else(|| case.mount_path.trim_end_matches('/'));
+            assert!(
+                err.contains(needle),
+                "error should contain '{needle}' for mount_path '{}', got: {err}",
+                case.mount_path
+            );
+        } else if let Err(e) = result {
+            panic!(
+                "expected no collision for {:?} at '{}', got: {e}",
+                case.app_type, case.mount_path
+            );
+        }
+    }
+}
+
+/// The reserved-mount collision message must name the operator's mount, not
+/// misdirect the user to look for a "persistence entry" that isn't in their
+/// spec (#402 follow-up).
+#[test]
+fn resolve_persistence_collision_message_names_operator_reserved_mount() {
+    let defaults = AppDefaults::try_for_app(&AppType::Transmission).unwrap();
+    let mut app = make_app(AppType::Transmission);
+    app.spec.persistence = Some(PersistenceSpec {
+        volumes: vec![],
+        nfs_mounts: vec![NfsMount {
+            name: "watch-nfs".into(),
+            server: "nas.local".into(),
+            path: "/export/watch".into(),
+            mount_path: "/watch".into(),
+            read_only: false,
+        }],
+        removed_default_volumes: vec![],
+    });
+
+    let err = defaults.resolve_persistence(&app).unwrap_err();
+    assert!(
+        err.contains("reserved by the operator"),
+        "error should say the mount is operator-reserved, not imply another persistence entry, got: {err}"
+    );
+    assert!(
+        err.contains("watch-nfs"),
+        "error should name the user's own entry, got: {err}"
+    );
+}
 
 #[test]
 fn seerr_defaults_use_fixed_uid_gid_and_app_config_mount_path() {
-    let defaults = AppDefaults::for_app(&AppType::Seerr).unwrap();
+    let defaults = AppDefaults::try_for_app(&AppType::Seerr).unwrap();
     assert_eq!(defaults.uid, 1000);
     assert_eq!(defaults.gid, 1000);
     assert_eq!(defaults.security.user, 1000);

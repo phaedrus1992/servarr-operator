@@ -43,6 +43,7 @@ async fn mock_client(server_uri: &str) -> kube::Client {
                 insecure_skip_tls_verify: Some(true),
                 ..Default::default()
             }),
+            ..Default::default()
         }],
         contexts: vec![NamedContext {
             name: "test".into(),
@@ -52,10 +53,12 @@ async fn mock_client(server_uri: &str) -> kube::Client {
                 namespace: Some("test".into()),
                 ..Default::default()
             }),
+            ..Default::default()
         }],
         auth_infos: vec![NamedAuthInfo {
             name: "test".into(),
             auth_info: Some(AuthInfo::default()),
+            ..Default::default()
         }],
         current_context: Some("test".into()),
         ..Default::default()
@@ -77,6 +80,7 @@ fn test_context(client: kube::Client) -> Arc<Context> {
             instance: None,
         },
         watch_namespace: Some("test".into()),
+        app_api_base_override: None,
     })
 }
 
@@ -106,6 +110,7 @@ fn test_context_with_legacy_seerr_override(client: kube::Client) -> Arc<Context>
             instance: None,
         },
         watch_namespace: Some("test".into()),
+        app_api_base_override: None,
     })
 }
 
@@ -132,6 +137,7 @@ fn test_context_with_stale_sonarr_override(client: kube::Client) -> Arc<Context>
             instance: None,
         },
         watch_namespace: Some("test".into()),
+        app_api_base_override: None,
     })
 }
 
@@ -161,6 +167,7 @@ fn test_context_with_current_sonarr_override(client: kube::Client) -> Arc<Contex
             instance: None,
         },
         watch_namespace: Some("test".into()),
+        app_api_base_override: None,
     })
 }
 
@@ -192,6 +199,7 @@ fn test_context_with_partial_repo_only_sonarr_override(client: kube::Client) -> 
             instance: None,
         },
         watch_namespace: Some("test".into()),
+        app_api_base_override: None,
     })
 }
 
@@ -1604,6 +1612,44 @@ async fn test_error_policy_returns_requeue_60s() {
         action,
         Action::requeue(Duration::from_secs(60)),
         "error_policy should requeue after 60 seconds"
+    );
+}
+
+/// Verify `Error::public_summary` returns safe strings for every variant.
+#[test]
+fn test_error_public_summary_all_variants() {
+    let ser_err = servarr_operator::controller::Error::Serialization(
+        serde_json::from_str::<serde_json::Value>("invalid").unwrap_err(),
+    );
+    assert!(
+        ser_err.public_summary().starts_with("Serialization error"),
+        "Serialization is built from operator-owned structs only, safe to pass through: {}",
+        ser_err.public_summary()
+    );
+
+    let app_err = servarr_operator::controller::Error::AppDefaults(
+        "no image defaults for app: sonarr".to_string(),
+    );
+    assert_eq!(
+        app_err.public_summary(),
+        "app defaults error: no image defaults for app: sonarr"
+    );
+
+    let kube_err =
+        servarr_operator::controller::Error::Kube(kube::Error::Api(Box::new(kube::core::Status {
+            code: 403,
+            message: "secrets \"super-secret-name\" is forbidden".to_string(),
+            reason: "Forbidden".to_string(),
+            ..Default::default()
+        })));
+    let summary = kube_err.public_summary();
+    assert!(
+        summary.contains("403"),
+        "should keep status code: {summary}"
+    );
+    assert!(
+        !summary.contains("super-secret-name"),
+        "must not leak the raw API server message: {summary}"
     );
 }
 

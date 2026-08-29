@@ -14,7 +14,9 @@ use kube::Client;
 use kube::api::{Api, ListParams};
 use serde::{Deserialize, Serialize};
 use servarr_api::k8s::{kube_err_public_summary, kube_err_summary};
-use servarr_crds::{AppConfig, AppType, RouteType, ServarrApp, ServarrAppSpec, SshMode};
+use servarr_crds::{
+    AppConfig, AppDefaults, AppType, RouteType, ServarrApp, ServarrAppSpec, SshMode,
+};
 use tracing::{debug, info, warn};
 
 use crate::controller::normalize_backup_schedule;
@@ -235,6 +237,9 @@ async fn validate_spec(
 
     // Rule 5: Volume names in persistence must be unique
     validate_unique_volume_names(&parsed, &mut errors);
+
+    // Rule 5b: removedDefaultVolumes must name an actual default volume
+    validate_removed_default_volumes(&parsed, &mut errors);
 
     // Rule 6: Duplicate app+instance detection on CREATE
     if operation == "CREATE" && !namespace.is_empty() {
@@ -511,6 +516,30 @@ fn validate_unique_volume_names(spec: &ServarrAppSpec, errors: &mut Vec<String>)
             if !nfs_seen.insert(&nfs.name) {
                 errors.push(format!("duplicate nfsMount name: '{}'", nfs.name));
             }
+        }
+    }
+}
+
+/// `removedDefaultVolumes` names a compiled default volume to drop. A typo
+/// silently no-ops (the tombstone matches nothing), so reject any entry that
+/// doesn't match one of this app type's actual default volume names.
+fn validate_removed_default_volumes(spec: &ServarrAppSpec, errors: &mut Vec<String>) {
+    let Some(ref persistence) = spec.persistence else {
+        return;
+    };
+    if persistence.removed_default_volumes.is_empty() {
+        return;
+    }
+    let Ok(defaults) = AppDefaults::try_for_app(&spec.app) else {
+        return;
+    };
+    for name in &persistence.removed_default_volumes {
+        if !defaults.persistence.volumes.iter().any(|v| &v.name == name) {
+            errors.push(format!(
+                "persistence.removedDefaultVolumes references '{name}', which is not a default \
+                 volume for app type '{}'",
+                spec.app
+            ));
         }
     }
 }
@@ -1169,6 +1198,7 @@ mod tests {
                 },
             ],
             nfs_mounts: vec![],
+            ..Default::default()
         });
         let mut errors = Vec::new();
         validate_unique_volume_names(&spec, &mut errors);
@@ -1192,6 +1222,7 @@ mod tests {
                 },
             ],
             nfs_mounts: vec![],
+            ..Default::default()
         });
         let mut errors = Vec::new();
         validate_unique_volume_names(&spec, &mut errors);
@@ -1220,11 +1251,47 @@ mod tests {
                     ..Default::default()
                 },
             ],
+            ..Default::default()
         });
         let mut errors = Vec::new();
         validate_unique_volume_names(&spec, &mut errors);
         assert_eq!(errors.len(), 1);
         assert!(errors[0].contains("duplicate nfsMount name"));
+    }
+
+    // ── validate_removed_default_volumes ──
+
+    #[test]
+    fn removed_default_volumes_valid_name_ok() {
+        let mut spec = minimal_spec(AppType::Sonarr);
+        spec.persistence = Some(PersistenceSpec {
+            removed_default_volumes: vec!["downloads".into()],
+            ..Default::default()
+        });
+        let mut errors = Vec::new();
+        validate_removed_default_volumes(&spec, &mut errors);
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn removed_default_volumes_typo_rejected() {
+        let mut spec = minimal_spec(AppType::Sonarr);
+        spec.persistence = Some(PersistenceSpec {
+            removed_default_volumes: vec!["download".into()],
+            ..Default::default()
+        });
+        let mut errors = Vec::new();
+        validate_removed_default_volumes(&spec, &mut errors);
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("download"));
+    }
+
+    #[test]
+    fn removed_default_volumes_empty_ok() {
+        let spec = minimal_spec(AppType::Sonarr);
+        let mut errors = Vec::new();
+        validate_removed_default_volumes(&spec, &mut errors);
+        assert!(errors.is_empty());
     }
 
     // ── validate_transmission_settings ──
@@ -1454,6 +1521,7 @@ mod tests {
                 ..Default::default()
             }],
             nfs_mounts: vec![],
+            ..Default::default()
         });
         let mut errors = Vec::new();
         validate_ssh_security_context(&spec, &mut errors);
@@ -1521,6 +1589,7 @@ mod tests {
                 ..Default::default()
             }],
             nfs_mounts: vec![],
+            ..Default::default()
         });
         let mut errors = Vec::new();
         validate_ssh_security_context(&spec, &mut errors);
@@ -1580,6 +1649,7 @@ mod tests {
                 ..Default::default()
             }],
             nfs_mounts: vec![],
+            ..Default::default()
         });
         let mut errors = Vec::new();
         validate_ssh_security_context(&spec, &mut errors);

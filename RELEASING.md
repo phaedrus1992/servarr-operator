@@ -16,29 +16,34 @@ multi-arch image + Helm charts to GHCR and creates the GitHub Release.
    cargo install cargo-release
    ```
 
-3. On a release branch, run the version bump. This bumps the shared workspace
+3. Cut a prep branch off the newest release line (`release/N.x`, e.g.
+   `release/1.x`) and run the version bump. This bumps the shared workspace
    version, rolls `CHANGELOG.md`, bumps both `charts/*/Chart.yaml`, and makes a
    single `chore(release): X.Y.Z` commit. It does NOT tag or push.
 
    ```bash
-   git checkout -b release/x.y.z
+   git checkout release/1.x && git pull
+   git switch -c chore/release-prep
    cargo release <patch|minor|major>
    ```
 
    Add `--execute` to actually apply (cargo-release defaults to a dry run).
 
-4. Open a PR for the release branch and merge it to `main`.
+4. Open a PR for the prep branch into `release/1.x` and merge it.
 
-5. Tag the merged commit and push the tag:
+5. Tag the merged commit on `release/1.x` and push the tag:
 
    ```bash
-   git checkout main && git pull
+   git checkout release/1.x && git pull
    git tag vX.Y.Z
    git push origin vX.Y.Z
    ```
 
    `release.yaml` then verifies the tag matches the version and changelog,
    builds, and publishes.
+
+   Forward-merging `release/1.x` back into `main` (so `main` carries the
+   release fixes) is automated separately — see issue #124.
 
 ## Notes
 

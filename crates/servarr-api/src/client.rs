@@ -29,13 +29,15 @@ impl ApiError {
     /// downstream API may echo back the submitted credential (API keys, tokens,
     /// passwords) in a validation error message.
     ///
-    /// Matches exhaustively (no wildcard) so a new variant is a compile error here,
-    /// not a silent leak. `Request` used to fall through a wildcard to
-    /// `reqwest::Error`'s `Display`, which appends the full request URL — several
-    /// clients (Sabnzbd, Tautulli) send API keys and admin passwords as query
-    /// parameters, so that URL can carry credentials. `OperationFailed` used to fall
-    /// through the same wildcard; its `message` is upstream-controlled response
-    /// content (Maintainerr's NOK envelope) and can echo a submitted `apiKey` back.
+    /// Deliberately an exhaustive match with no wildcard arm: a future variant that
+    /// carries response-body content must add its own case here rather than silently
+    /// falling through to `Display` (which is unsanitized by default). `Request` gets
+    /// its own reduction rather than `self.to_string()` — `reqwest::Error`'s `Display`
+    /// appends the full request URL, and Sabnzbd/Tautulli send API keys and admin
+    /// passwords as query parameters, so that URL can carry credentials.
+    /// `OperationFailed`'s `message` is upstream-controlled response content
+    /// (Maintainerr's `{status:"NOK", message}` envelope) and can echo a submitted
+    /// `apiKey` back the same way.
     pub fn log_summary(&self) -> String {
         match self {
             Self::ApiResponse { status, .. } => format!("HTTP API error (status: {status})"),
@@ -184,12 +186,20 @@ mod tests {
 
     #[test]
     fn log_summary_hides_message_for_operation_failed() {
+        // The Maintainerr {status:"NOK", message} envelope lifts `message` verbatim from
+        // the upstream response body (#398 follow-up).
         let err = ApiError::OperationFailed {
             message: "rejected apiKey=SUPER-SECRET-KEY".to_string(),
         };
         let summary = err.log_summary();
         assert_eq!(summary, "operation rejected by API");
         assert!(!summary.contains("SUPER-SECRET-KEY"));
+    }
+
+    #[test]
+    fn log_summary_invalid_api_key_matches_display() {
+        let err = ApiError::InvalidApiKey;
+        assert_eq!(err.log_summary(), err.to_string());
     }
 
     /// Regression test for the credential-leak this fix closes: `reqwest::Error`'s `Display`

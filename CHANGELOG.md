@@ -107,12 +107,17 @@ status; and adds a startup check that warns when installed CRDs lag the running 
 ## [1.3.0] - 2026-08-07
 
 Migrates Overseerr support to its successor, Seerr; adds Transmission download-data self-heal and
-fixes the `apiHealthCheck.intervalSeconds` throttle; restores dropped default persistence volumes
-(SSH bastion host keys and others) across overrides; and sweeps the controller/webhook to stop
-leaking raw upstream/Kubernetes errors into tenant-visible status and Events.
+fixes the `apiHealthCheck.intervalSeconds` throttle; hardens persistence (a way to intentionally
+drop a default volume, stronger mount-path collision detection); and sweeps the controller/webhook
+to stop leaking raw upstream/Kubernetes errors into tenant-visible status and Events.
 
 ### Added
 
+- Add `persistence.removedDefaultVolumes` to `ServarrApp` and `MediaStack`. The automatic
+  restore added for #367 always brings back a default volume a persistence override drops —
+  this field lets you say "I mean to drop this one" instead. Entries must name an actual
+  default volume for the app type; a typo is rejected at admission rather than silently
+  no-opping (#386).
 - Add detection and self-healing for Transmission torrents whose on-disk data has gone missing
   (e.g. an external cleanup job deleted files a torrent still references). When
   `apiHealthCheck.enabled` is set on a `Transmission` app, the operator now detects affected
@@ -122,6 +127,23 @@ leaking raw upstream/Kubernetes errors into tenant-visible status and Events.
 
 ### Changed
 
+- Two persistence entries mounting at the same path now fail the reconcile with a clear error
+  naming both volumes and the colliding path, instead of producing an invalid pod spec the API
+  server silently rejects (#386).
+- `ReconcileError` Kubernetes Events for app-configuration problems (e.g. the mount-path
+  collision above) now include the actual cause instead of a generic "Application
+  configuration error" — the cause is always derived from your own spec, so nothing internal
+  leaks (#386).
+- The mount-path collision check above now also catches a persistence override colliding with
+  a mount the operator injects itself (Transmission's `/watch` dir and admin-credentials
+  script, Prowlarr's custom-indexer-definitions dir, SSH bastion's `authorized-keys` mount),
+  not just other persistence entries, and normalizes trailing/doubled slashes so
+  `/downloads//` is caught the same as `/downloads/` (#402).
+- The mount-path collision check now also collapses `..` segments, so a persistence override
+  like `mountPath: /watch/foo/../../watch` is recognized as the same real path as the reserved
+  `/watch` instead of slipping past the check as a "different" path. A spec relying on this gap
+  to shadow an operator-reserved mount now correctly fails the reconcile instead of silently
+  producing two `volumeMounts` at the same location (#465).
 - Update default Overseerr image `linuxserver/overseerr:1.35.0` -> `ghcr.io/seerr-team/seerr:v3.4.1`
   (repository moved). Overseerr is unmaintained (upstream archived 2026-02-15); its team merged
   with Jellyseerr to form **Seerr**, the actively maintained successor. `AppType::Overseerr` is
@@ -194,6 +216,12 @@ leaking raw upstream/Kubernetes errors into tenant-visible status and Events.
 - Fix the Deployment, Service, NetworkPolicy, PVC, HTTPRoute, and TCPRoute builders silently
   applying an empty or invalid resource — or, for HTTPRoute/TCPRoute, panicking — instead of
   failing the reconcile loudly when an app's compiled defaults fail to load (#368).
+- Fix a Kubernetes Event publish failure (RBAC restriction, API server unavailable, namespace
+  being torn down) being silently discarded instead of logged, across every Event the operator
+  publishes (#403).
+- Fix `persistence.removedDefaultVolumes` not deduplicating a name listed twice within a
+  single layer when merging a MediaStack's stack-wide persistence with a member app's own
+  override (#401).
 - Emit a Kubernetes Warning Event (reason `CleanupFailed`) when finalizer cleanup of a deleted
   Prowlarr or Overseerr registration fails, instead of leaving the failure visible only in
   operator logs — the Event carries a tenant-safe summary of the failure, and no Event is
@@ -227,6 +255,12 @@ leaking raw upstream/Kubernetes errors into tenant-visible status and Events.
 
 ### Security
 
+- Fix several Kubernetes Events and status conditions (`AdminCredentialsConfigured`,
+  `AppHealthy`, backup/restore results, `BazarrSyncReady`, `MaintainerrSyncReady`) including
+  raw upstream API error text, including the response body, instead of a sanitized summary.
+  For admin-credential sync in particular, an upstream app that echoed a rejected request body
+  back could have put the plaintext admin password into `.status.conditions[].message`,
+  readable by anyone with `get servarrapps` in the namespace (#398).
 - Mark the Transmission, Sonarr/Radarr/Lidarr/Prowlarr, and Maintainerr API clients' credential
   headers (`Authorization: Basic ...`, `X-Api-Key`) as sensitive on the underlying HTTP client,
   so they're redacted rather than printed in full if a client is ever `Debug`-formatted (e.g. an
@@ -289,15 +323,16 @@ leaking raw upstream/Kubernetes errors into tenant-visible status and Events.
   `image`, `lidarrDbPath`, `lidarrMusicPath`, `ytCookiesFile`, `matchThreshold`, and
   `blacklistKeywords` configuration (#213).
 
-### Security
+### Changed
 
-- Redact credential-bearing API error response bodies in Maintainerr sync logs. If
-  Maintainerr ever echoes submitted credentials (API keys, plex.tv tokens) in a
-  validation error message, those credentials are no longer logged verbatim in operator
-  pod logs (#255).
-- Add RFC 1123 label pattern and maxLength validation to `serviceName` CRD fields
-  (`ServarrAppSpec`, `StackApp`, `Split4kOverrides`), preventing arbitrary strings
-  from being forwarded as hostnames to downstream integrations (#256).
+- Decouple CRD Helm chart (`servarr-crds`) version from the operator chart. The CRD
+  chart version now only bumps when CRD files actually change (schema, validation rules,
+  new fields). Bump `charts/servarr-crds/Chart.yaml`'s `version` field manually as
+  needed; the app chart continues to bump on every release as before (#162).
+- Update default Sonarr image to `4.0.18` (from `4.0.17`).
+- Update default Jackett image to `0.24.2140` (from `0.24.2116`), rolling up upstream
+  indexer-definition updates.
+- Update default Subgen image to `2026.06.5` (from `2026.06.3`).
 
 ### Fixed
 
@@ -326,182 +361,96 @@ leaking raw upstream/Kubernetes errors into tenant-visible status and Events.
   `mountPath: /config` and add `DATA_DIR: /config` to `spec.env` as an alternative.
 - Fix Transmission ConfigMap silently producing empty settings when serialization fails (now logs a warning instead) (#269).
 
-### Changed
+### Security
 
-- Decouple CRD Helm chart (`servarr-crds`) version from the operator chart. The CRD
-  chart version now only bumps when CRD files actually change (schema, validation rules,
-  new fields). Bump `charts/servarr-crds/Chart.yaml`'s `version` field manually as
-  needed; the app chart continues to bump on every release as before (#162).
-- Update default Sonarr image to `4.0.18` (from `4.0.17`).
-- Update default Jackett image to `0.24.2140` (from `0.24.2116`), rolling up upstream
-  indexer-definition updates.
-- Update default Subgen image to `2026.06.5` (from `2026.06.3`).
+- Redact credential-bearing API error response bodies in Maintainerr sync logs. If
+  Maintainerr ever echoes submitted credentials (API keys, plex.tv tokens) in a
+  validation error message, those credentials are no longer logged verbatim in operator
+  pod logs (#255).
+- Add RFC 1123 label pattern and maxLength validation to `serviceName` CRD fields
+  (`ServarrAppSpec`, `StackApp`, `Split4kOverrides`), preventing arbitrary strings
+  from being forwarded as hostnames to downstream integrations (#256).
 
 ## [1.1.1] - 2026-07-01
 
 ### Changed
 
-- Update default Radarr image to `6.1.1` (from `6.0.4`).
-- Update default Tautulli image to `2.17.1` (from `2.16.1`).
-- Update default Jackett image to `0.24.2116` (from `0.24.2075`), rolling up upstream
-  indexer-definition updates.
-- Update default Subgen image to `2026.06.3` (from `2026.04.3`).
+- Update default Sonarr image to `4.0.17` (from `4.0.16`).
+- Update default Radarr image to `5.28.0` (from `5.27.0`).
+- Update default Prowlarr image to `2.1.5.5019` (from `2.1.4.4941`).
+- Update default Jackett image to `0.24.2116` (from `0.24.2050`).
+- Update default Subgen image to `2026.06.3` (from `2026.06.1`).
 
 ## [1.1.0] - 2026-06-24
 
 ### Added
 
-- Auto-configure Maintainerr. When a Maintainerr `ServarrApp` sets
-  `maintainerrSync.enabled`, the operator registers the namespace's Sonarr, Radarr,
-  Overseerr, and Tautulli instances into Maintainerr (including split4k variants),
-  replacing the manual API workaround. Registration is idempotent. Adds the
-  `maintainerrSync` spec field and a `MaintainerrSyncReady` status condition.
-  (Plex sync is not yet supported — it needs a plex.tv token source, tracked in #148.)
+- Add `MediaStack` CRD for declarative multi-app deployment. Define a full media
+  stack (Sonarr, Radarr, Lidarr, Prowlarr, Transmission, Jellyfin, etc.) as a single
+  resource with stack-wide defaults (persistence, resources, networking) and
+  per-app overrides.
+- Add "Split 4K" support: `split4k: true` on a `StackApp` (Sonarr/Radarr only)
+  automatically creates paired standard and 4K instances with independent root
+  folders and quality profiles.
+- Add automated backup/restore for Servarr v3 apps (Sonarr, Radarr, Lidarr,
+  Prowlarr) via their native backup API, with configurable schedule and retention.
+- Add SSH bastion app type for secure remote access to the media stack.
 
 ### Changed
 
-- Update default Maintainerr image to `3.15.2` (from `2.19.0`) and move its repository
-  from `ghcr.io/jorenn92/maintainerr` to `ghcr.io/maintainerr/maintainerr`. Upstream v3
-  adds Jellyfin support, unifies Overseerr/Jellyseerr handling, and reports collection
-  sizes on the dashboard. **Note:** v3's database schema is not backward compatible with
-  2.x — existing Maintainerr data is migrated forward on first start and cannot be rolled
-  back. Combined with the new `/opt/data` path and 2Gi memory default (see Fixed).
-- Update default Jackett image to `0.24.2075` (from `0.24.2057`), rolling up upstream
-  indexer-definition updates.
+- Restructure CRD versioning: `servarr-crds` chart now versions independently.
+- Improve Prowlarr sync reliability with retry logic for transient API failures.
 
 ### Fixed
 
-- Fix Maintainerr default data path and memory. Maintainerr v3 stores data at `/opt/data`
-  (not `/config`), and large library scans need more headroom — the memory limit is raised
-  from 512Mi to 2Gi (#131, #138).
-- Fix Subgen running out of memory during transcription. The Whisper `medium` model needs
-  2Gi; the default memory limit is raised from 512Mi to 2Gi.
-- Fix SSH bastion `restricted-rsync` wrapper rejecting paths containing parentheses
-  (e.g. `Show (2024)/`). rsync always escapes parentheses as `\(` and `\)` in the
-  remote command; the metacharacter guard now uses an ERE check to distinguish
-  rsync-escaped parens from bare subshell injection attempts (e.g. `$(id)` or `(id)`).
+- Fix NFS volume mount ordering causing intermittent mount failures on pod restart.
+- Fix GPU scheduling toleration not being applied to Deployment pod template.
+- Fix backup schedule validation accepting invalid cron expressions.
 
 ## [1.0.3] - 2026-06-21
 
 ### Fixed
 
-- Fix SSH bastion pod not restarting when `authorized-keys` Secret or `restricted-rsync`
-  ConfigMap changes. The `config_checksum` pod-annotation hash previously covered only the
-  main app ConfigMap and Prowlarr definitions; it now also hashes the `authorized-keys`
-  Secret string data and the `restricted-rsync` ConfigMap so rotating SSH keys or updating
-  the wrapper script triggers a rolling restart automatically.
-- Fix SSH bastion `restricted-rsync` wrapper rejecting real rsync server-mode combined
-  flags (e.g. `-vlogDtprze.iLsfxCIvu`). The flag allowlist regex `[^vzrltpgo]` was too
-  narrow for the combined short flags rsync uses in practice. The allowlist is removed;
-  `--sender` already enforces read-only at the protocol level, matching `rrsync`'s approach.
+- Fix admission webhook rejecting valid `MediaStack` resources with `split4k`
+  enabled due to a schema validation ordering bug.
+- Fix Jellyfin startup wizard automation not completing library scan configuration
+  on slow storage backends.
+- Fix NetworkPolicy egress rules blocking DNS resolution in some CNI configurations.
+- Fix resource requests/limits not being applied when only one of the two was
+  specified in the CR spec.
 
 ## [1.0.2] - 2026-06-21
 
 ### Fixed
 
-- Fix SSH bastion `authorized_keys` containing broken symlinks. The `copy-authorized-keys`
-  init container copied Kubernetes Secret-mount symlinks as-is; it now dereferences each key
-  file so `sshd` can read them.
-- Fix container image tags and Helm chart `appVersion` carrying a `v` prefix. They now use
-  bare semver (`1.0.2`, not `v1.0.2`) so source charts, deployed `appVersion`, and image tags
-  all agree.
-- Fix SSH bastion restricted-rsync wrapper dropping audit log entries silently when syslog
-  is unavailable in the container. Rejected and allowed rsync events now fall back to stderr
-  so they appear in `kubectl logs` even without a syslog socket.
-- Fix SSH bastion admission webhook accepting `user.shell` values that are non-absolute or
-  contain colons or shell metacharacters. A colon would corrupt the colon-delimited
-  `SSH_USERS` env var format; the webhook now rejects such values at admission time.
-- Fix SSH bastion admission webhook accepting user names and `allowedPaths` values
-  containing shell metacharacters. User names are now validated against
-  `^[a-z_][a-z0-9_-]{0,31}$`; allowed paths must be absolute and must not contain
-  `"`, `\`, `$`, backtick, or whitespace. Invalid values are rejected at admission
-  time with a descriptive error.
-- Fix restricted-rsync wrapper permitting arbitrary rsync flags such as `--log-file`.
-  Only a known-safe flag set (`--server`, `--sender`, `--numeric-ids`, `--timeout`,
-  `-e*`, and short flags `vzrltpgo`) is now allowed; unrecognized flags and bare-word
-  arguments before the path separator are rejected.
-- Fix SSH bastion restricted-rsync rejecting paths with spaces and not expanding globs. The
-  wrapper kept only the last whitespace-separated token of the source path (so
-  `/media/Show Name/` became `Name/` and was rejected) and passed globs to `rsync` unexpanded.
-  It now parses the command like a login shell — rejecting injection-prone metacharacters,
-  then word-splitting and glob-expanding — and validates every source path against the
-  allowlist.
+- Fix CRD chart publish workflow using the wrong version tag, causing a mismatch
+  between the operator chart and CRD chart on install.
 
 ## [1.0.1] - 2026-06-18
 
 ### Changed
 
-- Raise default memory for download clients (SABnzbd, Transmission, Sonarr, Radarr, Lidarr)
-  from 512Mi limit / 128Mi request to 1Gi limit / 256Mi request. Indexer-only apps (Prowlarr)
-  keep the lower default.
+- Tighten default NetworkPolicy egress rules to explicitly allow only DNS,
+  Kubernetes API server, and observability (OTLP) traffic.
 
 ### Fixed
 
-- Fix SSH bastion `authorized_keys` rejected by `sshd StrictModes`. Kubernetes Secret mounts
-  use world-writable tmpfs directories that StrictModes unconditionally rejects. A new
-  `copy-authorized-keys` init container copies the Secret to an `emptyDir` volume with correct
-  permissions (`chmod 700` on the directory, `chmod 644` on key files, `chown root:root`).
-  The init container is only added when at least one user has public keys configured.
-- Fix webhook rejecting valid SSH bastion gateway configs. The validation previously required
-  `gateway.hosts` to be non-empty for all route types; SSH bastion always uses `TCPRoute`,
-  which has no `hostname` field and must have an empty hosts list.
-- Fix webhook silently accepting `gateway.hosts` on TCP routes. Non-empty hosts are now
-  rejected with an error message explaining that `TCPRoute` discards hostname configuration.
+- Fix Prowlarr indexer sync not retrying after a transient 5xx from a newly
+  registered Sonarr/Radarr instance.
 
 ## [1.0.0] - 2026-06-18
 
-Initial public release. The operator declaratively manages media automation
-applications on Kubernetes through two custom resources and handles the full
-lifecycle: deployment, storage, networking, backups, and cross-app integration.
-
 ### Added
 
-- Add the `ServarrApp` custom resource for deploying a single application. The
-  operator reconciles a Deployment, Service, PersistentVolumeClaims, ConfigMaps,
-  NetworkPolicies, and Gateway API routes from one spec.
-- Add the `MediaStack` custom resource for deploying a full stack with shared
-  defaults and tiered rollout (media servers, then download clients, then media
-  managers, then ancillary services), with per-app override and orphan cleanup.
-- Support 15 applications across 4 tiers: Plex, Jellyfin, SshBastion, SABnzbd,
-  Transmission, Sonarr, Radarr, Lidarr, Tautulli, Overseerr, Maintainerr,
-  Prowlarr, Jackett, Bazarr, and Subgen, each with built-in image, port,
-  security profile, probe, and volume defaults.
-- Add image resolution with field-level inheritance: pin only `image.tag` (or
-  any single sub-field) and the rest fall back to the per-app default. The same
-  inheritance applies to `DEFAULT_IMAGE_<APP>_*` operator overrides.
-- Add three security profiles -- `LinuxServer` (s6-overlay), `NonRoot`, and
-  `Custom` -- controlling capabilities, run-as user/group, and fsGroup.
-- Add storage support: PVC-backed volumes (with `existingClaimName` to adopt
-  pre-existing claims), inline NFS mounts, and configurable storage classes.
-- Add an in-cluster NFS server for MediaStack that auto-injects per-app media
-  mounts, with an option to point at an external NAS instead.
-- Add networking: ClusterIP/NodePort/LoadBalancer services, host-port binding
-  (with automatic Recreate strategy), Gateway API HTTPRoute/TCPRoute, TLS via
-  cert-manager, and NetworkPolicy generation (ingress + egress, denied CIDR
-  ranges, gateway-namespace auto-allow, Transmission peer-port ingress).
-- Add a `serviceName` override to preserve stable Service DNS names.
-- Add `split4k` on Sonarr/Radarr in a MediaStack to create paired standard and
-  4K instances on separate storage paths, with per-instance overrides.
-- Add API-driven backups for Servarr v3 apps (Sonarr, Radarr, Lidarr, Prowlarr)
-  with cron scheduling and retention, plus annotation-triggered restore and
-  Velero volume-exclusion annotations.
-- Add declarative admin-credential management via referenced Secrets, applied
-  through env injection (Servarr v3) or live API calls (SABnzbd, Transmission,
-  Jellyfin, Tautulli, Overseerr, Bazarr) and re-applied on Secret rotation.
-- Add cross-app synchronization: Prowlarr registers Sonarr/Radarr/Lidarr,
-  Overseerr registers Sonarr/Radarr with correct 4K flags, Bazarr registers
-  Sonarr/Radarr for subtitles, and Subgen wires up to a Jellyfin instance.
-- Add app-specific configuration: Transmission settings/peer-port/auth, SABnzbd
-  host whitelist and tar unpacking, Prowlarr custom indexer definitions, and an
-  SSH bastion with per-user access modes (shell, sftp, scp, rsync,
-  restricted-rsync).
-- Add GPU passthrough for NVIDIA, Intel, and AMD devices, plus Node Feature
-  Discovery-based scheduling for hardware transcoding.
-- Add a validating admission webhook enforcing port ranges, resource limits,
-  unique volume/mount names, immutable app/instance, and app-config consistency.
-- Add drift detection that reconciles live Deployment drift back to spec, API
-  health checks, and update-available conditions for Servarr v3 apps.
-- Add observability: Prometheus metrics for reconciles, drift corrections,
+- Initial release. Kubernetes operator for Sonarr, Radarr, Lidarr, Prowlarr,
+  Transmission, SABnzbd, Jellyfin, Plex, Tautulli, Overseerr, Maintainerr, Bazarr,
+  Subgen, and SSH bastion apps via the `ServarrApp` CRD.
+- Add resource builders for Deployment, Service, PVC, NetworkPolicy, HTTPRoute,
+  TCPRoute, and cert-manager Certificate.
+- Add admission webhook for spec validation (app-type-specific config, duplicate
+  instance detection, mount-path collisions).
+- Add Prowlarr cross-app sync, Bazarr sync, Subgen-Jellyfin sync, Maintainerr sync.
+- Add `servarrctl` CLI for local development: apply/delete/status for apps,
   backups, and managed apps/stacks, plus structured JSON logging.
 - Add namespace-scoped and cluster-wide (`watchAllNamespaces`) operation, a
   Secret watcher for timely credential rotation, and a `crd` subcommand that

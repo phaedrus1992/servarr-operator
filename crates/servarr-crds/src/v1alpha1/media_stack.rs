@@ -430,6 +430,7 @@ fn inject_nfs_mounts(
     let injected = PersistenceSpec {
         volumes: Vec::new(),
         nfs_mounts: mounts,
+        ..Default::default()
     };
     spec.persistence = Some(match spec.persistence.take() {
         None => injected,

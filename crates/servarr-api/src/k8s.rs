@@ -191,6 +191,7 @@ mod tests {
             key: "api-key".to_string(),
         };
         assert_eq!(err.log_summary(), err.to_string());
+        assert!(err.log_summary().contains("my-secret"));
     }
 
     #[test]

@@ -25,7 +25,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -36,23 +36,23 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Run actionlint
-        uses: reviewdog/action-actionlint@01d2dd67e3525e5a0ce72e8fa38e5a3ab65e2ded # v1.72.1
+        uses: reviewdog/action-actionlint@dbe5299849118fd6f099ba563d263d770955a64a # v1.73.2
 
   zizmor:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Run zizmor
-        uses: zizmorcore/zizmor-action@192e21d79ab29983730a13d1382995c2307fbcaa # v0.5.7
+        uses: zizmorcore/zizmor-action@3dc1ecc9bcb9e94e9b2c709687979e1298497054 # v0.6.2
         with:
           advanced-security: false
 
@@ -60,7 +60,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -73,7 +73,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -94,7 +94,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -107,7 +107,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -122,7 +122,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -135,10 +135,13 @@ jobs:
         run: rustup component add rustc-dev llvm-tools-preview
 
       - name: Install cargo-hawk
-        # The exact "--version X.Y.Z cargo-hawk" text is matched by a Renovate
-        # custom regex manager (.github/renovate.json5) — keep this phrasing
-        # if the line is ever edited, or version bumps silently stop.
-        run: RUSTC_BOOTSTRAP=1 cargo install --locked --version 0.1.12 cargo-hawk
+        # Unpinned on purpose: cargo-hawk hooks unstable rustc-internal APIs, so a
+        # binary built against one toolchain often won't even compile against the next. A
+        # pinned version left CI red every time Renovate bumped rust-toolchain.toml until
+        # someone noticed and bumped this pin separately. Floating to latest always builds
+        # against whatever cargo-hawk release is current for the active toolchain — matches
+        # how cargo-deny and cargo-llvm-cov are installed below (also unpinned).
+        run: RUSTC_BOOTSTRAP=1 cargo install --locked cargo-hawk
 
       - name: Run cargo-hawk
         # servarr_api and servarr_crds are excluded: their pub surface is a genuine
@@ -155,7 +158,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -163,7 +166,7 @@ jobs:
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       - name: Install cargo-deny
-        uses: taiki-e/install-action@15449e3094499af05d8d964a1c884208e4b8b595 # v2.81.11
+        uses: taiki-e/install-action@ba47c86ac325773530516bb756137ac718732518 # v2.86.5
         with:
           tool: cargo-deny
 
@@ -175,7 +178,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -183,7 +186,7 @@ jobs:
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@15449e3094499af05d8d964a1c884208e4b8b595 # v2.81.11
+        uses: taiki-e/install-action@ba47c86ac325773530516bb756137ac718732518 # v2.86.5
         with:
           tool: cargo-llvm-cov
 

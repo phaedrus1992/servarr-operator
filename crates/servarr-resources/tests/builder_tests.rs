@@ -1,3 +1,4 @@
+use k8s_openapi::api::apps::v1::Deployment;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 use servarr_crds::*;
 
@@ -17,11 +18,15 @@ fn make_app(app_type: AppType) -> ServarrApp {
     }
 }
 
+/// Build with no image overrides — the common case across most tests here.
+fn build_deployment(app: &ServarrApp) -> Deployment {
+    servarr_resources::deployment::build(app, &std::collections::HashMap::new()).unwrap()
+}
+
 #[test]
 fn test_deployment_builder_sonarr() {
     let app = make_app(AppType::Sonarr);
-    let deploy =
-        servarr_resources::deployment::build(&app, &std::collections::HashMap::new()).unwrap();
+    let deploy = build_deployment(&app);
 
     assert_eq!(deploy.metadata.name.as_deref(), Some("test-app"));
     assert_eq!(deploy.metadata.namespace.as_deref(), Some("media"));
@@ -34,7 +39,7 @@ fn test_deployment_builder_sonarr() {
 
     let container = &pod_spec.containers[0];
     assert_eq!(container.name, "sonarr");
-    let sonarr_defaults = AppDefaults::for_app(&AppType::Sonarr).expect("sonarr defaults");
+    let sonarr_defaults = AppDefaults::try_for_app(&AppType::Sonarr).expect("sonarr defaults");
     let expected_sonarr_image = format!(
         "{}:{}",
         sonarr_defaults.image.repository, sonarr_defaults.image.tag
@@ -84,14 +89,13 @@ fn test_deployment_builder_sonarr() {
 #[test]
 fn test_deployment_builder_maintainerr_nonroot() {
     let app = make_app(AppType::Maintainerr);
-    let deploy =
-        servarr_resources::deployment::build(&app, &std::collections::HashMap::new()).unwrap();
+    let deploy = build_deployment(&app);
 
     let pod_spec = deploy.spec.unwrap().template.spec.unwrap();
     let container = &pod_spec.containers[0];
 
     let maintainerr_defaults =
-        AppDefaults::for_app(&AppType::Maintainerr).expect("maintainerr defaults");
+        AppDefaults::try_for_app(&AppType::Maintainerr).expect("maintainerr defaults");
     let expected_maintainerr_image = format!(
         "{}:{}",
         maintainerr_defaults.image.repository, maintainerr_defaults.image.tag
@@ -135,13 +139,13 @@ fn test_deployment_builder_maintainerr_data_dir_follows_mount() {
                     size: String::new(),
                 }],
                 nfs_mounts: vec![],
+                ..Default::default()
             }),
             ..Default::default()
         },
         status: None,
     };
-    let deploy =
-        servarr_resources::deployment::build(&app, &std::collections::HashMap::new()).unwrap();
+    let deploy = build_deployment(&app);
     let container = &deploy.spec.unwrap().template.spec.unwrap().containers[0];
     let env = container.env.as_ref().unwrap();
     let data_dir = env.iter().find(|e| e.name == "DATA_DIR").unwrap();
@@ -175,8 +179,7 @@ fn test_deployment_builder_transmission() {
         status: None,
     };
 
-    let deploy =
-        servarr_resources::deployment::build(&app, &std::collections::HashMap::new()).unwrap();
+    let deploy = build_deployment(&app);
     let pod_spec = deploy.spec.unwrap().template.spec.unwrap();
     let container = &pod_spec.containers[0];
 
@@ -317,6 +320,7 @@ fn test_pvc_ssh_bastion_host_keys_survives_persistence_override() {
             existing_claim_name: None,
         }],
         nfs_mounts: vec![],
+        ..Default::default()
     });
 
     let pvcs = servarr_resources::pvc::build_all(&app).unwrap();
@@ -330,8 +334,7 @@ fn test_pvc_ssh_bastion_host_keys_survives_persistence_override() {
         .as_str();
     assert_eq!(storage, "10Mi");
 
-    let deploy =
-        servarr_resources::deployment::build(&app, &std::collections::HashMap::new()).unwrap();
+    let deploy = build_deployment(&app);
     let pod_spec = deploy.spec.unwrap().template.spec.unwrap();
     assert!(
         pod_spec
@@ -494,8 +497,7 @@ fn test_deployment_ssh_bastion_shell_mode_home_mounts() {
         status: None,
     };
 
-    let deploy =
-        servarr_resources::deployment::build(&app, &std::collections::HashMap::new()).unwrap();
+    let deploy = build_deployment(&app);
     let pod_spec = deploy.spec.unwrap().template.spec.unwrap();
     let container = &pod_spec.containers[0];
     let mounts = container.volume_mounts.as_ref().unwrap();
@@ -644,8 +646,7 @@ fn test_custom_env_override() {
         status: None,
     };
 
-    let deploy =
-        servarr_resources::deployment::build(&app, &std::collections::HashMap::new()).unwrap();
+    let deploy = build_deployment(&app);
     let container = &deploy.spec.unwrap().template.spec.unwrap().containers[0];
     let env = container.env.as_ref().unwrap();
 
@@ -683,8 +684,7 @@ fn test_custom_image_override() {
         status: None,
     };
 
-    let deploy =
-        servarr_resources::deployment::build(&app, &std::collections::HashMap::new()).unwrap();
+    let deploy = build_deployment(&app);
     let container = &deploy.spec.unwrap().template.spec.unwrap().containers[0];
     assert_eq!(
         container.image.as_deref(),
@@ -715,8 +715,7 @@ fn test_image_tag_only_inherits_default_repository() {
         status: None,
     };
 
-    let deploy =
-        servarr_resources::deployment::build(&app, &std::collections::HashMap::new()).unwrap();
+    let deploy = build_deployment(&app);
     let container = &deploy.spec.unwrap().template.spec.unwrap().containers[0];
     assert_eq!(
         container.image.as_deref(),
@@ -745,10 +744,9 @@ fn test_image_repository_only_inherits_default_tag() {
         status: None,
     };
 
-    let deploy =
-        servarr_resources::deployment::build(&app, &std::collections::HashMap::new()).unwrap();
+    let deploy = build_deployment(&app);
     let container = &deploy.spec.unwrap().template.spec.unwrap().containers[0];
-    let sonarr_tag = AppDefaults::for_app(&AppType::Sonarr)
+    let sonarr_tag = AppDefaults::try_for_app(&AppType::Sonarr)
         .expect("sonarr defaults")
         .image
         .tag;
@@ -780,8 +778,7 @@ fn test_image_digest_override() {
         status: None,
     };
 
-    let deploy =
-        servarr_resources::deployment::build(&app, &std::collections::HashMap::new()).unwrap();
+    let deploy = build_deployment(&app);
     let container = &deploy.spec.unwrap().template.spec.unwrap().containers[0];
     assert_eq!(
         container.image.as_deref(),
@@ -816,14 +813,14 @@ fn test_nfs_mounts() {
                     mount_path: "/media".into(),
                     read_only: true,
                 }],
+                ..Default::default()
             }),
             ..Default::default()
         },
         status: None,
     };
 
-    let deploy =
-        servarr_resources::deployment::build(&app, &std::collections::HashMap::new()).unwrap();
+    let deploy = build_deployment(&app);
     let pod_spec = deploy.spec.unwrap().template.spec.unwrap();
     let container = &pod_spec.containers[0];
 
@@ -865,15 +862,14 @@ fn test_image_override_from_env() {
 #[test]
 fn test_deployment_builder_plex() {
     let app = make_app(AppType::Plex);
-    let deploy =
-        servarr_resources::deployment::build(&app, &std::collections::HashMap::new()).unwrap();
+    let deploy = build_deployment(&app);
 
     let spec = deploy.spec.unwrap();
     let pod_spec = spec.template.spec.unwrap();
     let container = &pod_spec.containers[0];
 
     assert_eq!(container.name, "plex");
-    let plex_defaults = AppDefaults::for_app(&AppType::Plex).expect("plex defaults");
+    let plex_defaults = AppDefaults::try_for_app(&AppType::Plex).expect("plex defaults");
     let expected_plex_image = format!(
         "{}:{}",
         plex_defaults.image.repository, plex_defaults.image.tag
@@ -914,15 +910,14 @@ fn test_deployment_builder_plex() {
 #[test]
 fn test_deployment_builder_jellyfin() {
     let app = make_app(AppType::Jellyfin);
-    let deploy =
-        servarr_resources::deployment::build(&app, &std::collections::HashMap::new()).unwrap();
+    let deploy = build_deployment(&app);
 
     let spec = deploy.spec.unwrap();
     let pod_spec = spec.template.spec.unwrap();
     let container = &pod_spec.containers[0];
 
     assert_eq!(container.name, "jellyfin");
-    let jf_defaults = AppDefaults::for_app(&AppType::Jellyfin).expect("jellyfin defaults");
+    let jf_defaults = AppDefaults::try_for_app(&AppType::Jellyfin).expect("jellyfin defaults");
     let expected_jf_image = format!("{}:{}", jf_defaults.image.repository, jf_defaults.image.tag);
     assert_eq!(container.image.as_deref(), Some(expected_jf_image.as_str()));
 
@@ -1992,6 +1987,7 @@ fn test_deployment_seerr_config_ownership_migration_skipped_for_existing_claim_n
             size: String::new(),
         }],
         nfs_mounts: vec![],
+        removed_default_volumes: vec![],
     });
     assert!(
         !has_migrate_config_ownership_container(&app),
@@ -2039,8 +2035,7 @@ fn test_deployment_ssh_bastion_init_containers() {
         status: None,
     };
 
-    let deploy =
-        servarr_resources::deployment::build(&app, &std::collections::HashMap::new()).unwrap();
+    let deploy = build_deployment(&app);
     let pod_spec = deploy.spec.unwrap().template.spec.unwrap();
 
     // Should have init containers: generate-host-keys, copy-authorized-keys, and patch-entry.
@@ -2175,8 +2170,7 @@ fn test_deployment_ssh_bastion_rsync_mode_uses_restricted_rsync() {
         status: None,
     };
 
-    let deploy =
-        servarr_resources::deployment::build(&app, &std::collections::HashMap::new()).unwrap();
+    let deploy = build_deployment(&app);
     let pod_spec = deploy.spec.unwrap().template.spec.unwrap();
     let container = &pod_spec.containers[0];
     let mounts = container.volume_mounts.as_ref().unwrap();
@@ -2234,8 +2228,7 @@ fn test_deployment_ssh_bastion_shell_package_installed() {
         status: None,
     };
 
-    let deploy =
-        servarr_resources::deployment::build(&app, &std::collections::HashMap::new()).unwrap();
+    let deploy = build_deployment(&app);
     let pod_spec = deploy.spec.unwrap().template.spec.unwrap();
     let init = pod_spec.init_containers.as_ref().unwrap();
     let patch = init.iter().find(|c| c.name == "patch-entry").unwrap();
@@ -2279,8 +2272,7 @@ fn test_deployment_ssh_bastion_default_shell_no_install() {
         status: None,
     };
 
-    let deploy =
-        servarr_resources::deployment::build(&app, &std::collections::HashMap::new()).unwrap();
+    let deploy = build_deployment(&app);
     let pod_spec = deploy.spec.unwrap().template.spec.unwrap();
     let init = pod_spec.init_containers.as_ref().unwrap();
     let patch = init.iter().find(|c| c.name == "patch-entry").unwrap();
@@ -2313,8 +2305,7 @@ fn test_deployment_sabnzbd_host_whitelist_init_container() {
         status: None,
     };
 
-    let deploy =
-        servarr_resources::deployment::build(&app, &std::collections::HashMap::new()).unwrap();
+    let deploy = build_deployment(&app);
     let pod_spec = deploy.spec.unwrap().template.spec.unwrap();
 
     let init = pod_spec.init_containers.as_ref().unwrap();
@@ -2352,8 +2343,7 @@ fn test_deployment_sabnzbd_tar_unpack_init_containers() {
         status: None,
     };
 
-    let deploy =
-        servarr_resources::deployment::build(&app, &std::collections::HashMap::new()).unwrap();
+    let deploy = build_deployment(&app);
     let pod_spec = deploy.spec.unwrap().template.spec.unwrap();
 
     let init = pod_spec.init_containers.as_ref().unwrap();
@@ -2392,8 +2382,7 @@ fn test_deployment_prowlarr_definitions_volume() {
         status: None,
     };
 
-    let deploy =
-        servarr_resources::deployment::build(&app, &std::collections::HashMap::new()).unwrap();
+    let deploy = build_deployment(&app);
     let pod_spec = deploy.spec.unwrap().template.spec.unwrap();
     let container = &pod_spec.containers[0];
 
@@ -2440,8 +2429,7 @@ fn test_deployment_custom_resources() {
         status: None,
     };
 
-    let deploy =
-        servarr_resources::deployment::build(&app, &std::collections::HashMap::new()).unwrap();
+    let deploy = build_deployment(&app);
     let container = &deploy.spec.unwrap().template.spec.unwrap().containers[0];
     let resources = container.resources.as_ref().unwrap();
 
@@ -2488,8 +2476,7 @@ fn test_deployment_custom_probes() {
         status: None,
     };
 
-    let deploy =
-        servarr_resources::deployment::build(&app, &std::collections::HashMap::new()).unwrap();
+    let deploy = build_deployment(&app);
     let container = &deploy.spec.unwrap().template.spec.unwrap().containers[0];
 
     let liveness = container.liveness_probe.as_ref().unwrap();
@@ -2529,8 +2516,7 @@ fn test_deployment_gpu_resources() {
         status: None,
     };
 
-    let deploy =
-        servarr_resources::deployment::build(&app, &std::collections::HashMap::new()).unwrap();
+    let deploy = build_deployment(&app);
     let container = &deploy.spec.unwrap().template.spec.unwrap().containers[0];
     let resources = container.resources.as_ref().unwrap();
 
@@ -2863,6 +2849,7 @@ fn test_networkpolicy_ssh_bastion_nfs_egress() {
                     mount_path: "/media".into(),
                     read_only: true,
                 }],
+                ..Default::default()
             }),
             ..Default::default()
         },
@@ -3282,8 +3269,7 @@ fn test_deployment_ssh_bastion_advanced_env_vars() {
         status: None,
     };
 
-    let deploy =
-        servarr_resources::deployment::build(&app, &std::collections::HashMap::new()).unwrap();
+    let deploy = build_deployment(&app);
     let pod_spec = deploy.spec.unwrap().template.spec.unwrap();
     let container = &pod_spec.containers[0];
     let env = container.env.as_ref().unwrap();
@@ -3339,8 +3325,7 @@ fn test_deployment_ssh_bastion_managed_env_ignored() {
         status: None,
     };
 
-    let deploy =
-        servarr_resources::deployment::build(&app, &std::collections::HashMap::new()).unwrap();
+    let deploy = build_deployment(&app);
     let pod_spec = deploy.spec.unwrap().template.spec.unwrap();
     let container = &pod_spec.containers[0];
     let env = container.env.as_ref().unwrap();
@@ -3395,6 +3380,7 @@ fn test_deployment_ssh_bastion_host_keys_preserved_with_nfs_mounts() {
                         read_only: false,
                     },
                 ],
+                ..Default::default()
             }),
             app_config: Some(AppConfig::SshBastion(SshBastionConfig {
                 users: vec![SshUser {
@@ -3413,8 +3399,7 @@ fn test_deployment_ssh_bastion_host_keys_preserved_with_nfs_mounts() {
         status: None,
     };
 
-    let deploy =
-        servarr_resources::deployment::build(&app, &std::collections::HashMap::new()).unwrap();
+    let deploy = build_deployment(&app);
     let pod_spec = deploy.spec.unwrap().template.spec.unwrap();
 
     let volumes = pod_spec.volumes.as_ref().expect("pod should have volumes");
@@ -3620,8 +3605,7 @@ fn test_nfs_server_service_selector_labels() {
 #[test]
 fn test_deployment_no_gpu_no_node_selector() {
     let app = make_app(AppType::Sonarr);
-    let deploy =
-        servarr_resources::deployment::build(&app, &std::collections::HashMap::new()).unwrap();
+    let deploy = build_deployment(&app);
     let pod_spec = deploy.spec.unwrap().template.spec.unwrap();
     assert!(
         pod_spec.node_selector.is_none(),
@@ -3636,8 +3620,7 @@ fn test_deployment_intel_gpu_adds_nfd_node_selector() {
         intel: Some(1),
         ..Default::default()
     });
-    let deploy =
-        servarr_resources::deployment::build(&app, &std::collections::HashMap::new()).unwrap();
+    let deploy = build_deployment(&app);
     let pod_spec = deploy.spec.unwrap().template.spec.unwrap();
     let sel = pod_spec
         .node_selector
@@ -3657,8 +3640,7 @@ fn test_deployment_nvidia_gpu_adds_nfd_node_selector() {
         nvidia: Some(1),
         ..Default::default()
     });
-    let deploy =
-        servarr_resources::deployment::build(&app, &std::collections::HashMap::new()).unwrap();
+    let deploy = build_deployment(&app);
     let pod_spec = deploy.spec.unwrap().template.spec.unwrap();
     let sel = pod_spec
         .node_selector
@@ -3678,8 +3660,7 @@ fn test_deployment_amd_gpu_adds_nfd_node_selector() {
         amd: Some(1),
         ..Default::default()
     });
-    let deploy =
-        servarr_resources::deployment::build(&app, &std::collections::HashMap::new()).unwrap();
+    let deploy = build_deployment(&app);
     let pod_spec = deploy.spec.unwrap().template.spec.unwrap();
     let sel = pod_spec
         .node_selector
@@ -3706,8 +3687,7 @@ fn test_deployment_user_node_selector_preserved_with_gpu() {
         )]),
         ..Default::default()
     });
-    let deploy =
-        servarr_resources::deployment::build(&app, &std::collections::HashMap::new()).unwrap();
+    let deploy = build_deployment(&app);
     let pod_spec = deploy.spec.unwrap().template.spec.unwrap();
     let sel = pod_spec.node_selector.expect("nodeSelector must be set");
     assert_eq!(
@@ -3857,8 +3837,7 @@ fn test_admin_credentials_transmission_mounts_secret_volume() {
     app.spec.admin_credentials = Some(AdminCredentialsSpec {
         secret_name: "creds".into(),
     });
-    let deploy =
-        servarr_resources::deployment::build(&app, &std::collections::HashMap::new()).unwrap();
+    let deploy = build_deployment(&app);
     let pod_spec = deploy.spec.unwrap().template.spec.unwrap();
 
     // Volume must exist
@@ -3892,8 +3871,7 @@ fn test_admin_credentials_transmission_mounts_auth_script_to_custom_cont_init() 
     app.spec.admin_credentials = Some(AdminCredentialsSpec {
         secret_name: "creds".into(),
     });
-    let deploy =
-        servarr_resources::deployment::build(&app, &std::collections::HashMap::new()).unwrap();
+    let deploy = build_deployment(&app);
     let pod_spec = deploy.spec.unwrap().template.spec.unwrap();
 
     // The custom-cont-init.d script must be mounted in the main container via subPath.
@@ -3941,8 +3919,7 @@ fn test_admin_credentials_transmission_uses_exec_probe() {
     app.spec.admin_credentials = Some(AdminCredentialsSpec {
         secret_name: "creds".into(),
     });
-    let deploy =
-        servarr_resources::deployment::build(&app, &std::collections::HashMap::new()).unwrap();
+    let deploy = build_deployment(&app);
     let container = &deploy.spec.unwrap().template.spec.unwrap().containers[0];
 
     let liveness = container
@@ -4158,4 +4135,292 @@ fn test_config_checksum_changes_on_rsync_flag_change() {
         ca, cb,
         "checksum must change when allowed rsync flags change"
     );
+}
+// ============================================================
+// Config Checksum Audit Tests (#160)
+// ============================================================
+
+#[test]
+fn test_config_checksum_includes_sabnzbd_tar_unpack_configmap() {
+    // Test: tar-unpack ConfigMap should trigger checksum changes (used by init container).
+    let app_with_tar = ServarrApp {
+        metadata: ObjectMeta {
+            name: Some("sabnzbd".into()),
+            namespace: Some("media".into()),
+            uid: Some("uid-checksum-tar".into()),
+            ..Default::default()
+        },
+        spec: ServarrAppSpec {
+            app: AppType::Sabnzbd,
+            app_config: Some(AppConfig::Sabnzbd(SabnzbdConfig {
+                host_whitelist: vec![],
+                tar_unpack: true,
+            })),
+            ..Default::default()
+        },
+        status: None,
+    };
+
+    let app_no_tar = ServarrApp {
+        metadata: ObjectMeta {
+            name: Some("sabnzbd".into()),
+            namespace: Some("media".into()),
+            uid: Some("uid-checksum-no-tar".into()),
+            ..Default::default()
+        },
+        spec: ServarrAppSpec {
+            app: AppType::Sabnzbd,
+            app_config: Some(AppConfig::Sabnzbd(SabnzbdConfig {
+                host_whitelist: vec![],
+                tar_unpack: false,
+            })),
+            ..Default::default()
+        },
+        status: None,
+    };
+
+    let checksum_with_tar = servarr_resources::deployment::config_checksum(&app_with_tar);
+    let checksum_no_tar = servarr_resources::deployment::config_checksum(&app_no_tar);
+
+    // tar_unpack ConfigMap is processed by init container and should trigger a restart.
+    assert_ne!(
+        checksum_with_tar, checksum_no_tar,
+        "checksum must change when tar_unpack toggles"
+    );
+}
+
+#[test]
+fn test_config_checksum_includes_sabnzbd_host_whitelist_configmap() {
+    // Test: host-whitelist ConfigMap should trigger checksum changes (processed by init container).
+    let app_with_whitelist = ServarrApp {
+        metadata: ObjectMeta {
+            name: Some("sabnzbd".into()),
+            namespace: Some("media".into()),
+            uid: Some("uid-checksum-wl".into()),
+            ..Default::default()
+        },
+        spec: ServarrAppSpec {
+            app: AppType::Sabnzbd,
+            app_config: Some(AppConfig::Sabnzbd(SabnzbdConfig {
+                host_whitelist: vec!["example.com".into()],
+                tar_unpack: false,
+            })),
+            ..Default::default()
+        },
+        status: None,
+    };
+
+    let app_no_whitelist = ServarrApp {
+        metadata: ObjectMeta {
+            name: Some("sabnzbd".into()),
+            namespace: Some("media".into()),
+            uid: Some("uid-checksum-no-wl".into()),
+            ..Default::default()
+        },
+        spec: ServarrAppSpec {
+            app: AppType::Sabnzbd,
+            app_config: Some(AppConfig::Sabnzbd(SabnzbdConfig {
+                host_whitelist: vec![],
+                tar_unpack: false,
+            })),
+            ..Default::default()
+        },
+        status: None,
+    };
+
+    let checksum_with_whitelist =
+        servarr_resources::deployment::config_checksum(&app_with_whitelist);
+    let checksum_no_whitelist = servarr_resources::deployment::config_checksum(&app_no_whitelist);
+
+    // host-whitelist ConfigMap is covered by build(app) and should affect the checksum.
+    assert_ne!(
+        checksum_with_whitelist, checksum_no_whitelist,
+        "checksum must change when host_whitelist changes"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// secret::build_api_key tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_build_api_key_no_secret_name_returns_none() {
+    let app = make_app(AppType::Sonarr); // api_key_secret defaults to None
+    let result = servarr_resources::secret::build_api_key(&app, "abc123");
+    assert!(result.is_none());
+}
+
+#[test]
+fn test_build_api_key_with_secret_name_returns_secret() {
+    let mut app = make_app(AppType::Sonarr);
+    app.spec.api_key_secret = Some("my-sonarr-key".into());
+    let result = servarr_resources::secret::build_api_key(&app, "deadbeef");
+    let secret = result.expect("expected a Secret");
+
+    assert_eq!(secret.metadata.name.as_deref(), Some("my-sonarr-key"));
+    assert_eq!(secret.metadata.namespace.as_deref(), Some("media"));
+    assert_eq!(secret.type_.as_deref(), Some("Opaque"));
+
+    let string_data = secret.string_data.expect("string_data must be set");
+    assert_eq!(
+        string_data.get("api-key").map(String::as_str),
+        Some("deadbeef")
+    );
+}
+
+// ---------------------------------------------------------------------------
+// #408: operator_reserved_mounts / build_volume_mounts drift guard
+// ---------------------------------------------------------------------------
+
+/// Every `AppType` variant — kept in sync with `AppDefaults::validate_all`'s
+/// own list. Scenarios built from this cover the "ordinary app reserves
+/// nothing" direction too, not just the four app types with reserved mounts.
+const ALL_APP_TYPES: [AppType; 15] = [
+    AppType::Sonarr,
+    AppType::Radarr,
+    AppType::Lidarr,
+    AppType::Prowlarr,
+    AppType::Sabnzbd,
+    AppType::Transmission,
+    AppType::Tautulli,
+    AppType::Seerr,
+    AppType::Maintainerr,
+    AppType::Jackett,
+    AppType::Jellyfin,
+    AppType::Plex,
+    AppType::SshBastion,
+    AppType::Bazarr,
+    AppType::Subgen,
+];
+
+/// The exact per-user mount paths `build_volume_mounts` injects for `app`'s
+/// SSH bastion users (`/home/<user>/.ssh` for shell mode,
+/// `/usr/local/bin/restricted-rsync-<user>` for restricted-rsync mode).
+/// Derived from the app spec itself, not a path-substring heuristic, so a
+/// future fixed mount that happens to contain "/home/" or "restricted-rsync-"
+/// can't be mistaken for one of these and silently excluded from the guard.
+fn per_user_mount_paths(app: &ServarrApp) -> std::collections::HashSet<String> {
+    match &app.spec.app_config {
+        Some(AppConfig::SshBastion(sc)) => sc
+            .users
+            .iter()
+            .flat_map(|u| {
+                [
+                    format!("/home/{}/.ssh", u.name),
+                    format!("/usr/local/bin/restricted-rsync-{}", u.name),
+                ]
+            })
+            .collect(),
+        _ => std::collections::HashSet::new(),
+    }
+}
+
+/// The fixed, non-per-user, non-persistence (mount_path, volume_name) pairs
+/// actually injected by `build_volume_mounts` for `app`.
+fn actual_fixed_mounts(app: &ServarrApp) -> std::collections::HashSet<(String, String)> {
+    let defaults = AppDefaults::try_for_app(&app.spec.app).expect("app defaults");
+    let persistence = defaults
+        .resolve_persistence(app)
+        .expect("resolve persistence");
+    let persistence_paths: std::collections::HashSet<String> = persistence
+        .volumes
+        .iter()
+        .map(|v| v.mount_path.clone())
+        .chain(persistence.nfs_mounts.iter().map(|m| m.mount_path.clone()))
+        .collect();
+    let per_user_paths = per_user_mount_paths(app);
+
+    let deploy = build_deployment(app);
+    let container = deploy
+        .spec
+        .unwrap()
+        .template
+        .spec
+        .unwrap()
+        .containers
+        .into_iter()
+        .next()
+        .unwrap();
+    container
+        .volume_mounts
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|m| {
+            !persistence_paths.contains(&m.mount_path) && !per_user_paths.contains(&m.mount_path)
+        })
+        .map(|m| (m.mount_path, m.name))
+        .collect()
+}
+
+/// The (mount_path, volume_name) pairs `operator_reserved_mounts` declares
+/// reserved for `app`.
+fn expected_reserved_mounts(app: &ServarrApp) -> std::collections::HashSet<(String, String)> {
+    servarr_crds::operator_reserved_mounts(app)
+        .into_iter()
+        .map(|(path, name)| (path.to_string(), name.to_string()))
+        .collect()
+}
+
+/// Guards against #408: `operator_reserved_mounts` (`servarr-crds`) and
+/// `build_volume_mounts` (`servarr-resources`) hand-copy the same fixed mount
+/// paths with no compile-time link between them — `servarr-resources`
+/// depends on `servarr-crds`, not the other way, so `servarr-crds` cannot
+/// import `build_volume_mounts` to check itself — so a new mount added to
+/// one without the other previously fell out of scope silently. This test
+/// fails if the two ever drift, comparing full (path, name) pairs (not just
+/// paths) across every `AppType`, not only the ones known today to have
+/// reserved mounts.
+#[test]
+fn test_operator_reserved_mounts_matches_build_volume_mounts() {
+    let mut transmission_with_creds = make_app(AppType::Transmission);
+    transmission_with_creds.spec.admin_credentials = Some(AdminCredentialsSpec {
+        secret_name: "transmission-admin".into(),
+    });
+
+    let mut prowlarr_with_defs = make_app(AppType::Prowlarr);
+    prowlarr_with_defs.spec.app_config = Some(AppConfig::Prowlarr(ProwlarrConfig {
+        custom_definitions: vec![IndexerDefinition {
+            name: "my-tracker".into(),
+            content: "---".into(),
+        }],
+    }));
+
+    let mut ssh_bastion_with_keys = make_app(AppType::SshBastion);
+    ssh_bastion_with_keys.spec.app_config = Some(AppConfig::SshBastion(SshBastionConfig {
+        users: vec![
+            SshUser {
+                name: "alice".into(),
+                uid: 1000,
+                gid: 1000,
+                mode: SshMode::Shell,
+                public_keys: "ssh-ed25519 AAAA".into(),
+                ..Default::default()
+            },
+            SshUser {
+                name: "bob".into(),
+                uid: 1001,
+                gid: 1001,
+                mode: SshMode::RestrictedRsync,
+                public_keys: "ssh-ed25519 BBBB".into(),
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    }));
+
+    let mut scenarios: Vec<ServarrApp> = ALL_APP_TYPES.iter().cloned().map(make_app).collect();
+    scenarios.push(transmission_with_creds);
+    scenarios.push(prowlarr_with_defs);
+    scenarios.push(ssh_bastion_with_keys);
+
+    for app in &scenarios {
+        let expected = expected_reserved_mounts(app);
+        let actual = actual_fixed_mounts(app);
+        assert_eq!(
+            actual, expected,
+            "operator_reserved_mounts (servarr-crds) drifted from build_volume_mounts's \
+             fixed mounts (servarr-resources) for {:?}",
+            app.spec.app
+        );
+    }
 }

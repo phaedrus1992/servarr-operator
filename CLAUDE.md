@@ -53,9 +53,21 @@ alphabetically — matches how the rest of this changelog reads chronologically 
 
 ## Release Branch Workflow
 
-Work targeting milestone `X.Y` branches from and targets `release/X.Y.x`, not `main`. The
-`resolve-base-branch.sh` script in dev-sprint determines the correct base automatically. Never
-retarget a milestone-scoped PR to `main` without explicit user approval.
+Issues are milestoned by category, not version. The milestone determines the base branch:
+
+- **Bug Fixes** and **Small Enhancements** → branch from and target the newest `release/N.x`
+  line (currently `release/1.x`). These ship in patch/minor releases off that line.
+- **Large Features** → branch from and target `main`.
+
+The "newest `release/N.x`" is the highest-major release line on the remote (`release/1.x` today,
+`release/2.x` once it exists). Branches are long-lived per major series, not per patch — there is
+no `release/1.0.x`.
+
+Note: dev-sprint's `resolve-base-branch.sh` only auto-resolves a base when the milestone title
+carries a version token (e.g. `1.0`). Category milestones have none, so it falls back to `main`.
+For category milestones, pick the base by the rule above — do not trust the auto-resolver.
+
+Never retarget a milestone-scoped PR to a different base without explicit user approval.
 
 ## CI Toolchain Note
 
@@ -63,3 +75,20 @@ CI runs Rust 1.97.1, which may enforce stricter Clippy lints than the local tool
 `cargo clippy --all-targets --all-features -- -D warnings` locally before pushing to catch
 lint regressions early. Known stricter lints on 1.94: `clippy::bool_comparison`. The 1.94 -> 1.97.1
 bump (v1.3.1) surfaced no additional stricter lints against this codebase.
+
+## Module Size
+
+Keep production code (everything outside `#[cfg(test)] mod tests`) under **~500 lines per file**;
+treat **~800 lines** as a hard signal to split by concern into submodules, regardless of test code
+appended below it. A file holding more than ~15 top-level functions is the same signal in
+function-count form — group related functions (e.g. backup/restore, admin-credential sync, status
+reporting, cross-app sync) into their own modules under a directory named for the parent (e.g.
+`controller/backup.rs`, `controller/status.rs`) rather than adding another function to an
+already-large file.
+
+Test code naturally grows large (`#[cfg(test)] mod tests` blocks are exempt from this limit) — the
+limit targets production logic, where file size is a proxy for how many unrelated concerns got
+bolted onto one module over time. When adding a new function to a file already past ~500 production
+lines, prefer creating or extending a submodule over appending to the existing file, unless the new
+function is tightly coupled to existing code in that file (shares private helpers, same struct
+impl block, etc.).

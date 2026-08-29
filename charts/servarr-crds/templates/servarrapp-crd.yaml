@@ -5,7 +5,6 @@ metadata:
 spec:
   group: servarr.dev
   names:
-    categories: []
     kind: ServarrApp
     plural: servarrapps
     shortNames:
@@ -654,6 +653,19 @@ spec:
                       - path
                       - server
                       type: object
+                    type: array
+                  removedDefaultVolumes:
+                    default: []
+                    description: |-
+                      Names of compiled default volumes (see
+                      `AppDefaults::resolve_persistence`) this override intentionally
+                      removes rather than replaces. Without this, `resolve_persistence`
+                      always restores any default volume a whole-list-replace override
+                      drops (#367), so there was previously no way to say "I mean to drop
+                      this one" (#376). An explicit override that re-lists the same name in
+                      `volumes` still wins over the tombstone.
+                    items:
+                      type: string
                     type: array
                   volumes:
                     default: []

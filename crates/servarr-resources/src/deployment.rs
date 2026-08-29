@@ -24,6 +24,7 @@ pub fn config_checksum(app: &ServarrApp) -> Option<String> {
         crate::configmap::build_prowlarr_definitions(app),
         // ponytail: sub_path mounts are not auto-updated by kubelet; restart required
         crate::configmap::build_ssh_bastion_restricted_rsync(app),
+        crate::configmap::build_tar_unpack(app),
     ];
 
     let mut hasher = Sha256::new();
@@ -62,7 +63,7 @@ pub fn build(
     app: &ServarrApp,
     image_overrides: &HashMap<String, ImageSpec>,
 ) -> Result<Deployment, String> {
-    let mut defaults = AppDefaults::for_app(&app.spec.app)
+    let mut defaults = AppDefaults::try_for_app(&app.spec.app)
         .inspect_err(|e| common::log_app_defaults_error(app, e))?;
 
     // Apply image override from operator config (env vars / Helm values).
@@ -93,7 +94,9 @@ pub fn build(
     // Always merge the app-type default persistence with the spec so that
     // app-type-specific PVCs (e.g. SshBastion's host-keys) are preserved even
     // when a MediaStack injects NFS mounts via stack defaults.
-    let persistence = defaults.resolve_persistence(app);
+    let persistence = defaults
+        .resolve_persistence(app)
+        .inspect_err(|e| common::log_app_defaults_error(app, e))?;
     // Field-merge probes so partial overrides inherit missing fields from defaults (#59).
     // ProbeSpec::merge_with treats `self` as the user override (it wins per field),
     // so the user spec must be the receiver and the app default the argument.

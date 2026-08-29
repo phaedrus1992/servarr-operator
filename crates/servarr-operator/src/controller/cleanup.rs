@@ -166,15 +166,23 @@ impl ClassifyCleanupSeverity for servarr_api::ApiError {
 ///
 /// See [`finish_cleanup`] for how the `Terminal`/`Transient` outcome of the cleanup body maps to
 /// this function's return value and Event publication.
-pub(super) async fn cleanup_prowlarr_registration(
+pub(crate) async fn cleanup_prowlarr_registration(
     client: &Client,
     app: &ServarrApp,
     namespace: &str,
     recorder: &Recorder,
     obj_ref: &k8s_openapi::api::core::v1::ObjectReference,
+    base_url_override: Option<&str>,
 ) -> Result<(), anyhow::Error> {
-    let outcome =
-        cleanup_prowlarr_registration_body(client, app, namespace, recorder, obj_ref, None).await;
+    let outcome = cleanup_prowlarr_registration_body(
+        client,
+        app,
+        namespace,
+        recorder,
+        obj_ref,
+        base_url_override,
+    )
+    .await;
     finish_cleanup(outcome, "Prowlarr", app, recorder, obj_ref).await
 }
 
@@ -288,7 +296,7 @@ pub(super) async fn cleanup_prowlarr_registration_body(
     use kube::api::ListParams;
 
     let app_name_str = servarr_resources::common::service_name(app);
-    let defaults = servarr_crds::AppDefaults::for_app(&app.spec.app)
+    let defaults = servarr_crds::AppDefaults::try_for_app(&app.spec.app)
         .map_err(|e| cleanup_err_new(e, "failed to load app defaults"))?;
     let svc_spec = app.spec.service.as_ref().unwrap_or(&defaults.service);
     let port = svc_spec.ports.first().map(|p| p.port).unwrap_or(80);
@@ -317,7 +325,7 @@ pub(super) async fn cleanup_prowlarr_registration_body(
         .cleanup_map_err("failed to read Prowlarr API key", |e| e.log_summary())?;
 
     let prowlarr_app_name = servarr_resources::common::service_name(prowlarr);
-    let prowlarr_defaults = servarr_crds::AppDefaults::for_app(&prowlarr.spec.app)
+    let prowlarr_defaults = servarr_crds::AppDefaults::try_for_app(&prowlarr.spec.app)
         .map_err(|e| cleanup_err_new(e, "failed to load app defaults"))?;
     let prowlarr_svc = prowlarr
         .spec
@@ -371,15 +379,23 @@ pub(super) async fn cleanup_prowlarr_registration_body(
 ///
 /// See [`finish_cleanup`] for how the `Terminal`/`Transient` outcome of the cleanup body maps to
 /// this function's return value and Event publication.
-pub(super) async fn cleanup_seerr_registration(
+pub(crate) async fn cleanup_seerr_registration(
     client: &Client,
     app: &ServarrApp,
     namespace: &str,
     recorder: &Recorder,
     obj_ref: &k8s_openapi::api::core::v1::ObjectReference,
+    base_url_override: Option<&str>,
 ) -> Result<(), anyhow::Error> {
-    let outcome =
-        cleanup_seerr_registration_body(client, app, namespace, recorder, obj_ref, None).await;
+    let outcome = cleanup_seerr_registration_body(
+        client,
+        app,
+        namespace,
+        recorder,
+        obj_ref,
+        base_url_override,
+    )
+    .await;
     finish_cleanup(outcome, "Seerr", app, recorder, obj_ref).await
 }
 
@@ -649,7 +665,7 @@ pub(super) async fn cleanup_seerr_registration_body(
     use kube::api::ListParams;
 
     let app_name_str = servarr_resources::common::service_name(app);
-    let defaults_for_app = servarr_crds::AppDefaults::for_app(&app.spec.app)
+    let defaults_for_app = servarr_crds::AppDefaults::try_for_app(&app.spec.app)
         .map_err(|e| cleanup_err_new(e, "failed to load app defaults"))?;
     let svc_spec = app
         .spec
@@ -683,7 +699,7 @@ pub(super) async fn cleanup_seerr_registration_body(
         .cleanup_map_err("failed to read Seerr API key", |e| e.log_summary())?;
 
     let seerr_app_name = servarr_resources::common::service_name(seerr);
-    let seerr_defaults = servarr_crds::AppDefaults::for_app(&seerr.spec.app)
+    let seerr_defaults = servarr_crds::AppDefaults::try_for_app(&seerr.spec.app)
         .map_err(|e| cleanup_err_new(e, "failed to load app defaults"))?;
     let seerr_svc = seerr
         .spec
