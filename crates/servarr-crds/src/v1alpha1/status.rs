@@ -1,5 +1,6 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use servarr_api::TenantSafeMessage;
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -97,13 +98,47 @@ impl Condition {
     }
 
     /// Create a False condition.
-    pub fn fail(condition_type: &str, reason: &str, message: &str, now: &str) -> Self {
+    ///
+    /// `message` must be a [`TenantSafeMessage`] (or convert into one) -- this is the
+    /// compiler-enforced version of the sanitized-string guarantee: a raw `&str` cannot
+    /// satisfy `impl Into<TenantSafeMessage>` (#668), so only sanitizer output or an
+    /// explicit `TenantSafeMessage::new` call can ever reach a tenant-visible Condition.
+    ///
+    /// ```compile_fail
+    /// use servarr_crds::Condition;
+    /// // A raw &str must not silently satisfy `impl Into<TenantSafeMessage>`:
+    /// let _ = Condition::fail("Ready", "Failed", "raw untrusted string", "now");
+    /// ```
+    pub fn fail(
+        condition_type: &str,
+        reason: &str,
+        message: impl Into<TenantSafeMessage>,
+        now: &str,
+    ) -> Self {
         Self {
             condition_type: condition_type.to_string(),
             status: "False".to_string(),
             reason: reason.to_string(),
-            message: message.to_string(),
+            message: message.into().to_string(),
             last_transition_time: now.to_string(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fail_accepts_a_tenant_safe_message_and_preserves_its_text() {
+        let condition = Condition::fail(
+            "Ready",
+            "SyncFailed",
+            TenantSafeMessage::new("curated failure text"),
+            "2026-01-01T00:00:00Z",
+        );
+        assert_eq!(condition.message, "curated failure text");
+        assert_eq!(condition.status, "False");
+        assert_eq!(condition.reason, "SyncFailed");
     }
 }
