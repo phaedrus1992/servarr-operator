@@ -234,13 +234,9 @@ async fn validate_spec(
     // Rule 4: gateway.hosts must be non-empty when gateway.enabled
     validate_gateway_hosts(&parsed, &mut errors);
 
-    // Rule 5: a single persistence override must not itself list the same volume/nfsMount
-    // name twice — `PersistenceSpec::merge_with`'s additive NFS dedup-by-name would
-    // otherwise silently collapse the duplicate before Rule 5a below ever saw it
-    validate_no_duplicate_names_in_override(&parsed, &mut errors);
-
-    // Rule 5a: persistence mount-path / volume-name collisions (including reserved
-    // operator names/paths) and non-canonical '..' mountPaths (#486)
+    // Rule 5: persistence mount-path / volume-name collisions (including reserved operator
+    // names/paths, same-list duplicate names, and non-canonical '..' mountPaths) — the same
+    // checks AppDefaults::resolve_persistence runs at reconcile time (#486)
     validate_persistence_collisions(&parsed, &mut errors);
 
     // Rule 5b: removedDefaultVolumes must name an actual default volume
@@ -507,36 +503,21 @@ async fn validate_no_duplicate_instance(
     }
 }
 
-/// A single persistence override listing the same volume or nfsMount name twice is always
-/// invalid, regardless of merge-time collision checks — `PersistenceSpec::merge_with`'s
-/// additive, dedup-by-name handling of `nfs_mounts` (intentional for merging a base layer
-/// with an override layer) would otherwise silently collapse a same-list duplicate to one
-/// entry before `validate_persistence_collisions` below ever saw two.
-fn validate_no_duplicate_names_in_override(spec: &ServarrAppSpec, errors: &mut Vec<String>) {
-    let Some(ref persistence) = spec.persistence else {
-        return;
-    };
-    let mut seen = std::collections::HashSet::new();
-    for v in &persistence.volumes {
-        if !seen.insert(&v.name) {
-            errors.push(format!("duplicate volume name: '{}'", v.name));
-        }
-    }
-
-    let mut nfs_seen = std::collections::HashSet::new();
-    for nfs in &persistence.nfs_mounts {
-        if !nfs_seen.insert(&nfs.name) {
-            errors.push(format!("duplicate nfsMount name: '{}'", nfs.name));
-        }
-    }
-}
-
 /// Runs the same merge + collision checks `AppDefaults::resolve_persistence` runs at
-/// reconcile time — mount-path collisions, volume-name collisions (including a name
-/// matching one the operator reserves for itself), and a non-canonical `..` mountPath
-/// segment — so a colliding spec is rejected at `kubectl apply` time instead of only
-/// surfacing later as a reconcile-time `ReconcileError` (#486).
+/// reconcile time — same-list duplicate volume/nfsMount names, mount-path collisions,
+/// volume-name collisions (including a name matching one the operator reserves for itself),
+/// and a non-canonical `..` mountPath segment — so a colliding spec is rejected at
+/// `kubectl apply` time instead of only surfacing later as a reconcile-time `ReconcileError`
+/// (#486).
 fn validate_persistence_collisions(spec: &ServarrAppSpec, errors: &mut Vec<String>) {
+    // `try_for_app` fails only when `image-defaults.toml` has no entry for this `AppType` or
+    // carries an unrecognized security profile — `AppDefaults::validate_all()` is meant to
+    // catch that at operator startup, before any CR reaches this webhook. Silently skipping
+    // the check here (rather than erroring) is safe rather than a fail-open hole: reconcile
+    // independently calls the same `try_for_app`/`resolve_persistence` and does not swallow
+    // that error (see `deployment.rs`'s builders and `controller.rs`'s error handling), so a
+    // broken defaults table still hard-fails the reconcile even if admission let the object
+    // through (mirrors the same pattern in `validate_removed_default_volumes` below).
     let Ok(defaults) = AppDefaults::try_for_app(&spec.app) else {
         return;
     };
@@ -1252,7 +1233,7 @@ mod tests {
         let mut errors = Vec::new();
         validate_persistence_collisions(&spec, &mut errors);
         assert_eq!(errors.len(), 1);
-        assert!(errors[0].contains("both use volume name 'config'"));
+        assert!(errors[0].contains("duplicate volume name: 'config'"));
     }
 
     #[test]
@@ -1279,7 +1260,7 @@ mod tests {
             ..Default::default()
         });
         let mut errors = Vec::new();
-        validate_no_duplicate_names_in_override(&spec, &mut errors);
+        validate_persistence_collisions(&spec, &mut errors);
         assert_eq!(errors.len(), 1);
         assert!(errors[0].contains("duplicate nfsMount name"));
     }

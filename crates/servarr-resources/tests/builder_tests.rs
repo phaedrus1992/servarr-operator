@@ -4424,3 +4424,116 @@ fn test_operator_reserved_mounts_matches_build_volume_mounts() {
         );
     }
 }
+
+/// The `ssh-home-<user>` PVC volume name build_volumes injects for a Shell-mode SSH bastion
+/// user — parameterized by username, so (like per-user mount paths) it can't be part of a
+/// statically-enumerable reserved-name list and must be excluded from the drift-guard
+/// comparison the same way `per_user_mount_paths` excludes per-user mount paths above.
+fn per_user_volume_names(app: &ServarrApp) -> std::collections::HashSet<String> {
+    match &app.spec.app_config {
+        Some(AppConfig::SshBastion(sc)) => sc
+            .users
+            .iter()
+            .filter(|u| u.mode == SshMode::Shell)
+            .map(|u| format!("ssh-home-{}", u.name))
+            .collect(),
+        _ => std::collections::HashSet::new(),
+    }
+}
+
+/// The fixed, non-per-user, non-persistence, non-`nfs-<name>` pod-level volume *names*
+/// actually injected by `build_volumes` for `app`.
+fn actual_fixed_volume_names(app: &ServarrApp) -> std::collections::HashSet<String> {
+    let defaults = AppDefaults::try_for_app(&app.spec.app).expect("app defaults");
+    let persistence = defaults
+        .resolve_persistence(app)
+        .expect("resolve persistence");
+    let persistence_names: std::collections::HashSet<String> =
+        persistence.volumes.iter().map(|v| v.name.clone()).collect();
+    let per_user_names = per_user_volume_names(app);
+
+    let deploy = build_deployment(app);
+    let pod_volumes = deploy
+        .spec
+        .unwrap()
+        .template
+        .spec
+        .unwrap()
+        .volumes
+        .unwrap_or_default();
+
+    pod_volumes
+        .into_iter()
+        .map(|v| v.name)
+        .filter(|name| {
+            !persistence_names.contains(name)
+                && !per_user_names.contains(name)
+                && !name.starts_with("nfs-")
+        })
+        .collect()
+}
+
+/// The volume names `operator_reserved_mounts` + `operator_reserved_volume_names` declare
+/// reserved for `app`, combined — the full reserved-*name* domain `find_volume_name_collision`
+/// checks against.
+fn expected_reserved_volume_names(app: &ServarrApp) -> std::collections::HashSet<String> {
+    servarr_crds::operator_reserved_mounts(&app.spec)
+        .into_iter()
+        .map(|(_, name)| name.to_string())
+        .chain(
+            servarr_crds::operator_reserved_volume_names(&app.spec)
+                .into_iter()
+                .map(str::to_string),
+        )
+        .collect()
+}
+
+/// Guards against a SEC-001 recurrence: `find_volume_name_collision` (servarr-crds) checks a
+/// spec's volume names against `operator_reserved_mounts` + `operator_reserved_volume_names`,
+/// but the two lists are hand-maintained independently of `build_volumes` (servarr-resources),
+/// which actually decides what fixed volume names reach the pod spec. A new fixed volume added
+/// to `build_volumes` without a matching reserved-name entry would silently fall outside
+/// volume-name collision detection, the same drift risk #408 fixed for mount paths.
+#[test]
+fn test_operator_reserved_volume_names_matches_build_volumes() {
+    let mut sabnzbd_tar_unpack = make_app(AppType::Sabnzbd);
+    sabnzbd_tar_unpack.spec.app_config = Some(AppConfig::Sabnzbd(SabnzbdConfig {
+        tar_unpack: true,
+        ..Default::default()
+    }));
+
+    let mut sabnzbd_host_whitelist = make_app(AppType::Sabnzbd);
+    sabnzbd_host_whitelist.spec.app_config = Some(AppConfig::Sabnzbd(SabnzbdConfig {
+        host_whitelist: vec!["sonarr.example.com".into()],
+        ..Default::default()
+    }));
+
+    let mut ssh_bastion_with_rsync_user = make_app(AppType::SshBastion);
+    ssh_bastion_with_rsync_user.spec.app_config = Some(AppConfig::SshBastion(SshBastionConfig {
+        users: vec![SshUser {
+            name: "carol".into(),
+            uid: 1002,
+            gid: 1002,
+            mode: SshMode::Rsync,
+            public_keys: "ssh-ed25519 CCCC".into(),
+            ..Default::default()
+        }],
+        ..Default::default()
+    }));
+
+    let mut scenarios: Vec<ServarrApp> = ALL_APP_TYPES.iter().cloned().map(make_app).collect();
+    scenarios.push(sabnzbd_tar_unpack);
+    scenarios.push(sabnzbd_host_whitelist);
+    scenarios.push(ssh_bastion_with_rsync_user);
+
+    for app in &scenarios {
+        let expected = expected_reserved_volume_names(app);
+        let actual = actual_fixed_volume_names(app);
+        assert_eq!(
+            actual, expected,
+            "operator_reserved_mounts/operator_reserved_volume_names (servarr-crds) drifted \
+             from build_volumes's fixed volume names (servarr-resources) for {:?}",
+            app.spec.app
+        );
+    }
+}

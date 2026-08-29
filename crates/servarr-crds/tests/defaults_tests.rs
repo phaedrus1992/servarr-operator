@@ -959,6 +959,77 @@ fn resolve_persistence_errors_on_reserved_volume_name_collision() {
     );
 }
 
+/// `operator_reserved_mounts` only enumerates fixed mount *paths* — several fixed pod-level
+/// volume *names* `build_volumes` injects have no meaningful fixed path (a ConfigMap/Secret
+/// mounted only inside an init container) or a per-user path with a fixed name, so they were
+/// missing from volume-name collision detection entirely until `operator_reserved_volume_names`
+/// was added (#485 follow-up, SEC-001).
+type ReservedVolumeNameCase = (AppType, fn(&mut ServarrApp), &'static str);
+
+#[test]
+fn resolve_persistence_errors_on_reserved_volume_names_missing_fixed_path() {
+    let cases: &[ReservedVolumeNameCase] = &[
+        (AppType::Bazarr, |_app| {}, "bazarr-init-scripts"),
+        (AppType::Bazarr, |_app| {}, "bazarr-api-key"),
+        (
+            AppType::Sabnzbd,
+            |app| {
+                app.spec.app_config = Some(AppConfig::Sabnzbd(SabnzbdConfig {
+                    tar_unpack: true,
+                    ..Default::default()
+                }));
+            },
+            "tar-unpack-scripts",
+        ),
+        (
+            AppType::Sabnzbd,
+            |app| {
+                app.spec.app_config = Some(AppConfig::Sabnzbd(SabnzbdConfig {
+                    host_whitelist: vec!["sonarr.example.com".into()],
+                    ..Default::default()
+                }));
+            },
+            "sabnzbd-scripts",
+        ),
+        (
+            AppType::SshBastion,
+            |app| {
+                app.spec.app_config = Some(AppConfig::SshBastion(SshBastionConfig {
+                    users: vec![SshUser {
+                        name: "alice".into(),
+                        uid: 1000,
+                        gid: 1000,
+                        mode: SshMode::RestrictedRsync,
+                        public_keys: "ssh-ed25519 AAAA".into(),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }));
+            },
+            "restricted-rsync",
+        ),
+    ];
+
+    for (app_type, setup, reserved_name) in cases {
+        let defaults = AppDefaults::try_for_app(app_type).unwrap();
+        let mut app = make_app(app_type.clone());
+        setup(&mut app);
+        app.spec.persistence = Some(PersistenceSpec {
+            volumes: vec![vol(reserved_name, "/unrelated")],
+            nfs_mounts: vec![],
+            removed_default_volumes: vec![],
+        });
+
+        let err = defaults.resolve_persistence(&app).expect_err(&format!(
+            "expected {app_type:?} volume name '{reserved_name}' to collide"
+        ));
+        assert!(
+            err.contains(*reserved_name) && err.contains("reserved by the operator"),
+            "error should name the reserved volume '{reserved_name}' for {app_type:?}, got: {err}"
+        );
+    }
+}
+
 /// An NFS mount's actual pod-spec volume name is prefixed `nfs-<name>` (see
 /// `servarr_resources::deployment::build_volumes`) — a PVC volume named `nfs-data` and an
 /// NFS mount named `data` produce the same pod-spec volume name even though their
@@ -1039,6 +1110,37 @@ fn resolve_persistence_collision_message_names_operator_reserved_mount() {
     assert!(
         err.contains("watch-nfs"),
         "error should name the user's own entry, got: {err}"
+    );
+}
+
+/// The reserved-mount collision message must show the path the *user actually wrote*, not
+/// whichever entry the internal iteration order happened to visit last — those differ once a
+/// symlink-aliased override (#484) or a `..` traversal (#465) resolves to the same normalized
+/// path as the reserved literal but isn't spelled the same way (SEC-006 follow-up).
+#[test]
+fn resolve_persistence_collision_message_names_users_own_raw_path() {
+    let defaults = AppDefaults::try_for_app(&AppType::Transmission).unwrap();
+    let mut app = make_app(AppType::Transmission);
+    app.spec.admin_credentials = Some(AdminCredentialsSpec {
+        secret_name: "transmission-admin".into(),
+    });
+    app.spec.persistence = Some(PersistenceSpec {
+        volumes: vec![],
+        nfs_mounts: vec![NfsMount {
+            name: "admin-nfs".into(),
+            server: "nas.local".into(),
+            path: "/export/admin".into(),
+            mount_path: "/var/run/secrets/admin".into(),
+            read_only: false,
+        }],
+        removed_default_volumes: vec![],
+    });
+
+    let err = defaults.resolve_persistence(&app).unwrap_err();
+    assert!(
+        err.contains("/var/run/secrets/admin"),
+        "error should show the path the user actually wrote, not the reserved literal \
+         '/run/secrets/admin', got: {err}"
     );
 }
 

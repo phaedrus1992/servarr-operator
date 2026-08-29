@@ -152,6 +152,9 @@ impl AppDefaults {
         spec: &super::ServarrAppSpec,
     ) -> Result<PersistenceSpec, String> {
         let override_spec = spec.persistence.as_ref();
+        if let Some(spec) = override_spec {
+            validate_no_duplicate_names_in_override(spec)?;
+        }
 
         let mut persistence = match override_spec {
             None => self.persistence.clone(),
@@ -183,7 +186,25 @@ impl AppDefaults {
 
         let reserved = operator_reserved_mounts(spec);
         find_mount_path_collision(&persistence.volumes, &persistence.nfs_mounts, &reserved)?;
-        find_volume_name_collision(&persistence.volumes, &persistence.nfs_mounts, &reserved)?;
+
+        // Deduplicated: `operator_reserved_volume_names` can overlap with `operator_reserved_mounts`
+        // (e.g. Transmission's "scripts") — a duplicate entry would trip a false self-collision
+        // inside `find_volume_name_collision`, which treats every reserved entry as distinct.
+        let mut reserved_names: Vec<&str> = Vec::new();
+        for name in reserved
+            .iter()
+            .map(|(_, name)| *name)
+            .chain(operator_reserved_volume_names(spec))
+        {
+            if !reserved_names.contains(&name) {
+                reserved_names.push(name);
+            }
+        }
+        find_volume_name_collision(
+            &persistence.volumes,
+            &persistence.nfs_mounts,
+            &reserved_names,
+        )?;
         for volume in &persistence.volumes {
             validate_no_parent_segment(&volume.mount_path)?;
         }
@@ -329,6 +350,56 @@ pub fn operator_reserved_mounts(spec: &super::ServarrAppSpec) -> Vec<(&'static s
     reserved
 }
 
+/// Fixed pod-level volume *names* `build_volume_mounts`'s sibling, `build_volumes`, injects
+/// that `operator_reserved_mounts` above doesn't cover — either because the volume has no
+/// `PersistenceSpec`-relevant mount path at all (a ConfigMap/Secret mounted only inside an
+/// init container, e.g. Bazarr's init-script/api-key volumes), because its mount path is
+/// per-user while its *name* is fixed (e.g. SSH bastion's `restricted-rsync` ConfigMap, whose
+/// path/subPath are per-user but whose volume name is the fixed literal `"restricted-rsync"`),
+/// or because the volume itself is unconditional while its *mount path* is only conditionally
+/// injected (Transmission's `"scripts"` ConfigMap volume always exists, but the mount at
+/// `/custom-cont-init.d/99-transmission-auth.sh` — the only path `operator_reserved_mounts`
+/// tracks for it — only appears once `adminCredentials` is set, so that list can't reserve the
+/// name unconditionally without also over-reserving the path). Excludes `nfs-<name>` (already
+/// covered by `find_volume_name_collision`'s own prefix handling) and `ssh-home-<user>`
+/// (parameterized by username, not enumerable statically the same way per-user paths are
+/// excluded from `operator_reserved_mounts`). Used only by `find_volume_name_collision` —
+/// these names have no meaningful *always-fixed* mount path, so they don't belong in
+/// `operator_reserved_mounts`'s path-collision list (#485 follow-up, SEC-001/SEC-002). May
+/// overlap with `operator_reserved_mounts`'s names (Transmission's `"scripts"`, conditionally,
+/// is in both) — callers must dedupe the combined list before feeding it to
+/// `find_volume_name_collision`, or a duplicate reserved entry trips a false self-collision.
+#[doc(hidden)]
+pub fn operator_reserved_volume_names(spec: &super::ServarrAppSpec) -> Vec<&'static str> {
+    let mut reserved = Vec::new();
+    if matches!(spec.app, super::AppType::Transmission) {
+        reserved.push("scripts");
+    }
+    if matches!(spec.app, super::AppType::Bazarr) {
+        reserved.push("bazarr-init-scripts");
+        reserved.push("bazarr-api-key");
+    }
+    if let Some(super::AppConfig::Sabnzbd(sc)) = &spec.app_config {
+        if sc.tar_unpack {
+            reserved.push("tar-unpack-scripts");
+        }
+        if !sc.host_whitelist.is_empty() {
+            reserved.push("sabnzbd-scripts");
+        }
+    }
+    if let Some(super::AppConfig::SshBastion(sc)) = &spec.app_config
+        && sc.users.iter().any(|u| {
+            matches!(
+                u.mode,
+                super::SshMode::RestrictedRsync | super::SshMode::Rsync
+            )
+        })
+    {
+        reserved.push("restricted-rsync");
+    }
+    reserved
+}
+
 /// Path prefixes known to be symlinks to a different path in the base images most *arr
 /// apps run on (LSIO/Alpine/Debian all symlink `/var/run` -> `/run`) — a persistence
 /// override naming the symlinked form resolves to the same inode as one naming the real
@@ -382,10 +453,14 @@ fn find_mount_path_collision(
     nfs_mounts: &[NfsMount],
     reserved: &[(&str, &str)],
 ) -> Result<(), String> {
-    // (mount_path, name, is_reserved) — is_reserved picks the error wording
-    // below, since a reserved name never appears in the user's own spec and
-    // "persistence entry" would send them looking for it there (#402).
-    let mut seen: std::collections::HashMap<String, (&str, bool)> =
+    // (raw mount_path, name, is_reserved) of the first-seen entry at this normalized path —
+    // is_reserved picks the error wording below, since a reserved name never appears in the
+    // user's own spec and "persistence entry" would send them looking for it there (#402).
+    // Tracking each entry's own raw path (not just the current iteration's) means the message
+    // always names what the *user* actually wrote, even when that differs from the reserved
+    // entry's literal path — e.g. a symlink-aliased override (#484) or a `..` traversal (#465)
+    // (SEC-006 follow-up: previously interpolated whichever entry was iterated last).
+    let mut seen: std::collections::HashMap<String, (&str, &str, bool)> =
         std::collections::HashMap::new();
     let entries = volumes
         .iter()
@@ -398,14 +473,22 @@ fn find_mount_path_collision(
         .chain(reserved.iter().map(|(path, name)| (*path, *name, true)));
     for (mount_path, name, is_reserved) in entries {
         let normalized = normalize_mount_path(mount_path);
-        if let Some((prior, prior_reserved)) = seen.insert(normalized, (name, is_reserved)) {
+        if let Some((prior_path, prior_name, prior_reserved)) =
+            seen.insert(normalized, (mount_path, name, is_reserved))
+        {
             return Err(if prior_reserved || is_reserved {
-                let user_entry = if prior_reserved { name } else { prior };
+                let (user_entry, user_path) = if prior_reserved {
+                    (name, mount_path)
+                } else {
+                    (prior_name, prior_path)
+                };
                 format!(
-                    "persistence entry '{user_entry}' mounts at '{mount_path}', which is reserved by the operator"
+                    "persistence entry '{user_entry}' mounts at '{user_path}', which is reserved by the operator"
                 )
             } else {
-                format!("persistence entries '{prior}' and '{name}' both mount at '{mount_path}'")
+                format!(
+                    "persistence entries '{prior_name}' and '{name}' both mount at '{mount_path}'"
+                )
             });
         }
     }
@@ -418,11 +501,13 @@ fn find_mount_path_collision(
 /// generated pod spec (see `servarr_resources::deployment::build_volumes`), so its name is
 /// compared here under that same prefix to match what the API server actually sees — a PVC
 /// volume named e.g. `nfs-data` collides with an NFS mount named `data` even though their
-/// `PersistenceSpec` names differ.
+/// `PersistenceSpec` names differ. `reserved_names` takes plain names rather than
+/// `operator_reserved_mounts`'s `(path, name)` shape because the reserved-*name* domain is
+/// wider than the reserved-*path* one — see `operator_reserved_volume_names` (SEC-001).
 fn find_volume_name_collision(
     volumes: &[PvcVolume],
     nfs_mounts: &[NfsMount],
-    reserved: &[(&str, &str)],
+    reserved_names: &[&str],
 ) -> Result<(), String> {
     // (display_name, is_reserved), keyed by the actual pod-spec volume name.
     let mut seen: std::collections::HashMap<String, (String, bool)> =
@@ -436,9 +521,9 @@ fn find_volume_name_collision(
                 .map(|m| (format!("nfs-{}", m.name), m.name.clone(), false)),
         )
         .chain(
-            reserved
+            reserved_names
                 .iter()
-                .map(|(_, name)| (name.to_string(), name.to_string(), true)),
+                .map(|name| (name.to_string(), name.to_string(), true)),
         );
     for (volume_name, display_name, is_reserved) in entries {
         if let Some((prior_display, prior_reserved)) =
@@ -458,6 +543,31 @@ fn find_volume_name_collision(
                     "persistence entries '{prior_display}' and '{display_name}' both use volume name '{volume_name}'"
                 )
             });
+        }
+    }
+    Ok(())
+}
+
+/// A single persistence override must not itself list the same volume or nfsMount name
+/// twice. `PersistenceSpec::merge_with`'s additive, dedup-by-name handling of `nfs_mounts`
+/// (intentional for merging a base layer with an override layer, see its doc comment) would
+/// otherwise silently collapse a same-list duplicate to one entry before
+/// `find_volume_name_collision` ever saw two — so this must run before the merge, not after
+/// (#485 follow-up, SEC-004). PVC volumes aren't deduped by `merge_with` (a non-empty override
+/// replaces the list wholesale), so a same-list PVC-name duplicate survives into the merged
+/// view and would be redundantly, but harmlessly, caught again downstream; checked here too
+/// for one consistent error message regardless of which list has the duplicate.
+fn validate_no_duplicate_names_in_override(spec: &PersistenceSpec) -> Result<(), String> {
+    let mut seen = std::collections::HashSet::new();
+    for v in &spec.volumes {
+        if !seen.insert(v.name.as_str()) {
+            return Err(format!("duplicate volume name: '{}'", v.name));
+        }
+    }
+    let mut nfs_seen = std::collections::HashSet::new();
+    for nfs in &spec.nfs_mounts {
+        if !nfs_seen.insert(nfs.name.as_str()) {
+            return Err(format!("duplicate nfsMount name: '{}'", nfs.name));
         }
     }
     Ok(())
