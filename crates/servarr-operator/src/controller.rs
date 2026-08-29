@@ -185,7 +185,7 @@ async fn publish_event(
     event: Event,
 ) {
     if let Err(e) = recorder.publish(&event, obj_ref).await {
-        warn!(error = %e, reason = %event.reason, "failed to publish event");
+        warn!(error = %kube_err_summary(&e), reason = %event.reason, "failed to publish event");
         increment_event_publish_failure(&event.reason);
     }
 }
@@ -1398,6 +1398,9 @@ async fn sync_admin_credentials(
             Condition::fail(
                 condition_types::ADMIN_CREDENTIALS_CONFIGURED,
                 "SyncFailed",
+                // msg is already sanitizer output (.log_summary() / .public_summary()) from
+                // the match arms above, not a raw untrusted string -- category (c) of
+                // TenantSafeMessage::new's contract.
                 TenantSafeMessage::new(msg.as_str()),
                 &now,
             )
