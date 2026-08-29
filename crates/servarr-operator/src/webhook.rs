@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
@@ -235,8 +234,14 @@ async fn validate_spec(
     // Rule 4: gateway.hosts must be non-empty when gateway.enabled
     validate_gateway_hosts(&parsed, &mut errors);
 
-    // Rule 5: Volume names in persistence must be unique
-    validate_unique_volume_names(&parsed, &mut errors);
+    // Rule 5: a single persistence override must not itself list the same volume/nfsMount
+    // name twice — `PersistenceSpec::merge_with`'s additive NFS dedup-by-name would
+    // otherwise silently collapse the duplicate before Rule 5a below ever saw it
+    validate_no_duplicate_names_in_override(&parsed, &mut errors);
+
+    // Rule 5a: persistence mount-path / volume-name collisions (including reserved
+    // operator names/paths) and non-canonical '..' mountPaths (#486)
+    validate_persistence_collisions(&parsed, &mut errors);
 
     // Rule 5b: removedDefaultVolumes must name an actual default volume
     validate_removed_default_volumes(&parsed, &mut errors);
@@ -502,21 +507,41 @@ async fn validate_no_duplicate_instance(
     }
 }
 
-fn validate_unique_volume_names(spec: &ServarrAppSpec, errors: &mut Vec<String>) {
-    if let Some(ref persistence) = spec.persistence {
-        let mut seen = HashSet::new();
-        for v in &persistence.volumes {
-            if !seen.insert(&v.name) {
-                errors.push(format!("duplicate volume name: '{}'", v.name));
-            }
+/// A single persistence override listing the same volume or nfsMount name twice is always
+/// invalid, regardless of merge-time collision checks — `PersistenceSpec::merge_with`'s
+/// additive, dedup-by-name handling of `nfs_mounts` (intentional for merging a base layer
+/// with an override layer) would otherwise silently collapse a same-list duplicate to one
+/// entry before `validate_persistence_collisions` below ever saw two.
+fn validate_no_duplicate_names_in_override(spec: &ServarrAppSpec, errors: &mut Vec<String>) {
+    let Some(ref persistence) = spec.persistence else {
+        return;
+    };
+    let mut seen = std::collections::HashSet::new();
+    for v in &persistence.volumes {
+        if !seen.insert(&v.name) {
+            errors.push(format!("duplicate volume name: '{}'", v.name));
         }
+    }
 
-        let mut nfs_seen = HashSet::new();
-        for nfs in &persistence.nfs_mounts {
-            if !nfs_seen.insert(&nfs.name) {
-                errors.push(format!("duplicate nfsMount name: '{}'", nfs.name));
-            }
+    let mut nfs_seen = std::collections::HashSet::new();
+    for nfs in &persistence.nfs_mounts {
+        if !nfs_seen.insert(&nfs.name) {
+            errors.push(format!("duplicate nfsMount name: '{}'", nfs.name));
         }
+    }
+}
+
+/// Runs the same merge + collision checks `AppDefaults::resolve_persistence` runs at
+/// reconcile time — mount-path collisions, volume-name collisions (including a name
+/// matching one the operator reserves for itself), and a non-canonical `..` mountPath
+/// segment — so a colliding spec is rejected at `kubectl apply` time instead of only
+/// surfacing later as a reconcile-time `ReconcileError` (#486).
+fn validate_persistence_collisions(spec: &ServarrAppSpec, errors: &mut Vec<String>) {
+    let Ok(defaults) = AppDefaults::try_for_app(&spec.app) else {
+        return;
+    };
+    if let Err(e) = defaults.resolve_persistence_for_spec(spec) {
+        errors.push(e);
     }
 }
 
@@ -1179,10 +1204,10 @@ mod tests {
         assert!(errors[0].contains("TCP"));
     }
 
-    // ── validate_unique_volume_names ──
+    // ── validate_persistence_collisions ──
 
     #[test]
-    fn unique_volume_names_ok() {
+    fn persistence_collisions_unique_names_and_paths_ok() {
         let mut spec = minimal_spec(AppType::Sonarr);
         spec.persistence = Some(PersistenceSpec {
             volumes: vec![
@@ -1201,12 +1226,12 @@ mod tests {
             ..Default::default()
         });
         let mut errors = Vec::new();
-        validate_unique_volume_names(&spec, &mut errors);
+        validate_persistence_collisions(&spec, &mut errors);
         assert!(errors.is_empty());
     }
 
     #[test]
-    fn unique_volume_names_duplicate() {
+    fn persistence_collisions_duplicate_volume_name_rejected() {
         let mut spec = minimal_spec(AppType::Sonarr);
         spec.persistence = Some(PersistenceSpec {
             volumes: vec![
@@ -1225,13 +1250,13 @@ mod tests {
             ..Default::default()
         });
         let mut errors = Vec::new();
-        validate_unique_volume_names(&spec, &mut errors);
+        validate_persistence_collisions(&spec, &mut errors);
         assert_eq!(errors.len(), 1);
-        assert!(errors[0].contains("duplicate volume name"));
+        assert!(errors[0].contains("both use volume name 'config'"));
     }
 
     #[test]
-    fn unique_volume_names_duplicate_nfs() {
+    fn persistence_collisions_duplicate_nfs_name_rejected() {
         let mut spec = minimal_spec(AppType::Sonarr);
         spec.persistence = Some(PersistenceSpec {
             volumes: vec![],
@@ -1254,9 +1279,72 @@ mod tests {
             ..Default::default()
         });
         let mut errors = Vec::new();
-        validate_unique_volume_names(&spec, &mut errors);
+        validate_no_duplicate_names_in_override(&spec, &mut errors);
         assert_eq!(errors.len(), 1);
         assert!(errors[0].contains("duplicate nfsMount name"));
+    }
+
+    /// A volume *name* matching one the operator reserves for itself must be rejected at
+    /// admission time, not only surfaced later as a reconcile-time error (#485, #486).
+    #[test]
+    fn persistence_collisions_reserved_volume_name_rejected() {
+        let mut spec = minimal_spec(AppType::Transmission);
+        spec.admin_credentials = Some(AdminCredentialsSpec {
+            secret_name: "transmission-admin".into(),
+        });
+        spec.persistence = Some(PersistenceSpec {
+            volumes: vec![PvcVolume {
+                name: "admin-credentials".into(),
+                mount_path: "/unrelated".into(),
+                ..Default::default()
+            }],
+            nfs_mounts: vec![],
+            ..Default::default()
+        });
+        let mut errors = Vec::new();
+        validate_persistence_collisions(&spec, &mut errors);
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("reserved by the operator"));
+    }
+
+    /// A mountPath colliding with an operator-reserved mount must be rejected at admission
+    /// time — previously this only surfaced at reconcile time (#486).
+    #[test]
+    fn persistence_collisions_reserved_mount_path_rejected() {
+        let mut spec = minimal_spec(AppType::Transmission);
+        spec.persistence = Some(PersistenceSpec {
+            volumes: vec![PvcVolume {
+                name: "override".into(),
+                mount_path: "/watch".into(),
+                ..Default::default()
+            }],
+            nfs_mounts: vec![],
+            ..Default::default()
+        });
+        let mut errors = Vec::new();
+        validate_persistence_collisions(&spec, &mut errors);
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("reserved by the operator"));
+    }
+
+    /// A `..` segment in a mountPath must be rejected at admission time, matching the
+    /// reconcile-time behavior added by #487.
+    #[test]
+    fn persistence_collisions_parent_segment_rejected() {
+        let mut spec = minimal_spec(AppType::Sonarr);
+        spec.persistence = Some(PersistenceSpec {
+            volumes: vec![PvcVolume {
+                name: "scratch".into(),
+                mount_path: "/config/../scratch".into(),
+                ..Default::default()
+            }],
+            nfs_mounts: vec![],
+            ..Default::default()
+        });
+        let mut errors = Vec::new();
+        validate_persistence_collisions(&spec, &mut errors);
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("must not contain '..'"));
     }
 
     // ── validate_removed_default_volumes ──
