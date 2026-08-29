@@ -512,13 +512,17 @@ async fn validate_no_duplicate_instance(
 fn validate_persistence_collisions(spec: &ServarrAppSpec, errors: &mut Vec<String>) {
     // `try_for_app` fails only when `image-defaults.toml` has no entry for this `AppType` or
     // carries an unrecognized security profile — `AppDefaults::validate_all()` is meant to
-    // catch that at operator startup, before any CR reaches this webhook. Silently skipping
-    // the check here (rather than erroring) is safe rather than a fail-open hole: reconcile
-    // independently calls the same `try_for_app`/`resolve_persistence` and does not swallow
-    // that error (see `deployment.rs`'s builders and `controller.rs`'s error handling), so a
-    // broken defaults table still hard-fails the reconcile even if admission let the object
-    // through (mirrors the same pattern in `validate_removed_default_volumes` below).
+    // catch that at operator startup, before any CR reaches this webhook, so this branch is
+    // structurally unreachable today. But if it ever did fire, silently returning would admit
+    // the CR with zero persistence validation from the one layer whose job is to reject bad
+    // specs before admission (#716) — reject instead (mirrors
+    // `validate_removed_default_volumes` below).
     let Ok(defaults) = AppDefaults::try_for_app(&spec.app) else {
+        errors.push(format!(
+            "internal error: no compiled defaults for app type '{}' -- persistence could not be \
+             validated; this indicates a broken image-defaults.toml entry",
+            spec.app
+        ));
         return;
     };
     if let Err(e) = defaults.resolve_persistence_for_spec(spec) {
@@ -536,7 +540,15 @@ fn validate_removed_default_volumes(spec: &ServarrAppSpec, errors: &mut Vec<Stri
     if persistence.removed_default_volumes.is_empty() {
         return;
     }
+    // Structurally unreachable today (see `validate_persistence_collisions` above), but reject
+    // rather than silently admit if it ever did fire (#716).
     let Ok(defaults) = AppDefaults::try_for_app(&spec.app) else {
+        errors.push(format!(
+            "internal error: no compiled defaults for app type '{}' -- \
+             removedDefaultVolumes could not be validated; this indicates a broken \
+             image-defaults.toml entry",
+            spec.app
+        ));
         return;
     };
     for name in &persistence.removed_default_volumes {
