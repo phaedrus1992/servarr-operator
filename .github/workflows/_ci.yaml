@@ -64,10 +64,17 @@ jobs:
         with:
           tool: cargo-llvm-cov
 
+      - name: Check the coverage gate script
+        run: bash scripts/check-coverage_test.sh
+
       - name: Run tests with coverage
         run: |
-          threshold=$(cat .coverage-threshold)
-          cargo llvm-cov --workspace --fail-under-lines "$threshold" --summary-only
+          mkdir -p .tmp
+          cargo llvm-cov --workspace --json --output-path .tmp/coverage.json
+
+      # Both gates read the report produced above, so coverage is measured once.
+      - name: Enforce coverage gates
+        run: bash scripts/check-coverage.sh .tmp/coverage.json
 
   build:
     strategy:
