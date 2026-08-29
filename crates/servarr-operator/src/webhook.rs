@@ -288,9 +288,22 @@ fn validate_identity_immutable(
     old_object: Option<&serde_json::Value>,
     errors: &mut Vec<String>,
 ) {
-    let old_spec = old_object
-        .and_then(|o| o.get("spec"))
-        .and_then(|s| serde_json::from_value::<ServarrAppSpec>(s.clone()).ok());
+    let old_spec_value = old_object.and_then(|o| o.get("spec"));
+    let old_spec =
+        old_spec_value.and_then(|s| serde_json::from_value::<ServarrAppSpec>(s.clone()).ok());
+
+    if old_spec_value.is_some() && old_spec.is_none() {
+        // #720: the stored object's spec failed to parse -- silently treating that the same as
+        // "no old object" would skip the identity-immutability check entirely instead of
+        // rejecting the ambiguous state. Reject rather than fail open (mirrors the pattern in
+        // `validate_persistence_collisions`/`validate_removed_default_volumes`, #716).
+        errors.push(
+            "internal error: stored object's spec could not be parsed -- identity \
+             immutability (spec.app/spec.instance) could not be validated"
+                .to_string(),
+        );
+        return;
+    }
 
     if let Some(old) = old_spec {
         if old.app != spec.app {
@@ -1834,6 +1847,19 @@ mod tests {
         assert_eq!(errors.len(), 1);
         assert!(errors[0].contains("immutable"));
         assert!(errors[0].contains("instance"));
+    }
+
+    #[test]
+    fn identity_immutable_malformed_old_spec_rejects() {
+        // #720: `old_object.spec` present but failing to deserialize as `ServarrAppSpec` (e.g. a
+        // stored object from an incompatible version) must not silently skip the immutability
+        // check -- that's a fail-open on the one layer whose job is to reject it.
+        let new_spec = minimal_spec(AppType::Sonarr);
+        let old_obj = serde_json::json!({ "spec": {} }); // missing required `app` field
+        let mut errors = Vec::new();
+        validate_identity_immutable(&new_spec, Some(&old_obj), &mut errors);
+        assert_eq!(errors.len(), 1, "got {errors:?}");
+        assert!(errors[0].contains("identity"), "got {errors:?}");
     }
 
     // ── validate_backup_schedule ──
