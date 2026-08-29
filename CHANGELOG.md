@@ -17,6 +17,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   names the variable, while a genuinely unset variable logs at `debug!`. Covers
   `WATCH_ALL_NAMESPACES`, `WATCH_NAMESPACE`, `POD_NAME`, `WEBHOOK_ENABLED`, `WEBHOOK_PORT`, the
   `WEBHOOK_TLS_*` paths, and the `DEFAULT_IMAGE_*` overrides (#725, #726, #730).
+- Fix an unusable `RUST_LOG` being discarded in silence — a malformed filter directive (or a
+  non-UTF-8 value) dropped the operator to its default `servarr_operator=info,kube=info` filter
+  with nothing to say so. It now warns and names the parse error. The Helm chart always sets
+  `RUST_LOG`, so this fired on a real, user-edited value rather than a hypothetical one (#731).
+- Fix an empty `WATCH_NAMESPACE` silently widening the operator from one namespace to the whole
+  cluster. The existing `cluster-scoped mode` line never said why it chose that; an empty value
+  now warns on its own (#731).
+- Reject `WEBHOOK_PORT=0` instead of binding an OS-assigned random port while the Service keeps
+  routing to the configured one — with `failurePolicy: Fail` on the validating webhook, that
+  combination failed every `ServarrApp` write in the cluster, and the only clue was a startup
+  line reading `0.0.0.0:0`. It now falls back to 9443 with a warning, matching how an
+  unparseable value was already handled (#731).
 - Fix any app's default image silently sticking on a `helm upgrade --reuse-values` upgrade —
   generalizes the 1.3.1 Seerr-only stale-image detection into a `StaleDefaultImage` Warning Event
   that fires for every app whose env-supplied default image no longer matches the running
