@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
@@ -235,8 +234,10 @@ async fn validate_spec(
     // Rule 4: gateway.hosts must be non-empty when gateway.enabled
     validate_gateway_hosts(&parsed, &mut errors);
 
-    // Rule 5: Volume names in persistence must be unique
-    validate_unique_volume_names(&parsed, &mut errors);
+    // Rule 5: persistence mount-path / volume-name collisions (including reserved operator
+    // names/paths, same-list duplicate names, and non-canonical '..' mountPaths) — the same
+    // checks AppDefaults::resolve_persistence runs at reconcile time (#486)
+    validate_persistence_collisions(&parsed, &mut errors);
 
     // Rule 5b: removedDefaultVolumes must name an actual default volume
     validate_removed_default_volumes(&parsed, &mut errors);
@@ -502,21 +503,26 @@ async fn validate_no_duplicate_instance(
     }
 }
 
-fn validate_unique_volume_names(spec: &ServarrAppSpec, errors: &mut Vec<String>) {
-    if let Some(ref persistence) = spec.persistence {
-        let mut seen = HashSet::new();
-        for v in &persistence.volumes {
-            if !seen.insert(&v.name) {
-                errors.push(format!("duplicate volume name: '{}'", v.name));
-            }
-        }
-
-        let mut nfs_seen = HashSet::new();
-        for nfs in &persistence.nfs_mounts {
-            if !nfs_seen.insert(&nfs.name) {
-                errors.push(format!("duplicate nfsMount name: '{}'", nfs.name));
-            }
-        }
+/// Runs the same merge + collision checks `AppDefaults::resolve_persistence` runs at
+/// reconcile time — same-list duplicate volume/nfsMount names, mount-path collisions,
+/// volume-name collisions (including a name matching one the operator reserves for itself),
+/// and a non-canonical `..` mountPath segment — so a colliding spec is rejected at
+/// `kubectl apply` time instead of only surfacing later as a reconcile-time `ReconcileError`
+/// (#486).
+fn validate_persistence_collisions(spec: &ServarrAppSpec, errors: &mut Vec<String>) {
+    // `try_for_app` fails only when `image-defaults.toml` has no entry for this `AppType` or
+    // carries an unrecognized security profile — `AppDefaults::validate_all()` is meant to
+    // catch that at operator startup, before any CR reaches this webhook. Silently skipping
+    // the check here (rather than erroring) is safe rather than a fail-open hole: reconcile
+    // independently calls the same `try_for_app`/`resolve_persistence` and does not swallow
+    // that error (see `deployment.rs`'s builders and `controller.rs`'s error handling), so a
+    // broken defaults table still hard-fails the reconcile even if admission let the object
+    // through (mirrors the same pattern in `validate_removed_default_volumes` below).
+    let Ok(defaults) = AppDefaults::try_for_app(&spec.app) else {
+        return;
+    };
+    if let Err(e) = defaults.resolve_persistence_for_spec(spec) {
+        errors.push(e);
     }
 }
 
@@ -1179,10 +1185,10 @@ mod tests {
         assert!(errors[0].contains("TCP"));
     }
 
-    // ── validate_unique_volume_names ──
+    // ── validate_persistence_collisions ──
 
     #[test]
-    fn unique_volume_names_ok() {
+    fn persistence_collisions_unique_names_and_paths_ok() {
         let mut spec = minimal_spec(AppType::Sonarr);
         spec.persistence = Some(PersistenceSpec {
             volumes: vec![
@@ -1201,12 +1207,12 @@ mod tests {
             ..Default::default()
         });
         let mut errors = Vec::new();
-        validate_unique_volume_names(&spec, &mut errors);
+        validate_persistence_collisions(&spec, &mut errors);
         assert!(errors.is_empty());
     }
 
     #[test]
-    fn unique_volume_names_duplicate() {
+    fn persistence_collisions_duplicate_volume_name_rejected() {
         let mut spec = minimal_spec(AppType::Sonarr);
         spec.persistence = Some(PersistenceSpec {
             volumes: vec![
@@ -1225,13 +1231,13 @@ mod tests {
             ..Default::default()
         });
         let mut errors = Vec::new();
-        validate_unique_volume_names(&spec, &mut errors);
+        validate_persistence_collisions(&spec, &mut errors);
         assert_eq!(errors.len(), 1);
-        assert!(errors[0].contains("duplicate volume name"));
+        assert!(errors[0].contains("duplicate volume name: 'config'"));
     }
 
     #[test]
-    fn unique_volume_names_duplicate_nfs() {
+    fn persistence_collisions_duplicate_nfs_name_rejected() {
         let mut spec = minimal_spec(AppType::Sonarr);
         spec.persistence = Some(PersistenceSpec {
             volumes: vec![],
@@ -1254,9 +1260,72 @@ mod tests {
             ..Default::default()
         });
         let mut errors = Vec::new();
-        validate_unique_volume_names(&spec, &mut errors);
+        validate_persistence_collisions(&spec, &mut errors);
         assert_eq!(errors.len(), 1);
         assert!(errors[0].contains("duplicate nfsMount name"));
+    }
+
+    /// A volume *name* matching one the operator reserves for itself must be rejected at
+    /// admission time, not only surfaced later as a reconcile-time error (#485, #486).
+    #[test]
+    fn persistence_collisions_reserved_volume_name_rejected() {
+        let mut spec = minimal_spec(AppType::Transmission);
+        spec.admin_credentials = Some(AdminCredentialsSpec {
+            secret_name: "transmission-admin".into(),
+        });
+        spec.persistence = Some(PersistenceSpec {
+            volumes: vec![PvcVolume {
+                name: "admin-credentials".into(),
+                mount_path: "/unrelated".into(),
+                ..Default::default()
+            }],
+            nfs_mounts: vec![],
+            ..Default::default()
+        });
+        let mut errors = Vec::new();
+        validate_persistence_collisions(&spec, &mut errors);
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("reserved by the operator"));
+    }
+
+    /// A mountPath colliding with an operator-reserved mount must be rejected at admission
+    /// time — previously this only surfaced at reconcile time (#486).
+    #[test]
+    fn persistence_collisions_reserved_mount_path_rejected() {
+        let mut spec = minimal_spec(AppType::Transmission);
+        spec.persistence = Some(PersistenceSpec {
+            volumes: vec![PvcVolume {
+                name: "override".into(),
+                mount_path: "/watch".into(),
+                ..Default::default()
+            }],
+            nfs_mounts: vec![],
+            ..Default::default()
+        });
+        let mut errors = Vec::new();
+        validate_persistence_collisions(&spec, &mut errors);
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("reserved by the operator"));
+    }
+
+    /// A `..` segment in a mountPath must be rejected at admission time, matching the
+    /// reconcile-time behavior added by #487.
+    #[test]
+    fn persistence_collisions_parent_segment_rejected() {
+        let mut spec = minimal_spec(AppType::Sonarr);
+        spec.persistence = Some(PersistenceSpec {
+            volumes: vec![PvcVolume {
+                name: "scratch".into(),
+                mount_path: "/config/../scratch".into(),
+                ..Default::default()
+            }],
+            nfs_mounts: vec![],
+            ..Default::default()
+        });
+        let mut errors = Vec::new();
+        validate_persistence_collisions(&spec, &mut errors);
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("must not contain '..'"));
     }
 
     // ── validate_removed_default_volumes ──

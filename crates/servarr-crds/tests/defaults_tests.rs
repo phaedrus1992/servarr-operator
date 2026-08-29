@@ -754,21 +754,22 @@ fn resolve_persistence_removed_default_volume_allows_nfs_mount_at_same_path() {
     );
 }
 
-/// Every override-mount collision case #402 (and its follow-up) covers:
+/// Every override-mount collision case #402 (and its follow-ups) covers:
 /// trailing/doubled-slash normalization against a compiled default, `..`
-/// traversal normalization (#465), and each fixed operator-injected mount
-/// `build_volume_mounts` adds outside `PersistenceSpec` (present only under
-/// the app type + config listed). Negative cases confirm `/run/secrets/admin`
-/// is reserved only when `adminCredentials` is actually set, and that a `..`
-/// path resolving somewhere non-reserved is accepted rather than rejected
-/// outright.
+/// traversal normalization (#465), symlink-alias normalization (#484), each
+/// fixed operator-injected mount `build_volume_mounts` adds outside
+/// `PersistenceSpec` (present only under the app type + config listed), and
+/// outright rejection of a `..` segment that resolves to a non-reserved path
+/// (#487). Negative cases confirm `/run/secrets/admin` is reserved only when
+/// `adminCredentials` is actually set, and that a symlink alias only matches
+/// at a full path-segment boundary (`/var/running` is not `/var/run`).
 #[test]
 fn resolve_persistence_mount_path_collisions() {
     struct Case {
         app_type: AppType,
         setup: fn(&mut ServarrApp),
         mount_path: &'static str,
-        expect_collision: bool,
+        expect_err: bool,
         // `find_mount_path_collision` names the *reserved* entry's raw path in
         // the error, not the colliding override's — for a `..` traversal case
         // those differ, so the assertion needle must be overridable per case
@@ -807,70 +808,84 @@ fn resolve_persistence_mount_path_collisions() {
             app_type: AppType::Sonarr,
             setup: no_setup,
             mount_path: "/downloads/",
-            expect_collision: true,
+            expect_err: true,
             expect_err_contains: None,
         },
         Case {
             app_type: AppType::Sonarr,
             setup: no_setup,
             mount_path: "/downloads//",
-            expect_collision: true,
+            expect_err: true,
             expect_err_contains: None,
         },
         Case {
             app_type: AppType::Transmission,
             setup: no_setup,
             mount_path: "/watch",
-            expect_collision: true,
+            expect_err: true,
             expect_err_contains: None,
         },
         Case {
             app_type: AppType::Transmission,
             setup: with_admin_credentials,
             mount_path: "/run/secrets/admin",
-            expect_collision: true,
+            expect_err: true,
             expect_err_contains: None,
         },
         Case {
             app_type: AppType::Transmission,
             setup: no_setup,
             mount_path: "/run/secrets/admin",
-            expect_collision: false,
+            expect_err: false,
             expect_err_contains: None,
         },
         Case {
             app_type: AppType::Transmission,
             setup: with_admin_credentials,
             mount_path: "/custom-cont-init.d/99-transmission-auth.sh",
-            expect_collision: true,
+            expect_err: true,
             expect_err_contains: None,
         },
         Case {
             app_type: AppType::Prowlarr,
             setup: with_prowlarr_custom_definitions,
             mount_path: "/config/Definitions/Custom",
-            expect_collision: true,
+            expect_err: true,
             expect_err_contains: None,
         },
         Case {
             app_type: AppType::SshBastion,
             setup: with_ssh_bastion_authorized_key,
             mount_path: "/etc/authorized_keys",
-            expect_collision: true,
+            expect_err: true,
             expect_err_contains: None,
         },
         Case {
             app_type: AppType::Transmission,
             setup: no_setup,
             mount_path: "/watch/foo/../../watch",
-            expect_collision: true,
+            expect_err: true,
             expect_err_contains: Some("reserved by the operator"),
         },
         Case {
             app_type: AppType::Sonarr,
             setup: no_setup,
             mount_path: "/downloads/../music",
-            expect_collision: false,
+            expect_err: true,
+            expect_err_contains: Some("must not contain '..'"),
+        },
+        Case {
+            app_type: AppType::Transmission,
+            setup: with_admin_credentials,
+            mount_path: "/var/run/secrets/admin",
+            expect_err: true,
+            expect_err_contains: Some("reserved by the operator"),
+        },
+        Case {
+            app_type: AppType::Transmission,
+            setup: no_setup,
+            mount_path: "/var/running/leftover",
+            expect_err: false,
             expect_err_contains: None,
         },
     ];
@@ -892,11 +907,11 @@ fn resolve_persistence_mount_path_collisions() {
         });
 
         let result = defaults.resolve_persistence(&app);
-        if case.expect_collision {
+        if case.expect_err {
             let err = match result {
                 Err(e) => e,
                 Ok(_) => panic!(
-                    "expected a collision for {:?} at '{}'",
+                    "expected an error for {:?} at '{}'",
                     case.app_type, case.mount_path
                 ),
             };
@@ -910,11 +925,162 @@ fn resolve_persistence_mount_path_collisions() {
             );
         } else if let Err(e) = result {
             panic!(
-                "expected no collision for {:?} at '{}', got: {e}",
+                "expected no error for {:?} at '{}', got: {e}",
                 case.app_type, case.mount_path
             );
         }
     }
+}
+
+/// A user-supplied volume *name* colliding with an operator-reserved name (not just a
+/// reserved *path*) must also fail loudly — Kubernetes rejects two volumes sharing a name
+/// the same way it rejects two mounts at one path (#485).
+#[test]
+fn resolve_persistence_errors_on_reserved_volume_name_collision() {
+    let defaults = AppDefaults::try_for_app(&AppType::Transmission).unwrap();
+    let mut app = make_app(AppType::Transmission);
+    app.spec.admin_credentials = Some(AdminCredentialsSpec {
+        secret_name: "transmission-admin".into(),
+    });
+    // A non-colliding mount_path so only the volume *name* collides with the
+    // operator-reserved "admin-credentials" volume (#465's admin-credentials mount).
+    app.spec.persistence = Some(PersistenceSpec {
+        volumes: vec![vol("admin-credentials", "/unrelated")],
+        nfs_mounts: vec![],
+        removed_default_volumes: vec![],
+    });
+
+    let err = defaults
+        .resolve_persistence(&app)
+        .expect_err("a volume name matching an operator-reserved name must be rejected");
+    assert!(
+        err.contains("admin-credentials") && err.contains("reserved by the operator"),
+        "error should name the reserved volume name, got: {err}"
+    );
+}
+
+/// `operator_reserved_mounts` only enumerates fixed mount *paths* — several fixed pod-level
+/// volume *names* `build_volumes` injects have no meaningful fixed path (a ConfigMap/Secret
+/// mounted only inside an init container) or a per-user path with a fixed name, so they were
+/// missing from volume-name collision detection entirely until `operator_reserved_volume_names`
+/// was added (#485 follow-up, SEC-001).
+type ReservedVolumeNameCase = (AppType, fn(&mut ServarrApp), &'static str);
+
+#[test]
+fn resolve_persistence_errors_on_reserved_volume_names_missing_fixed_path() {
+    let cases: &[ReservedVolumeNameCase] = &[
+        (AppType::Bazarr, |_app| {}, "bazarr-init-scripts"),
+        (AppType::Bazarr, |_app| {}, "bazarr-api-key"),
+        (
+            AppType::Sabnzbd,
+            |app| {
+                app.spec.app_config = Some(AppConfig::Sabnzbd(SabnzbdConfig {
+                    tar_unpack: true,
+                    ..Default::default()
+                }));
+            },
+            "tar-unpack-scripts",
+        ),
+        (
+            AppType::Sabnzbd,
+            |app| {
+                app.spec.app_config = Some(AppConfig::Sabnzbd(SabnzbdConfig {
+                    host_whitelist: vec!["sonarr.example.com".into()],
+                    ..Default::default()
+                }));
+            },
+            "sabnzbd-scripts",
+        ),
+        (
+            AppType::SshBastion,
+            |app| {
+                app.spec.app_config = Some(AppConfig::SshBastion(SshBastionConfig {
+                    users: vec![SshUser {
+                        name: "alice".into(),
+                        uid: 1000,
+                        gid: 1000,
+                        mode: SshMode::RestrictedRsync,
+                        public_keys: "ssh-ed25519 AAAA".into(),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }));
+            },
+            "restricted-rsync",
+        ),
+    ];
+
+    for (app_type, setup, reserved_name) in cases {
+        let defaults = AppDefaults::try_for_app(app_type).unwrap();
+        let mut app = make_app(app_type.clone());
+        setup(&mut app);
+        app.spec.persistence = Some(PersistenceSpec {
+            volumes: vec![vol(reserved_name, "/unrelated")],
+            nfs_mounts: vec![],
+            removed_default_volumes: vec![],
+        });
+
+        let err = defaults.resolve_persistence(&app).expect_err(&format!(
+            "expected {app_type:?} volume name '{reserved_name}' to collide"
+        ));
+        assert!(
+            err.contains(*reserved_name) && err.contains("reserved by the operator"),
+            "error should name the reserved volume '{reserved_name}' for {app_type:?}, got: {err}"
+        );
+    }
+}
+
+/// An NFS mount's actual pod-spec volume name is prefixed `nfs-<name>` (see
+/// `servarr_resources::deployment::build_volumes`) — a PVC volume named `nfs-data` and an
+/// NFS mount named `data` produce the same pod-spec volume name even though their
+/// `PersistenceSpec` names differ, so the name-collision check must compare under that
+/// prefix, not the raw `PersistenceSpec` names (#485).
+#[test]
+fn resolve_persistence_errors_on_nfs_prefixed_volume_name_collision() {
+    let defaults = AppDefaults::try_for_app(&AppType::Sonarr).unwrap();
+    let mut app = make_app(AppType::Sonarr);
+    app.spec.persistence = Some(PersistenceSpec {
+        volumes: vec![vol("nfs-data", "/one")],
+        nfs_mounts: vec![NfsMount {
+            name: "data".into(),
+            server: "nas.local".into(),
+            path: "/export/data".into(),
+            mount_path: "/two".into(),
+            read_only: false,
+        }],
+        removed_default_volumes: vec![],
+    });
+
+    let err = defaults.resolve_persistence(&app).expect_err(
+        "a PVC volume named 'nfs-data' and an NFS mount named 'data' must collide at the pod-spec volume name",
+    );
+    assert!(
+        err.contains("nfs-data"),
+        "error should name the colliding pod-spec volume name, got: {err}"
+    );
+}
+
+/// A non-colliding volume name must still pass — the name-collision check must not be
+/// over-eager and reject unrelated names.
+#[test]
+fn resolve_persistence_no_error_on_distinct_volume_names() {
+    let defaults = AppDefaults::try_for_app(&AppType::Sonarr).unwrap();
+    let mut app = make_app(AppType::Sonarr);
+    app.spec.persistence = Some(PersistenceSpec {
+        volumes: vec![vol("media", "/media")],
+        nfs_mounts: vec![NfsMount {
+            name: "backups".into(),
+            server: "nas.local".into(),
+            path: "/export/backups".into(),
+            mount_path: "/backups".into(),
+            read_only: false,
+        }],
+        removed_default_volumes: vec![],
+    });
+
+    defaults
+        .resolve_persistence(&app)
+        .expect("distinct volume names must not collide");
 }
 
 /// The reserved-mount collision message must name the operator's mount, not
@@ -944,6 +1110,37 @@ fn resolve_persistence_collision_message_names_operator_reserved_mount() {
     assert!(
         err.contains("watch-nfs"),
         "error should name the user's own entry, got: {err}"
+    );
+}
+
+/// The reserved-mount collision message must show the path the *user actually wrote*, not
+/// whichever entry the internal iteration order happened to visit last — those differ once a
+/// symlink-aliased override (#484) or a `..` traversal (#465) resolves to the same normalized
+/// path as the reserved literal but isn't spelled the same way (SEC-006 follow-up).
+#[test]
+fn resolve_persistence_collision_message_names_users_own_raw_path() {
+    let defaults = AppDefaults::try_for_app(&AppType::Transmission).unwrap();
+    let mut app = make_app(AppType::Transmission);
+    app.spec.admin_credentials = Some(AdminCredentialsSpec {
+        secret_name: "transmission-admin".into(),
+    });
+    app.spec.persistence = Some(PersistenceSpec {
+        volumes: vec![],
+        nfs_mounts: vec![NfsMount {
+            name: "admin-nfs".into(),
+            server: "nas.local".into(),
+            path: "/export/admin".into(),
+            mount_path: "/var/run/secrets/admin".into(),
+            read_only: false,
+        }],
+        removed_default_volumes: vec![],
+    });
+
+    let err = defaults.resolve_persistence(&app).unwrap_err();
+    assert!(
+        err.contains("/var/run/secrets/admin"),
+        "error should show the path the user actually wrote, not the reserved literal \
+         '/run/secrets/admin', got: {err}"
     );
 }
 
