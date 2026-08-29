@@ -400,21 +400,13 @@ pub async fn reconcile(stack: Arc<MediaStack>, ctx: Arc<Context>) -> Result<Acti
         // a transient failure (may clear on its own next reconcile) so on-call doesn't have to
         // guess from operator logs alone. "Permission fix" rather than "RBAC fix": a 401/403 can
         // also come from an expired credential, a ResourceQuota, or an admission policy, not
-        // only a Role/RoleBinding. #673 adds a third bucket: a `spec.persistence` config error
-        // (e.g. a mount-path collision) is likewise a manual fix, not a retry.
+        // only a Role/RoleBinding.
         let mut causes = Vec::new();
         if !stuck_orphans.forbidden.is_empty() {
             causes.push(format!(
                 "{} awaiting a manual permission fix (will not self-resolve on retry): {}",
                 stuck_orphans.forbidden.len(),
                 stuck_orphans.forbidden.join(", ")
-            ));
-        }
-        if !stuck_orphans.config_error.is_empty() {
-            causes.push(format!(
-                "{} awaiting a spec.persistence fix (will not self-resolve on retry): {}",
-                stuck_orphans.config_error.len(),
-                stuck_orphans.config_error.join(", ")
             ));
         }
         if !stuck_orphans.transient.is_empty() {
@@ -635,6 +627,20 @@ fn is_not_found(e: &kube::Error) -> bool {
 
 /// Detaches the ownerReference from each named PVC, returning the most severe failure
 /// encountered (if any). A 404 is treated as "already detached", not a failure (#670).
+/// Whether `pvc`'s ownerReferences include `child_uid`. Used by the #719 fallback lookup to
+/// scope a namespace-wide PVC list down to only what this specific child actually owns --
+/// stricter than a label match, which a third-party PVC (e.g. from Helm) could satisfy without
+/// being owned by this child.
+fn pvc_owned_by(pvc: &PersistentVolumeClaim, child_uid: Option<&str>) -> bool {
+    let Some(uid) = child_uid else {
+        return false;
+    };
+    pvc.metadata
+        .owner_references
+        .as_ref()
+        .is_some_and(|refs| refs.iter().any(|r| r.uid == uid))
+}
+
 async fn detach_pvc_owner_refs<'a>(
     pvc_api: &Api<PersistentVolumeClaim>,
     name: &str,
@@ -693,18 +699,20 @@ async fn read_child_ready(sa_api: &Api<ServarrApp>, name: &str, child_name: &str
     }
 }
 
-/// Why a PVC-detach step failed, for on-call triage (#610): a permission denial or a config
-/// problem both need a manual fix and will never clear on retry, while a transient error (5xx,
-/// network) may resolve on its own next reconcile. On-call can't tell these apart from an
-/// identical `warn!` + forever-retry line alone.
+/// Why a PVC-detach step failed, for on-call triage (#610): a permission denial needs a manual
+/// fix and will never clear on retry, while a transient error (5xx, network) may resolve on its
+/// own next reconcile. On-call can't tell these apart from an identical `warn!` +
+/// forever-retry line alone.
+///
+/// A third bucket, `ConfigError` (a `pvc::build_all` config problem such as a
+/// `spec.persistence` mount-path collision, #673), existed here until #719 gave the detach a
+/// namespace-wide ownerReference-based fallback: that fallback always resolves to either a
+/// confirmed-safe outcome or a real `kube::Error` (Forbidden/Transient), so there is no longer a
+/// distinct "config is broken, not a retry" case for this step to report.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DetachFailureCause {
     /// A `401`/`403` API response, or a `kube::Error::Auth` (credential/exec-plugin) failure.
     Forbidden,
-    /// `pvc::build_all` failed before issuing any PVC call -- in practice, a
-    /// `resolve_persistence` mount-path collision the admission webhook didn't catch (#673).
-    /// Needs the CR's `spec.persistence` fixed; will not self-resolve on retry.
-    ConfigError,
     /// Any other failure (5xx, network).
     Transient,
 }
@@ -724,20 +732,18 @@ impl DetachFailureCause {
     fn as_str(self) -> &'static str {
         match self {
             Self::Forbidden => "permission-denied",
-            Self::ConfigError => "config-error",
             Self::Transient => "transient",
         }
     }
 
     /// A child can hit more than one failure cause across its PVCs -- prefer whichever cause is
     /// least likely to self-resolve, since that's the more actionable signal to surface.
-    /// `Forbidden` (needs a cluster-admin permission fix) outranks `ConfigError` (needs the CR's
-    /// owner to fix `spec.persistence`), which outranks `Transient` (may clear on its own).
+    /// `Forbidden` (needs a cluster-admin permission fix) outranks `Transient` (may clear on its
+    /// own).
     fn most_severe(self, other: Self) -> Self {
         fn rank(cause: DetachFailureCause) -> u8 {
             match cause {
-                DetachFailureCause::Forbidden => 2,
-                DetachFailureCause::ConfigError => 1,
+                DetachFailureCause::Forbidden => 1,
                 DetachFailureCause::Transient => 0,
             }
         }
@@ -756,9 +762,6 @@ impl DetachFailureCause {
 struct StuckOrphans {
     /// Blocked on a `401`/`403`/auth failure -- will not self-resolve without a permission fix.
     forbidden: Vec<String>,
-    /// Blocked on a `pvc::build_all` config error (e.g. a mount-path collision) -- will not
-    /// self-resolve without a `spec.persistence` fix (#673).
-    config_error: Vec<String>,
     /// Blocked on any other failure -- may self-resolve on retry.
     transient: Vec<String>,
     /// PVC detach succeeded, but the child delete itself failed -- previously only a `warn!`
@@ -768,17 +771,11 @@ struct StuckOrphans {
 
 impl StuckOrphans {
     fn is_empty(&self) -> bool {
-        self.forbidden.is_empty()
-            && self.config_error.is_empty()
-            && self.transient.is_empty()
-            && self.delete_failed.is_empty()
+        self.forbidden.is_empty() && self.transient.is_empty() && self.delete_failed.is_empty()
     }
 
     fn len(&self) -> usize {
-        self.forbidden.len()
-            + self.config_error.len()
-            + self.transient.len()
-            + self.delete_failed.len()
+        self.forbidden.len() + self.transient.len() + self.delete_failed.len()
     }
 }
 
@@ -831,26 +828,26 @@ async fn cleanup_orphaned_children(
                 //
                 // #719: the only reason `build_all` failed is that it can't recompute this
                 // child's PVC names from its (broken) spec -- it doesn't mean the PVCs
-                // themselves are gone. Fall back to finding them by the
-                // `app.kubernetes.io/instance` label every PVC this operator creates already
-                // carries (`servarr_resources::common::labels`), so the detach can still run
-                // instead of leaving the PVC's ownerReference attached forever.
+                // themselves are gone. Fall back to a namespace-wide PVC list filtered by
+                // ownerReference UID, so the detach can still run instead of leaving the PVC's
+                // ownerReference attached forever. Filtering by ownerReference rather than by
+                // the `app.kubernetes.io/instance` label (which Helm and other tools also set
+                // to their own release name) means this can never touch a PVC the operator
+                // doesn't actually own, and scanning the whole namespace rather than a
+                // label-filtered subset means an empty result is a confident "nothing to
+                // detach," not "we didn't look hard enough" (security-audit follow-up).
                 warn!(
                     %name, child = %child_name, error = %e,
-                    "failed to compute child's PVCs before orphan cleanup; falling back to a \
-                     label-based lookup"
+                    "failed to compute child's PVCs before orphan cleanup; falling back to an \
+                     ownerReference-based lookup across the namespace"
                 );
-                let selector = format!("app.kubernetes.io/instance={child_name}");
-                match pvc_api.list(&ListParams::default().labels(&selector)).await {
-                    Ok(list) if list.items.is_empty() => {
-                        // Can't confirm there's nothing to detach -- treat as unresolved rather
-                        // than risk deleting a child whose PVC ownership is unknown.
-                        Some(DetachFailureCause::ConfigError)
-                    }
+                let child_uid = child.metadata.uid.as_deref();
+                match pvc_api.list(&ListParams::default()).await {
                     Ok(list) => {
                         let pvc_names: Vec<&str> = list
                             .items
                             .iter()
+                            .filter(|pvc| pvc_owned_by(pvc, child_uid))
                             .filter_map(|pvc| pvc.metadata.name.as_deref())
                             .collect();
                         detach_pvc_owner_refs(pvc_api, name, &child_name, pvc_names.into_iter())
@@ -859,10 +856,10 @@ async fn cleanup_orphaned_children(
                     Err(list_err) => {
                         warn!(
                             %name, child = %child_name, error = %kube_err_summary(&list_err),
-                            "label-based PVC lookup also failed; orphan will retry PVC detach \
-                             next reconcile"
+                            "namespace-wide PVC lookup also failed; orphan will retry PVC \
+                             detach next reconcile"
                         );
-                        Some(DetachFailureCause::ConfigError)
+                        Some(DetachFailureCause::from_kube_error(&list_err))
                     }
                 }
             }
@@ -877,9 +874,6 @@ async fn cleanup_orphaned_children(
             );
             match cause {
                 DetachFailureCause::Forbidden => stuck_orphans.forbidden.push(child_name.clone()),
-                DetachFailureCause::ConfigError => {
-                    stuck_orphans.config_error.push(child_name.clone());
-                }
                 DetachFailureCause::Transient => stuck_orphans.transient.push(child_name.clone()),
             }
             continue;
@@ -1359,7 +1353,6 @@ mod tests {
 
         assert_eq!(stuck.delete_failed, vec!["orphan-app".to_string()]);
         assert!(stuck.forbidden.is_empty(), "got {stuck:?}");
-        assert!(stuck.config_error.is_empty(), "got {stuck:?}");
         assert!(stuck.transient.is_empty(), "got {stuck:?}");
     }
 
@@ -1465,50 +1458,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cleanup_orphaned_children_classifies_mount_collision_as_config_error() {
+    async fn cleanup_orphaned_children_mount_collision_falls_back_and_classifies_list_failure() {
         // #673: `pvc::build_all` can fail before it ever issues a PVC PATCH -- a
         // `resolve_persistence` mount-path collision that the (optional) admission webhook
-        // didn't catch. That must not be lumped in with `Transient`: fixing `spec.persistence`
-        // is the only way this clears, and telling on-call "may self-resolve" is misleading.
-        let mock_server = wiremock::MockServer::start().await;
-        let client = crate::testutils::build_mock_client(&mock_server.uri()).await;
-        let sa_api = Api::<ServarrApp>::namespaced(client.clone(), "test");
-        let pvc_api = Api::<PersistentVolumeClaim>::namespaced(client.clone(), "test");
-
-        let mut orphan = make_orphan("orphan-app", "test");
-        orphan.spec.persistence = Some(servarr_crds::PersistenceSpec {
-            volumes: vec![],
-            nfs_mounts: vec![servarr_crds::NfsMount {
-                name: "downloads-nfs".into(),
-                server: "nas.local".into(),
-                path: "/export/downloads".into(),
-                mount_path: "/downloads".into(),
-                read_only: false,
-            }],
-            removed_default_volumes: vec![],
-        });
-
-        let existing = orphan_list(vec![orphan]);
-        let desired: HashSet<String> = HashSet::new();
-
-        let stuck =
-            cleanup_orphaned_children(&sa_api, &pvc_api, "stack", &desired, &existing).await;
-
-        assert_eq!(stuck.config_error, vec!["orphan-app".to_string()]);
-        assert!(stuck.forbidden.is_empty(), "got {stuck:?}");
-        assert!(stuck.transient.is_empty(), "got {stuck:?}");
-    }
-
-    #[tokio::test]
-    async fn cleanup_orphaned_children_falls_back_to_label_lookup_on_config_error() {
-        // #719: `pvc::build_all`'s `Err` branch used to give up entirely -- the only way it
-        // found a child's PVCs was recomputing their names via the same call that just failed,
-        // so the PVC ownerReference detach (and the child delete) never ran. That leaves the
-        // PVC still owned by the child, so a later stack delete cascades GC into it -- the
-        // exact data loss the detach step exists to prevent. A label-based lookup (by
-        // `app.kubernetes.io/instance`, the label every PVC this operator creates already
-        // carries -- see `servarr_resources::common::labels`) must find the PVC even when
-        // `pvc::build_all` can't recompute its name.
+        // didn't catch. #719 added a namespace-wide ownerReference-based fallback lookup for
+        // this case; when the fallback's own list call ALSO fails (here: a transient 500), the
+        // failure must be classified by `DetachFailureCause::from_kube_error`, not hardcoded to
+        // `ConfigError` -- otherwise on-call is told "needs a manual spec.persistence fix" for
+        // what might just be a transient API hiccup (silent-failure-hunter follow-up on #719).
         let mock_server = wiremock::MockServer::start().await;
         let client = crate::testutils::build_mock_client(&mock_server.uri()).await;
         let sa_api = Api::<ServarrApp>::namespaced(client.clone(), "test");
@@ -1531,9 +1488,63 @@ mod tests {
             .and(wiremock::matchers::path(
                 "/api/v1/namespaces/test/persistentvolumeclaims",
             ))
-            .and(wiremock::matchers::query_param(
-                "labelSelector",
-                "app.kubernetes.io/instance=orphan-app",
+            .respond_with(
+                wiremock::ResponseTemplate::new(500).set_body_json(serde_json::json!({
+                    "apiVersion": "v1",
+                    "kind": "Status",
+                    "status": "Failure",
+                    "reason": "InternalError",
+                    "code": 500
+                })),
+            )
+            .mount(&mock_server)
+            .await;
+
+        let existing = orphan_list(vec![orphan]);
+        let desired: HashSet<String> = HashSet::new();
+
+        let stuck =
+            cleanup_orphaned_children(&sa_api, &pvc_api, "stack", &desired, &existing).await;
+
+        assert_eq!(
+            stuck.transient,
+            vec!["orphan-app".to_string()],
+            "got {stuck:?}"
+        );
+        assert!(stuck.forbidden.is_empty(), "got {stuck:?}");
+    }
+
+    #[tokio::test]
+    async fn cleanup_orphaned_children_falls_back_to_ownerref_lookup_when_build_all_fails() {
+        // #719: `pvc::build_all`'s `Err` branch used to give up entirely -- the only way it
+        // found a child's PVCs was recomputing their names via the same call that just failed,
+        // so the PVC ownerReference detach (and the child delete) never ran. That leaves the
+        // PVC still owned by the child, so a later stack delete cascades GC into it -- the
+        // exact data loss the detach step exists to prevent. Falls back to a namespace-wide PVC
+        // list filtered by ownerReference UID (not by label -- a label match alone could catch
+        // an unrelated third-party PVC, see the security-audit follow-up test below) so the
+        // detach still runs even though `pvc::build_all` can't recompute the PVC's name.
+        let mock_server = wiremock::MockServer::start().await;
+        let client = crate::testutils::build_mock_client(&mock_server.uri()).await;
+        let sa_api = Api::<ServarrApp>::namespaced(client.clone(), "test");
+        let pvc_api = Api::<PersistentVolumeClaim>::namespaced(client.clone(), "test");
+
+        let mut orphan = make_orphan("orphan-app", "test");
+        orphan.spec.persistence = Some(servarr_crds::PersistenceSpec {
+            volumes: vec![],
+            nfs_mounts: vec![servarr_crds::NfsMount {
+                name: "downloads-nfs".into(),
+                server: "nas.local".into(),
+                path: "/export/downloads".into(),
+                mount_path: "/downloads".into(),
+                read_only: false,
+            }],
+            removed_default_volumes: vec![],
+        });
+
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path(
+                "/api/v1/namespaces/test/persistentvolumeclaims",
             ))
             .respond_with(
                 wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
@@ -1542,7 +1553,17 @@ mod tests {
                     "items": [{
                         "apiVersion": "v1",
                         "kind": "PersistentVolumeClaim",
-                        "metadata": { "name": "orphan-app-config", "namespace": "test" }
+                        "metadata": {
+                            "name": "orphan-app-config",
+                            "namespace": "test",
+                            "ownerReferences": [{
+                                "apiVersion": "servarr.dev/v1alpha1",
+                                "kind": "ServarrApp",
+                                "name": "orphan-app",
+                                "uid": "test-uid",
+                                "controller": true
+                            }]
+                        }
                     }]
                 })),
             )
@@ -1588,9 +1609,96 @@ mod tests {
 
         assert!(
             stuck.is_empty(),
-            "label-based fallback found and detached the PVC -> no stuck orphan, got {stuck:?}"
+            "ownerReference-based fallback found and detached the truly-owned PVC -> no stuck \
+             orphan, got {stuck:?}"
         );
         // The GET/PATCH/DELETE mocks' expect(1) are verified when mock_server drops.
+    }
+
+    #[tokio::test]
+    async fn cleanup_orphaned_children_fallback_skips_unowned_pvc_with_matching_label() {
+        // Security-audit follow-up on #719: `app.kubernetes.io/instance` is a standard label
+        // other tools (e.g. Helm) also set to their own release name, so a same-namespace PVC
+        // this operator never created could carry a matching instance label without being
+        // owned by this child. The fallback must filter by ownerReference UID, not by label, so
+        // it never detaches a PVC it doesn't own.
+        let mock_server = wiremock::MockServer::start().await;
+        let client = crate::testutils::build_mock_client(&mock_server.uri()).await;
+        let sa_api = Api::<ServarrApp>::namespaced(client.clone(), "test");
+        let pvc_api = Api::<PersistentVolumeClaim>::namespaced(client.clone(), "test");
+
+        let mut orphan = make_orphan("orphan-app", "test");
+        orphan.spec.persistence = Some(servarr_crds::PersistenceSpec {
+            volumes: vec![],
+            nfs_mounts: vec![servarr_crds::NfsMount {
+                name: "downloads-nfs".into(),
+                server: "nas.local".into(),
+                path: "/export/downloads".into(),
+                mount_path: "/downloads".into(),
+                read_only: false,
+            }],
+            removed_default_volumes: vec![],
+        });
+
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path(
+                "/api/v1/namespaces/test/persistentvolumeclaims",
+            ))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "apiVersion": "v1",
+                    "kind": "PersistentVolumeClaimList",
+                    "items": [{
+                        "apiVersion": "v1",
+                        "kind": "PersistentVolumeClaim",
+                        "metadata": {
+                            "name": "unrelated-helm-release-orphan-app",
+                            "namespace": "test",
+                            "labels": { "app.kubernetes.io/instance": "orphan-app" }
+                        }
+                    }]
+                })),
+            )
+            .mount(&mock_server)
+            .await;
+
+        // The unowned PVC must never be patched.
+        wiremock::Mock::given(wiremock::matchers::method("PATCH"))
+            .and(wiremock::matchers::path(
+                "/api/v1/namespaces/test/persistentvolumeclaims/unrelated-helm-release-orphan-app",
+            ))
+            .respond_with(wiremock::ResponseTemplate::new(200))
+            .expect(0)
+            .mount(&mock_server)
+            .await;
+
+        wiremock::Mock::given(wiremock::matchers::method("DELETE"))
+            .and(wiremock::matchers::path(
+                "/apis/servarr.dev/v1alpha1/namespaces/test/servarrapps/orphan-app",
+            ))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "apiVersion": "v1",
+                    "kind": "Status",
+                    "status": "Success"
+                })),
+            )
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let existing = orphan_list(vec![orphan]);
+        let desired: HashSet<String> = HashSet::new();
+
+        let stuck =
+            cleanup_orphaned_children(&sa_api, &pvc_api, "stack", &desired, &existing).await;
+
+        assert!(
+            stuck.is_empty(),
+            "no PVC actually owned by this child -> safe to proceed, got {stuck:?}"
+        );
+        // The PATCH mock's expect(0) verifies the unowned PVC was never touched; the DELETE
+        // mock's expect(1) verifies cleanup still proceeded.
     }
 
     #[test]
@@ -1609,22 +1717,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn detach_failure_cause_most_severe_ranks_config_error_between_forbidden_and_transient() {
-        assert_eq!(
-            DetachFailureCause::ConfigError.most_severe(DetachFailureCause::Forbidden),
-            DetachFailureCause::Forbidden
-        );
-        assert_eq!(
-            DetachFailureCause::ConfigError.most_severe(DetachFailureCause::Transient),
-            DetachFailureCause::ConfigError
-        );
-        assert_eq!(
-            DetachFailureCause::ConfigError.most_severe(DetachFailureCause::ConfigError),
-            DetachFailureCause::ConfigError
-        );
-    }
-
     mod stuck_orphans_proptests {
         use super::*;
         use proptest::prelude::*;
@@ -1632,7 +1724,6 @@ mod tests {
         fn any_cause() -> impl Strategy<Value = DetachFailureCause> {
             proptest::sample::select(&[
                 DetachFailureCause::Forbidden,
-                DetachFailureCause::ConfigError,
                 DetachFailureCause::Transient,
             ])
         }
@@ -1645,21 +1736,39 @@ mod tests {
             }
 
             #[test]
+            fn most_severe_is_associative(a in any_cause(), b in any_cause(), c in any_cause()) {
+                // #719 follow-up (property-test-gap-finder): `detach_pvc_owner_refs` folds
+                // `most_severe` over an arbitrary-order sequence of PVC-patch failures, so the
+                // fold's result must not depend on how the sequence associates.
+                prop_assert_eq!(
+                    a.most_severe(b).most_severe(c),
+                    a.most_severe(b.most_severe(c))
+                );
+            }
+
+            #[test]
+            fn most_severe_fold_is_order_independent(causes in proptest::collection::vec(any_cause(), 1..8)) {
+                let forward = causes.iter().copied().reduce(DetachFailureCause::most_severe);
+                let mut reversed = causes.clone();
+                reversed.reverse();
+                let backward = reversed.iter().copied().reduce(DetachFailureCause::most_severe);
+                prop_assert_eq!(forward, backward);
+            }
+
+            #[test]
             fn len_and_is_empty_agree(
                 forbidden in proptest::collection::vec("[a-z-]{1,8}", 0..4),
-                config_error in proptest::collection::vec("[a-z-]{1,8}", 0..4),
                 transient in proptest::collection::vec("[a-z-]{1,8}", 0..4),
                 delete_failed in proptest::collection::vec("[a-z-]{1,8}", 0..4),
             ) {
                 let stuck = StuckOrphans {
                     forbidden: forbidden.clone(),
-                    config_error: config_error.clone(),
                     transient: transient.clone(),
                     delete_failed: delete_failed.clone(),
                 };
                 prop_assert_eq!(
                     stuck.len(),
-                    forbidden.len() + config_error.len() + transient.len() + delete_failed.len()
+                    forbidden.len() + transient.len() + delete_failed.len()
                 );
                 // Deliberately comparing `len() == 0` against `is_empty()` -- this is the
                 // invariant under test, not a style choice `is_empty()` would make tautological.
