@@ -1,0 +1,63 @@
+# Per-file line-coverage floors, enforced by scripts/check-coverage.sh.
+#
+# The aggregate gate in .coverage-threshold can pass while one module sits far below the
+# line and another sits near 100%. These floors catch that (#643).
+#
+# Format: <repo-relative path> <floor percent>
+#
+# The "*" entry is the floor for any file with no entry of its own, so a new module added
+# without tests fails the gate rather than passing unnoticed.
+#
+# Each floor sits a couple of points below where the file measured when it was written, so
+# a refactor that moves a line or two does not fail the build. Raise a floor when the
+# script reports the file sitting well above it — never lower one to make CI pass.
+#
+# main.rs and telemetry.rs carry honest low floors rather than being dropped from the
+# report. Excluding a file inflates the number by measuring less code (#71).
+
+* 80
+
+crates/servarr-api/src/bazarr.rs 82
+crates/servarr-api/src/client.rs 94
+crates/servarr-api/src/jellyfin.rs 91
+crates/servarr-api/src/k8s.rs 96
+crates/servarr-api/src/maintainerr.rs 94
+crates/servarr-api/src/plex.rs 98
+crates/servarr-api/src/prowlarr.rs 97
+crates/servarr-api/src/sabnzbd.rs 97
+crates/servarr-api/src/seerr.rs 94
+crates/servarr-api/src/servarr_v3.rs 95
+crates/servarr-api/src/tautulli.rs 97
+crates/servarr-api/src/tenant_safe_message.rs 98
+crates/servarr-api/src/test_support.rs 85
+crates/servarr-api/src/transmission.rs 96
+crates/servarr-crds/src/v1alpha1/app_config.rs 98
+crates/servarr-crds/src/v1alpha1/defaults.rs 95
+crates/servarr-crds/src/v1alpha1/legacy_field_aliases.rs 87
+crates/servarr-crds/src/v1alpha1/media_stack.rs 87
+crates/servarr-crds/src/v1alpha1/spec.rs 98
+crates/servarr-crds/src/v1alpha1/status.rs 98
+crates/servarr-crds/src/v1alpha1/types.rs 94
+crates/servarr-operator/src/context.rs 97
+crates/servarr-operator/src/controller/cleanup.rs 84
+crates/servarr-operator/src/controller.rs 85
+crates/servarr-operator/src/crd_check.rs 82
+crates/servarr-operator/src/env.rs 96
+crates/servarr-operator/src/main.rs 0
+crates/servarr-operator/src/media_stack_controller.rs 84
+crates/servarr-operator/src/metrics.rs 98
+crates/servarr-operator/src/server.rs 80
+crates/servarr-operator/src/telemetry.rs 0
+crates/servarr-operator/src/testutils.rs 98
+crates/servarr-operator/src/webhook.rs 92
+crates/servarr-resources/src/certificate.rs 88
+crates/servarr-resources/src/common.rs 95
+crates/servarr-resources/src/configmap.rs 88
+crates/servarr-resources/src/deployment.rs 94
+crates/servarr-resources/src/httproute.rs 90
+crates/servarr-resources/src/networkpolicy.rs 96
+crates/servarr-resources/src/nfs_server.rs 97
+crates/servarr-resources/src/pvc.rs 96
+crates/servarr-resources/src/secret.rs 98
+crates/servarr-resources/src/service.rs 96
+crates/servarr-resources/src/tcproute.rs 94
