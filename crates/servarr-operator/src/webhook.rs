@@ -35,6 +35,14 @@ pub struct WebhookConfig {
 impl Default for WebhookConfig {
     fn default() -> Self {
         let port = match crate::env::var("WEBHOOK_PORT") {
+            // Port 0 parses as a valid `u16`, but it tells the OS to pick any free port. The
+            // Service then routes to a port nothing listens on, and admission fails cluster-wide.
+            Some(s) if s.trim() == "0" => {
+                warn!(
+                    "WEBHOOK_PORT=0 would bind a random port, using default {DEFAULT_WEBHOOK_PORT}"
+                );
+                DEFAULT_WEBHOOK_PORT
+            }
             Some(s) => match s.parse::<u16>() {
                 Ok(p) => {
                     debug!(port = p, "using WEBHOOK_PORT from env");
@@ -784,6 +792,61 @@ fn parse_memory(s: &str) -> Option<u64> {
         }
     }
     s.parse().ok()
+}
+
+#[cfg(test)]
+mod config_tests {
+    use super::*;
+
+    #[test]
+    fn port_falls_back_to_the_default_when_unset() {
+        temp_env::with_var_unset("WEBHOOK_PORT", || {
+            assert_eq!(WebhookConfig::default().port, DEFAULT_WEBHOOK_PORT);
+        });
+    }
+
+    #[test]
+    fn port_uses_an_explicit_value() {
+        temp_env::with_var("WEBHOOK_PORT", Some("8443"), || {
+            assert_eq!(WebhookConfig::default().port, 8443);
+        });
+    }
+
+    #[test]
+    fn port_falls_back_to_the_default_when_unparseable() {
+        temp_env::with_var("WEBHOOK_PORT", Some("not-a-port"), || {
+            assert_eq!(WebhookConfig::default().port, DEFAULT_WEBHOOK_PORT);
+        });
+    }
+
+    #[test]
+    fn port_zero_falls_back_to_the_default() {
+        for value in ["0", " 0 "] {
+            temp_env::with_var("WEBHOOK_PORT", Some(value), || {
+                assert_eq!(
+                    WebhookConfig::default().port,
+                    DEFAULT_WEBHOOK_PORT,
+                    "{value} must not bind a random port"
+                );
+            });
+        }
+    }
+
+    #[test]
+    fn tls_paths_derive_from_the_tls_dir() {
+        temp_env::with_vars(
+            [
+                ("WEBHOOK_TLS_DIR", Some("/custom/tls")),
+                ("WEBHOOK_TLS_CERT", None),
+                ("WEBHOOK_TLS_KEY", None),
+            ],
+            || {
+                let config = WebhookConfig::default();
+                assert_eq!(config.tls_cert, Path::new("/custom/tls/tls.crt"));
+                assert_eq!(config.tls_key, Path::new("/custom/tls/tls.key"));
+            },
+        );
+    }
 }
 
 #[cfg(test)]
