@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc ddfb6edbe20f41b2cb511855cc7c3fb8c69839c71ca09b895d0d5e0e370d0f61 # shrinks to (volumes, nfs_mounts) = ([], [NfsMount { name: "entry-0", server: "nas.local", path: "/export", mount_path: "/a/x/..", read_only: false }])

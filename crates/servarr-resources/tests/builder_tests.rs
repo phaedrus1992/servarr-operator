@@ -4355,7 +4355,7 @@ fn actual_fixed_mounts(app: &ServarrApp) -> std::collections::HashSet<(String, S
 /// The (mount_path, volume_name) pairs `operator_reserved_mounts` declares
 /// reserved for `app`.
 fn expected_reserved_mounts(app: &ServarrApp) -> std::collections::HashSet<(String, String)> {
-    servarr_crds::operator_reserved_mounts(app)
+    servarr_crds::operator_reserved_mounts(&app.spec)
         .into_iter()
         .map(|(path, name)| (path.to_string(), name.to_string()))
         .collect()

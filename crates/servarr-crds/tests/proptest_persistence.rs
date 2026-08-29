@@ -127,10 +127,21 @@ fn has_collision(volumes: &[PvcVolume], nfs_mounts: &[NfsMount]) -> bool {
     unique.len() != paths.len()
 }
 
+/// Mirrors defaults.rs's `validate_no_parent_segment` (#487): a raw `..` segment is now
+/// rejected outright, even when it resolves to a path that doesn't collide with anything.
+fn has_parent_segment(volumes: &[PvcVolume], nfs_mounts: &[NfsMount]) -> bool {
+    volumes
+        .iter()
+        .map(|v| v.mount_path.as_str())
+        .chain(nfs_mounts.iter().map(|m| m.mount_path.as_str()))
+        .any(|path| path.split('/').any(|segment| segment == ".."))
+}
+
 proptest! {
     /// Completeness: whenever the generated entries share a normalized mount
-    /// path (including trailing-slash variants of the same path),
-    /// `resolve_persistence` must reject them.
+    /// path (including trailing-slash variants of the same path), or any
+    /// entry's raw mount_path contains a `..` segment (#487), `resolve_persistence`
+    /// must reject them.
     #[test]
     fn collision_detected_whenever_paths_collide((volumes, nfs_mounts) in arb_entries()) {
         let defaults = empty_defaults();
@@ -142,7 +153,8 @@ proptest! {
         });
 
         let result = defaults.resolve_persistence(&app);
-        prop_assert_eq!(result.is_err(), has_collision(&volumes, &nfs_mounts));
+        let expect_err = has_collision(&volumes, &nfs_mounts) || has_parent_segment(&volumes, &nfs_mounts);
+        prop_assert_eq!(result.is_err(), expect_err);
     }
 
     /// `resolve_persistence` must not panic on arbitrary valid overrides,
