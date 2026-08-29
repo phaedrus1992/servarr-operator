@@ -330,6 +330,18 @@ than replaces. Without naming a volume here, the operator always restores any ap
 volume a `volumes` override drops -- there is no other way to opt out of a default volume. Listing
 the same name in `volumes` still wins over a tombstone here.
 
+**Collision rules:** a `volumes`/`nfsMounts` entry is rejected (at `kubectl apply` time, or on
+the next reconcile if the admission webhook is disabled) when:
+
+- its `mountPath` matches another entry's, an operator-reserved mount (e.g. Transmission's
+  `/watch`, or `/run/secrets/admin` when `adminCredentials` is set), or a reserved mount spelled
+  through a known base-image symlink alias (e.g. `/var/run/...` for a mount reserved at
+  `/run/...`)
+- its `mountPath` contains a literal `..` segment, even one that doesn't collide with anything
+- its `name` matches another entry's, or an operator-reserved volume name -- an NFS mount's name
+  collides under the `nfs-<name>` prefix it actually gets in the pod spec, so e.g. `nfs-data` and
+  an NFS mount named `data` collide even though the `PersistenceSpec` names differ
+
 ```yaml
 spec:
   persistence:
