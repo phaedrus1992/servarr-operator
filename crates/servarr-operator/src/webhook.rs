@@ -292,6 +292,25 @@ fn validate_identity_immutable(
         .and_then(|o| o.get("spec"))
         .and_then(|s| serde_json::from_value::<ServarrAppSpec>(s.clone()).ok());
 
+    if old_object.is_some() && old_spec.is_none() {
+        // #720: an old object that exists but yields no usable spec -- whether its "spec" key
+        // failed to parse, or is missing entirely -- must not silently skip the
+        // identity-immutability check the same way "no old object at all" does. This function
+        // is only called on the UPDATE path (see the dispatch above), where the API server
+        // always supplies `old_object`, so treating "present but unusable" as equivalent to
+        // "absent" would reopen the exact fail-open this fix closes. Reject rather than fail
+        // open (mirrors the pattern in
+        // `validate_persistence_collisions`/`validate_removed_default_volumes`, #716).
+        errors.push(
+            "internal error: stored object's spec could not be parsed -- identity \
+             immutability (spec.app/spec.instance) could not be validated. No UPDATE can \
+             repair this object while it stays in this state; delete and recreate it, or \
+             restore the operator version that last wrote it, then reapply."
+                .to_string(),
+        );
+        return;
+    }
+
     if let Some(old) = old_spec {
         if old.app != spec.app {
             debug!(
@@ -770,6 +789,7 @@ fn parse_memory(s: &str) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
     use serde_json::json;
     use servarr_crds::*;
     use wiremock::matchers::{method, path};
@@ -784,6 +804,23 @@ mod tests {
             app,
             ..Default::default()
         }
+    }
+
+    /// Various JSON shapes that fail (or are likely to fail) to deserialize as `ServarrAppSpec`
+    /// -- used to fuzz `validate_identity_immutable`'s reject-on-malformed-old-spec path (#720
+    /// property-test-gap-finder follow-up).
+    fn arb_malformed_spec_json() -> impl Strategy<Value = serde_json::Value> {
+        prop_oneof![
+            Just(serde_json::json!(null)),
+            any::<bool>().prop_map(|b| serde_json::json!(b)),
+            any::<i64>().prop_map(|n| serde_json::json!(n)),
+            "[a-zA-Z0-9]{0,10}".prop_map(|s| serde_json::json!(s)),
+            Just(serde_json::json!([])),
+            Just(serde_json::json!({})),
+            Just(serde_json::json!({ "app": 123 })),
+            Just(serde_json::json!({ "app": "Sonarr", "instance": true })),
+            Just(serde_json::json!({ "app": "NotARealAppType" })),
+        ]
     }
 
     // ── parse_cpu ──
@@ -1834,6 +1871,56 @@ mod tests {
         assert_eq!(errors.len(), 1);
         assert!(errors[0].contains("immutable"));
         assert!(errors[0].contains("instance"));
+    }
+
+    #[test]
+    fn identity_immutable_malformed_old_spec_rejects() {
+        // #720: `old_object.spec` present but failing to deserialize as `ServarrAppSpec` (e.g. a
+        // stored object from an incompatible version) must not silently skip the immutability
+        // check -- that's a fail-open on the one layer whose job is to reject it.
+        let new_spec = minimal_spec(AppType::Sonarr);
+        let old_obj = serde_json::json!({ "spec": {} }); // missing required `app` field
+        let mut errors = Vec::new();
+        validate_identity_immutable(&new_spec, Some(&old_obj), &mut errors);
+        assert_eq!(errors.len(), 1, "got {errors:?}");
+        assert!(errors[0].contains("identity"), "got {errors:?}");
+    }
+
+    #[test]
+    fn identity_immutable_old_object_without_spec_key_rejects() {
+        // Security-audit follow-up on #720: the fail-closed branch only fired when
+        // `old_object.spec` was *present but unparseable*. An `old_object` present without a
+        // `spec` key at all fell through to `old_spec_value.is_some() == false`, silently
+        // skipping the check exactly like #720 was meant to close. `validate_identity_immutable`
+        // is only called on UPDATE (webhook.rs's dispatch), where `old_object` is always
+        // present, so a present-but-spec-less old object is as ambiguous as an unparseable one.
+        let new_spec = minimal_spec(AppType::Sonarr);
+        let old_obj = serde_json::json!({}); // old_object present, no "spec" key at all
+        let mut errors = Vec::new();
+        validate_identity_immutable(&new_spec, Some(&old_obj), &mut errors);
+        assert_eq!(errors.len(), 1, "got {errors:?}");
+        assert!(errors[0].contains("identity"), "got {errors:?}");
+    }
+
+    proptest! {
+        #[test]
+        fn identity_immutable_rejects_whenever_old_spec_fails_to_parse(
+            bad_spec in arb_malformed_spec_json()
+        ) {
+            // Property-test-gap-finder follow-up on #720: for any JSON shape that fails to
+            // deserialize as `ServarrAppSpec`, the immutability check must reject rather than
+            // silently pass through -- covering arbitrary malformed shapes, not just the two
+            // hand-picked cases above.
+            let new_spec = minimal_spec(AppType::Sonarr);
+            let old_obj = serde_json::json!({ "spec": bad_spec.clone() });
+            let mut errors = Vec::new();
+            validate_identity_immutable(&new_spec, Some(&old_obj), &mut errors);
+
+            let parses = serde_json::from_value::<ServarrAppSpec>(bad_spec).is_ok();
+            if !parses {
+                prop_assert!(!errors.is_empty(), "old spec failed to parse but no error was raised");
+            }
+        }
     }
 
     // ── validate_backup_schedule ──

@@ -2389,20 +2389,18 @@ async fn test_media_stack_reconcile_orphan_cleanup() {
     )
     .await;
 
-    // DELETE the orphaned child -- the controller should call this
+    // DELETE the orphaned child -- the controller should call this. "kind": "Status" (not
+    // "ServarrApp"): kube's `request_status` picks the response type by that field, and a body
+    // claiming "ServarrApp" without the required `spec` fails to deserialize -- which used to
+    // be silently swallowed as a `warn!` instead of surfacing via `StuckOrphans` (#722).
     Mock::given(method("DELETE"))
         .and(path(
             "/apis/servarr.dev/v1alpha1/namespaces/test/servarrapps/orphan-stack-old-radarr",
         ))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "apiVersion": "servarr.dev/v1alpha1",
-            "kind": "ServarrApp",
-            "metadata": {
-                "name": "orphan-stack-old-radarr",
-                "namespace": "test",
-                "uid": "sa-uid-orphan",
-                "resourceVersion": "201"
-            }
+            "apiVersion": "v1",
+            "kind": "Status",
+            "status": "Success"
         })))
         .expect(1)
         .named("delete-orphan")
@@ -2489,20 +2487,16 @@ async fn test_media_stack_reconcile_orphan_cleanup_runs_before_apply() {
         .mount(&mock_server)
         .await;
 
-    // DELETE the orphaned child
+    // DELETE the orphaned child. "kind": "Status" (not "ServarrApp") -- see the equivalent
+    // mock in `test_media_stack_reconcile_orphan_cleanup` for why (#722).
     Mock::given(method("DELETE"))
         .and(path(
             "/apis/servarr.dev/v1alpha1/namespaces/test/servarrapps/migrate-stack-old-radarr",
         ))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "apiVersion": "servarr.dev/v1alpha1",
-            "kind": "ServarrApp",
-            "metadata": {
-                "name": "migrate-stack-old-radarr",
-                "namespace": "test",
-                "uid": "sa-uid-orphan",
-                "resourceVersion": "201"
-            }
+            "apiVersion": "v1",
+            "kind": "Status",
+            "status": "Success"
         })))
         .expect(1)
         .mount(&mock_server)
