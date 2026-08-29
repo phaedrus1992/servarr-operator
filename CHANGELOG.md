@@ -11,6 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Fix every environment-variable read in the operator treating "you never set this" and "you set
+  this to something I can't read" as the same thing — a value that isn't valid UTF-8 was silently
+  discarded and the built-in default applied with no log line at all. Each such read now warns and
+  names the variable, while a genuinely unset variable logs at `debug!`. Covers
+  `WATCH_ALL_NAMESPACES`, `WATCH_NAMESPACE`, `POD_NAME`, `WEBHOOK_ENABLED`, `WEBHOOK_PORT`, the
+  `WEBHOOK_TLS_*` paths, and the `DEFAULT_IMAGE_*` overrides (#725, #726, #730).
 - Fix any app's default image silently sticking on a `helm upgrade --reuse-values` upgrade —
   generalizes the 1.3.1 Seerr-only stale-image detection into a `StaleDefaultImage` Warning Event
   that fires for every app whose env-supplied default image no longer matches the running
@@ -52,6 +58,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- `WEBHOOK_ENABLED` now accepts the same values `WATCH_ALL_NAMESPACES` already did — `true`/`false`,
+  `1`/`0`, and `yes`/`no`, each case-insensitively — and warns on anything else. It previously
+  matched only the exact strings `true` and `1`, so `WEBHOOK_ENABLED=TRUE` silently left the
+  admission webhook switched off. Such a value now switches it on. The default when the variable is
+  unset is still `false` (#730).
 - `Condition::fail` now requires a sanitized message type instead of a plain string, closing a
   gap where a future code change could have leaked raw API-server error detail into a
   tenant-visible status Condition. No existing Condition message changes as a result (#668).
