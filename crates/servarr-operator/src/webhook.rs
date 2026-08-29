@@ -34,8 +34,8 @@ pub struct WebhookConfig {
 
 impl Default for WebhookConfig {
     fn default() -> Self {
-        let port = match std::env::var("WEBHOOK_PORT") {
-            Ok(s) => match s.parse::<u16>() {
+        let port = match crate::env::var("WEBHOOK_PORT") {
+            Some(s) => match s.parse::<u16>() {
                 Ok(p) => {
                     debug!(port = p, "using WEBHOOK_PORT from env");
                     p
@@ -45,17 +45,17 @@ impl Default for WebhookConfig {
                     DEFAULT_WEBHOOK_PORT
                 }
             },
-            Err(_) => DEFAULT_WEBHOOK_PORT,
+            None => DEFAULT_WEBHOOK_PORT,
         };
 
         let tls_dir =
-            std::env::var("WEBHOOK_TLS_DIR").unwrap_or_else(|_| DEFAULT_TLS_DIR.to_string());
-        let tls_cert = std::env::var("WEBHOOK_TLS_CERT")
+            crate::env::var("WEBHOOK_TLS_DIR").unwrap_or_else(|| DEFAULT_TLS_DIR.to_string());
+        let tls_cert = crate::env::var("WEBHOOK_TLS_CERT")
             .map(PathBuf::from)
-            .unwrap_or_else(|_| Path::new(&tls_dir).join("tls.crt"));
-        let tls_key = std::env::var("WEBHOOK_TLS_KEY")
+            .unwrap_or_else(|| Path::new(&tls_dir).join("tls.crt"));
+        let tls_key = crate::env::var("WEBHOOK_TLS_KEY")
             .map(PathBuf::from)
-            .unwrap_or_else(|_| Path::new(&tls_dir).join("tls.key"));
+            .unwrap_or_else(|| Path::new(&tls_dir).join("tls.key"));
 
         Self {
             port,
