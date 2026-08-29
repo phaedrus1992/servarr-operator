@@ -10,6 +10,7 @@ use kube::api::{Api, DeleteParams, ListParams, ObjectList, Patch, PatchParams};
 use kube::runtime::controller::{Action, Controller};
 use kube::runtime::watcher;
 use kube::{Client, Resource, ResourceExt};
+use servarr_api::TenantSafeMessage;
 use servarr_api::k8s::kube_err_summary;
 use servarr_crds::{
     AppType, Condition, MediaStack, MediaStackStatus, ServarrApp, ServarrAppSpec, StackAppStatus,
@@ -125,7 +126,12 @@ pub async fn reconcile(stack: Arc<MediaStack>, ctx: Arc<Context>) -> Result<Acti
                 warn!(%name, error = %msg, "split4k validation failed");
                 let now = chrono_now();
                 let mut status = MediaStackStatus::default();
-                status.set_condition(Condition::fail("Valid", "InvalidSplit4k", &msg, &now));
+                status.set_condition(Condition::fail(
+                    "Valid",
+                    "InvalidSplit4k",
+                    TenantSafeMessage::new(msg),
+                    &now,
+                ));
                 status.observed_generation = stack.metadata.generation.unwrap_or(0);
                 patch_status(client, &ns, &name, &status).await?;
                 increment_stack_reconcile_total("error");
@@ -145,7 +151,7 @@ pub async fn reconcile(stack: Arc<MediaStack>, ctx: Arc<Context>) -> Result<Acti
                 status.set_condition(Condition::fail(
                     "Valid",
                     "DuplicateApp",
-                    &format!("Duplicate app+instance: {child_name}"),
+                    TenantSafeMessage::new(format!("Duplicate app+instance: {child_name}")),
                     &now,
                 ));
                 status.observed_generation = stack.metadata.generation.unwrap_or(0);
@@ -416,11 +422,11 @@ pub async fn reconcile(stack: Arc<MediaStack>, ctx: Arc<Context>) -> Result<Acti
         status.set_condition(Condition::fail(
             "OrphanCleanupHealthy",
             "PvcDetachFailed",
-            &format!(
+            TenantSafeMessage::new(format!(
                 "{} orphaned child(ren) awaiting PVC detach before cleanup can proceed: {}",
                 stuck_orphans.len(),
                 causes.join("; ")
-            ),
+            )),
             &now,
         ));
     }
@@ -438,10 +444,10 @@ pub async fn reconcile(stack: Arc<MediaStack>, ctx: Arc<Context>) -> Result<Acti
             status.set_condition(Condition::fail(
                 "Ready",
                 "RollingOut",
-                &format!(
+                TenantSafeMessage::new(format!(
                     "{ready_count}/{total_apps} apps ready, rolling out tier {}",
                     current_tier.unwrap_or(0)
-                ),
+                )),
                 &now,
             ));
         }
@@ -449,7 +455,9 @@ pub async fn reconcile(stack: Arc<MediaStack>, ctx: Arc<Context>) -> Result<Acti
             status.set_condition(Condition::fail(
                 "Ready",
                 "Degraded",
-                &format!("{ready_count}/{total_apps} apps ready (was fully ready)"),
+                TenantSafeMessage::new(format!(
+                    "{ready_count}/{total_apps} apps ready (was fully ready)"
+                )),
                 &now,
             ));
         }
@@ -457,7 +465,7 @@ pub async fn reconcile(stack: Arc<MediaStack>, ctx: Arc<Context>) -> Result<Acti
             status.set_condition(Condition::fail(
                 "Ready",
                 "Pending",
-                "No apps ready yet",
+                TenantSafeMessage::new("No apps ready yet"),
                 &now,
             ));
         }

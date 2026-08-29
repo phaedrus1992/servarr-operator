@@ -20,6 +20,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   self-resolve" for a PVC-detach failure that never will — a `401`/`403` (expired credential,
   missing RBAC) is now labeled separately from a genuinely transient `5xx`/network failure, so
   on-call doesn't wait on a retry that was never going to clear it (#610).
+- Fix a drift correction failing outright when the advisory `DriftDetected` Event couldn't be
+  published (an `events.k8s.io` RBAC hiccup) — it's now logged and counted instead of aborting an
+  otherwise-successful reconcile (#646).
+- Fix several `ServarrApp` reconcile Events (`ReconcileError`, `BackupStarted`,
+  `BackupCompleted`, `BackupFailed`, and others) silently discarding a publish failure with no
+  log line — all now warn and increment a new `servarr_operator_event_publish_failures_total`
+  metric, so persistent Events-API breakage is visible instead of only missing Events (#646).
+
+### Changed
+
+- `Condition::fail` now requires a sanitized message type instead of a plain string, closing a
+  gap where a future code change could have leaked raw API-server error detail into a
+  tenant-visible status Condition. No existing Condition message changes as a result (#668).
 
 ## [1.3.1] - 2026-08-27
 

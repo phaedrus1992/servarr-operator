@@ -24,8 +24,8 @@ use tracing::{debug, error, info, warn};
 
 use crate::context::Context;
 use crate::metrics::{
-    increment_backup_operations, increment_drift_corrections, increment_reconcile_total,
-    observe_reconcile_duration, set_managed_apps,
+    increment_backup_operations, increment_drift_corrections, increment_event_publish_failure,
+    increment_reconcile_total, observe_reconcile_duration, set_managed_apps,
 };
 
 mod cleanup;
@@ -170,6 +170,26 @@ pub async fn run(client: kube::Client, server_state: crate::server::ServerState)
     Ok(())
 }
 
+/// Publish `event` and warn (never panic or silently drop) if the publish itself fails --
+/// RBAC restriction, API server unavailable, namespace being torn down. The underlying
+/// reconcile/operation error is expected to already be logged by the caller; this only
+/// covers the Event mechanism itself going dark, and counts the failure so persistent
+/// `events.k8s.io` breakage is visible in metrics, not just scattered log lines. (#646)
+///
+/// This is the single publish path for every advisory Event in this file -- only the
+/// terminal `ReconcileSuccess` event stays load-bearing (`.map_err(...)?`), since failing
+/// it fails the whole reconcile by design.
+async fn publish_event(
+    recorder: &Recorder,
+    obj_ref: &k8s_openapi::api::core::v1::ObjectReference,
+    event: Event,
+) {
+    if let Err(e) = recorder.publish(&event, obj_ref).await {
+        warn!(error = %kube_err_summary(&e), reason = %event.reason, "failed to publish event");
+        increment_event_publish_failure(&event.reason);
+    }
+}
+
 /// Publishes the `DeprecatedImageOverride` Warning Event for an app resolving its image via the
 /// legacy `DEFAULT_IMAGE_OVERSEERR_*` env var fallback (#534). Advisory only -- callers should
 /// log rather than fail the reconcile on an Events-API hiccup.
@@ -177,23 +197,23 @@ async fn publish_deprecated_image_override(
     recorder: &Recorder,
     obj_ref: &k8s_openapi::api::core::v1::ObjectReference,
     app_type: &str,
-) -> kube::Result<()> {
-    recorder
-        .publish(
-            &Event {
-                type_: EventType::Warning,
-                reason: "DeprecatedImageOverride".into(),
-                note: Some(format!(
-                    "image resolved via deprecated DEFAULT_IMAGE_OVERSEERR_* env var \
-                     fallback — rename defaultImages.overseerr to defaultImages.{app_type} \
-                     in your Helm values"
-                )),
-                action: "BuildDeployment".into(),
-                secondary: None,
-            },
-            obj_ref,
-        )
-        .await
+) {
+    publish_event(
+        recorder,
+        obj_ref,
+        Event {
+            type_: EventType::Warning,
+            reason: "DeprecatedImageOverride".into(),
+            note: Some(format!(
+                "image resolved via deprecated DEFAULT_IMAGE_OVERSEERR_* env var \
+                 fallback — rename defaultImages.overseerr to defaultImages.{app_type} \
+                 in your Helm values"
+            )),
+            action: "BuildDeployment".into(),
+            secondary: None,
+        },
+    )
+    .await
 }
 
 pub async fn reconcile(app: Arc<ServarrApp>, ctx: Arc<Context>) -> Result<Action, Error> {
@@ -372,11 +392,8 @@ pub async fn reconcile(app: Arc<ServarrApp>, ctx: Arc<Context>) -> Result<Action
     // override (see deployment::build's merge order), so publishing this for an app that
     // pins its own image would be actively wrong. This is advisory, not load-bearing --
     // never fail the reconcile over an Events-API hiccup for a deprecation notice.
-    if app.spec.image.is_none()
-        && ctx.legacy_image_override_apps.contains(app_type)
-        && let Err(e) = publish_deprecated_image_override(&recorder, &obj_ref, app_type).await
-    {
-        warn!(%name, error = %kube_err_summary(&e), "failed to publish DeprecatedImageOverride event");
+    if app.spec.image.is_none() && ctx.legacy_image_override_apps.contains(app_type) {
+        publish_deprecated_image_override(&recorder, &obj_ref, app_type).await;
     }
 
     // Issue #638: even a correctly-named DEFAULT_IMAGE_<APP>_* env var can go stale after
@@ -414,32 +431,30 @@ pub async fn reconcile(app: Arc<ServarrApp>, ctx: Arc<Context>) -> Result<Action
         // effective image that actually gets deployed, or a repo-only override would report a
         // phantom tag mismatch against an empty env tag every single reconcile.
         let effective = env_override.clone().merge_with(&builtin.image);
-        if (effective.repository != builtin.image.repository || effective.tag != builtin.image.tag)
-            && let Err(e) = recorder
-                .publish(
-                    &Event {
-                        type_: EventType::Warning,
-                        reason: "StaleDefaultImage".into(),
-                        note: Some(format!(
-                            "image resolved via defaultImages.{app_type} Helm value \
-                             ({effective_repo}:{effective_tag}) which differs from this \
-                             operator version's built-in default ({builtin_repo}:{builtin_tag}) \
-                             -- if this is left over from `helm upgrade --reuse-values`, \
-                             re-run with --reset-then-reuse-values (Helm 3.14+) or remove the \
-                             override; if intentional, ignore this warning",
-                            effective_repo = effective.repository,
-                            effective_tag = effective.tag,
-                            builtin_repo = builtin.image.repository,
-                            builtin_tag = builtin.image.tag,
-                        )),
-                        action: "BuildDeployment".into(),
-                        secondary: None,
-                    },
-                    &obj_ref,
-                )
-                .await
-        {
-            warn!(%name, error = %kube_err_summary(&e), "failed to publish StaleDefaultImage event");
+        if effective.repository != builtin.image.repository || effective.tag != builtin.image.tag {
+            publish_event(
+                &recorder,
+                &obj_ref,
+                Event {
+                    type_: EventType::Warning,
+                    reason: "StaleDefaultImage".into(),
+                    note: Some(format!(
+                        "image resolved via defaultImages.{app_type} Helm value \
+                         ({effective_repo}:{effective_tag}) which differs from this \
+                         operator version's built-in default ({builtin_repo}:{builtin_tag}) \
+                         -- if this is left over from `helm upgrade --reuse-values`, \
+                         re-run with --reset-then-reuse-values (Helm 3.14+) or remove the \
+                         override; if intentional, ignore this warning",
+                        effective_repo = effective.repository,
+                        effective_tag = effective.tag,
+                        builtin_repo = builtin.image.repository,
+                        builtin_tag = builtin.image.tag,
+                    )),
+                    action: "BuildDeployment".into(),
+                    secondary: None,
+                },
+            )
+            .await;
         }
     }
 
@@ -450,24 +465,23 @@ pub async fn reconcile(app: Arc<ServarrApp>, ctx: Arc<Context>) -> Result<Action
     if app.spec.app == AppType::Transmission
         && app.spec.admin_credentials.is_some()
         && matches!(&app.spec.app_config, Some(AppConfig::Transmission(tc)) if tc.auth.is_some())
-        && let Err(e) = recorder
-            .publish(
-                &Event {
-                    type_: EventType::Warning,
-                    reason: "DeprecatedTransmissionAuth".into(),
-                    note: Some(
-                        "appConfig.transmission.auth is deprecated since v1.3 and ignored while \
-                         spec.adminCredentials is set — remove appConfig.transmission.auth"
-                            .into(),
-                    ),
-                    action: "BuildDeployment".into(),
-                    secondary: None,
-                },
-                &obj_ref,
-            )
-            .await
     {
-        warn!(%name, error = %kube_err_summary(&e), "failed to publish DeprecatedTransmissionAuth event");
+        publish_event(
+            &recorder,
+            &obj_ref,
+            Event {
+                type_: EventType::Warning,
+                reason: "DeprecatedTransmissionAuth".into(),
+                note: Some(
+                    "appConfig.transmission.auth is deprecated since v1.3 and ignored while \
+                     spec.adminCredentials is set — remove appConfig.transmission.auth"
+                        .into(),
+                ),
+                action: "BuildDeployment".into(),
+                secondary: None,
+            },
+        )
+        .await;
     }
 
     // Issue #44: an AppType rename (e.g. Overseerr -> Seerr) changes the
@@ -552,19 +566,20 @@ pub async fn reconcile(app: Arc<ServarrApp>, ctx: Arc<Context>) -> Result<Action
             let diff = json_diff_paths(&desired_json, &actual_json, "".to_string());
             warn!(%name, "deployment drift detected, re-applying");
             tracing::debug!(%name, ?diff, "drift details");
-            recorder
-                .publish(
-                    &Event {
-                        type_: EventType::Warning,
-                        reason: "DriftDetected".into(),
-                        note: Some("Deployment pod template differs from desired state".into()),
-                        action: "DriftCheck".into(),
-                        secondary: None,
-                    },
-                    &obj_ref,
-                )
-                .await
-                .map_err(Error::Kube)?;
+            // Advisory, not load-bearing (#646) -- an Events-API hiccup here must not fail
+            // an otherwise-successful drift correction.
+            publish_event(
+                &recorder,
+                &obj_ref,
+                Event {
+                    type_: EventType::Warning,
+                    reason: "DriftDetected".into(),
+                    note: Some("Deployment pod template differs from desired state".into()),
+                    action: "DriftCheck".into(),
+                    secondary: None,
+                },
+            )
+            .await;
             increment_drift_corrections(app_type, &ns, "Deployment");
             // Re-apply to correct drift
             tracing::debug!(%name, "SSA: re-applying Deployment (drift correction)");
@@ -1288,7 +1303,9 @@ pub(crate) async fn sync_admin_credentials(
                     return Some(Condition::fail(
                         condition_types::ADMIN_CREDENTIALS_CONFIGURED,
                         "NoApiKey",
-                        "SABnzbd credential sync requires apiKeySecret to be set",
+                        TenantSafeMessage::new(
+                            "SABnzbd credential sync requires apiKeySecret to be set",
+                        ),
                         &now,
                     ));
                 }
@@ -1370,7 +1387,9 @@ pub(crate) async fn sync_admin_credentials(
                     return Some(Condition::fail(
                         condition_types::ADMIN_CREDENTIALS_CONFIGURED,
                         "NoApiKey",
-                        "Seerr credential sync requires apiKeySecret to be set",
+                        TenantSafeMessage::new(
+                            "Seerr credential sync requires apiKeySecret to be set",
+                        ),
                         &now,
                     ));
                 }
@@ -1458,7 +1477,10 @@ pub(crate) async fn sync_admin_credentials(
             Condition::fail(
                 condition_types::ADMIN_CREDENTIALS_CONFIGURED,
                 "SyncFailed",
-                msg,
+                // msg is already sanitizer output (.log_summary() / .public_summary()) from
+                // the match arms above, not a raw untrusted string -- category (c) of
+                // TenantSafeMessage::new's contract.
+                TenantSafeMessage::new(msg.as_str()),
                 &now,
             )
         }
@@ -1870,7 +1892,7 @@ async fn check_api_health(
         Ok(false) => Condition::fail(
             condition_types::APP_HEALTHY,
             "Unhealthy",
-            "API responded unhealthy",
+            TenantSafeMessage::new("API responded unhealthy"),
             &now,
         ),
         Err(msg) => Condition {
@@ -1944,7 +1966,7 @@ async fn check_update_available(
         None => Condition::fail(
             condition_types::UPDATE_AVAILABLE,
             "UpToDate",
-            "Running latest version",
+            TenantSafeMessage::new("Running latest version"),
             now,
         ),
     })
@@ -2317,21 +2339,18 @@ async fn report_stale_torrents(
     );
     let ids: Vec<i64> = stale.iter().map(|t| t.id).collect();
     let note = build_stale_torrent_note(&ids, stale.len(), outcome);
-    if let Err(e) = recorder
-        .publish(
-            &Event {
-                type_: EventType::Warning,
-                reason: "DownloadDataMissing".into(),
-                note: Some(note),
-                action: "DownloadClientHealthCheck".into(),
-                secondary: None,
-            },
-            obj_ref,
-        )
-        .await
-    {
-        warn!(error = %e, "download-client health: failed to publish event");
-    }
+    publish_event(
+        recorder,
+        obj_ref,
+        Event {
+            type_: EventType::Warning,
+            reason: "DownloadDataMissing".into(),
+            note: Some(note),
+            action: "DownloadClientHealthCheck".into(),
+            secondary: None,
+        },
+    )
+    .await;
 }
 
 /// Build the event note for a stale-torrent batch, truncating the id list if necessary
@@ -2383,13 +2402,13 @@ fn build_download_health_condition(
     Condition::fail(
         condition_types::DOWNLOAD_DATA_HEALTHY,
         "MissingDataDetected",
-        &format!(
+        TenantSafeMessage::new(format!(
             "{stale_count} torrent(s) reporting missing data ({recovered} recovered, {} removed, \
              {} confirmed orphaned but not removed, {} pending verify)",
             outcome.removed.len(),
             outcome.confirmed_orphaned.len(),
             outcome.still_pending.len(),
-        ),
+        )),
         now,
     )
 }
@@ -2443,7 +2462,7 @@ fn result_to_condition<E: Into<TenantSafeMessage>>(
         Err(e) => {
             let msg: TenantSafeMessage = e.into();
             warn!(%name, error = %msg, "{}", spec.fail_log);
-            Condition::fail(spec.condition_type, spec.fail_reason, msg.as_ref(), now)
+            Condition::fail(spec.condition_type, spec.fail_reason, msg, now)
         }
     }
 }
@@ -2508,7 +2527,7 @@ async fn update_status(
         status.set_condition(Condition::fail(
             condition_types::DEPLOYMENT_READY,
             "ReplicasUnavailable",
-            &format!("{ready_replicas} replica(s) ready"),
+            TenantSafeMessage::new(format!("{ready_replicas} replica(s) ready")),
             &now,
         ));
     }
@@ -2525,7 +2544,7 @@ async fn update_status(
     status.set_condition(Condition::fail(
         condition_types::PROGRESSING,
         "ReconcileComplete",
-        "Reconciliation finished",
+        TenantSafeMessage::new("Reconciliation finished"),
         &now,
     ));
 
@@ -2541,7 +2560,7 @@ async fn update_status(
         Condition::fail(
             condition_types::READY,
             "DeploymentNotReady",
-            &format!("{ready_replicas} replica(s) ready"),
+            TenantSafeMessage::new(format!("{ready_replicas} replica(s) ready")),
             &now,
         )
     });
@@ -2558,7 +2577,7 @@ async fn update_status(
         status.set_condition(Condition::fail(
             condition_types::DEGRADED,
             "AllHealthy",
-            "All resources healthy",
+            TenantSafeMessage::new("All resources healthy"),
             &now,
         ));
     }
@@ -2600,21 +2619,6 @@ async fn update_status(
     .map_err(Error::Kube)?;
 
     Ok(())
-}
-
-/// Publish `event` and warn (never panic or silently drop) if the publish
-/// itself fails — RBAC restriction, API server unavailable, namespace being
-/// torn down. The underlying reconcile/operation error is expected to
-/// already be logged by the caller; this only covers the Event mechanism
-/// itself going dark (#403).
-async fn publish_event(
-    recorder: &Recorder,
-    obj_ref: &k8s_openapi::api::core::v1::ObjectReference,
-    event: Event,
-) {
-    if let Err(e) = recorder.publish(&event, obj_ref).await {
-        warn!(error = %e, reason = %event.reason, "failed to publish event");
-    }
 }
 
 pub fn error_policy(app: Arc<ServarrApp>, error: &Error, ctx: Arc<Context>) -> Action {
@@ -4392,9 +4396,8 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let result = publish_deprecated_image_override(&recorder, &obj_ref, "seerr").await;
+        publish_deprecated_image_override(&recorder, &obj_ref, "seerr").await;
 
-        assert!(result.is_ok(), "publish should succeed, got: {result:?}");
         // The POST mock's expect(1) is verified when mock_server drops.
     }
 
@@ -6385,6 +6388,86 @@ mod tests {
             .await;
     }
 
+    // ---- Helper: build a Recorder against a mock client ----
+
+    fn make_recorder(client: &Client) -> Recorder {
+        Recorder::new(
+            client.clone(),
+            kube::runtime::events::Reporter {
+                controller: "servarr-operator".into(),
+                instance: None,
+            },
+        )
+    }
+
+    // ---- publish_event (#646): single shared helper, warns + counts on failure ----
+
+    #[tokio::test]
+    async fn publish_event_does_not_panic_when_publish_fails() {
+        // No Mock mounted for the events endpoint, so the publish call fails
+        // (wiremock returns 404 for any unmatched request) — publish_event
+        // must warn and return, never panic.
+        let mock_server = MockServer::start().await;
+        let client = crate::testutils::build_mock_client(&mock_server.uri()).await;
+        let recorder = make_recorder(&client);
+        let obj_ref = k8s_openapi::api::core::v1::ObjectReference {
+            kind: Some("ServarrApp".into()),
+            name: Some("my-app".into()),
+            namespace: Some("test".into()),
+            uid: Some("app-uid-1".into()),
+            ..Default::default()
+        };
+
+        publish_event(
+            &recorder,
+            &obj_ref,
+            Event {
+                type_: EventType::Warning,
+                reason: "Test".into(),
+                note: Some("test note".into()),
+                action: "Test".into(),
+                secondary: None,
+            },
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn publish_event_increments_failure_metric_on_publish_failure() {
+        let mock_server = MockServer::start().await;
+        let client = crate::testutils::build_mock_client(&mock_server.uri()).await;
+        let recorder = make_recorder(&client);
+        let obj_ref = k8s_openapi::api::core::v1::ObjectReference {
+            kind: Some("ServarrApp".into()),
+            name: Some("my-app".into()),
+            namespace: Some("test".into()),
+            uid: Some("app-uid-1".into()),
+            ..Default::default()
+        };
+
+        let before = crate::metrics::EVENT_PUBLISH_FAILURES_TOTAL
+            .with_label_values(&["MetricTestReason"])
+            .get();
+
+        publish_event(
+            &recorder,
+            &obj_ref,
+            Event {
+                type_: EventType::Warning,
+                reason: "MetricTestReason".into(),
+                note: Some("test note".into()),
+                action: "Test".into(),
+                secondary: None,
+            },
+        )
+        .await;
+
+        let after = crate::metrics::EVENT_PUBLISH_FAILURES_TOTAL
+            .with_label_values(&["MetricTestReason"])
+            .get();
+        assert_eq!(after, before + 1);
+    }
+
     // ---- Helper: build a minimal ServarrApp for testing ----
 
     fn make_test_app(name: &str, ns: &str, app_type: AppType) -> ServarrApp {
@@ -7025,42 +7108,6 @@ mod tests {
     }
 
     // ---- sync_prowlarr_apps tests ----
-
-    fn make_recorder(client: &Client) -> kube::runtime::events::Recorder {
-        use kube::runtime::events::Reporter;
-        kube::runtime::events::Recorder::new(
-            client.clone(),
-            Reporter {
-                controller: "servarr-operator".into(),
-                instance: None,
-            },
-        )
-    }
-
-    #[tokio::test]
-    async fn publish_event_does_not_panic_when_publish_fails() {
-        // No Mock mounted for the events endpoint, so the publish call fails
-        // (wiremock returns 404 for any unmatched request) — publish_event
-        // must warn and return, never panic (#403).
-        let mock_server = wiremock::MockServer::start().await;
-        let client = build_mock_client(&mock_server.uri()).await;
-        let recorder = make_recorder(&client);
-        let app = make_test_app("my-app", "test", AppType::Sonarr);
-        let obj_ref = app.object_ref(&());
-
-        publish_event(
-            &recorder,
-            &obj_ref,
-            Event {
-                type_: EventType::Warning,
-                reason: "Test".into(),
-                note: Some("test note".into()),
-                action: "Test".into(),
-                secondary: None,
-            },
-        )
-        .await;
-    }
 
     #[tokio::test]
     async fn sync_prowlarr_apps_empty_namespace_returns_ok() {
