@@ -38,6 +38,26 @@ pub fn watch_all_namespaces() -> bool {
     crate::env::var_bool("WATCH_ALL_NAMESPACES", false)
 }
 
+/// Resolves the namespace to watch. `None` means cluster-scoped.
+///
+/// An empty `WATCH_NAMESPACE` widens the operator from one namespace to the whole cluster, so
+/// it warns rather than falling through in silence. The downward API never produces an empty
+/// value, but a hand-written pod spec or a `valueFrom` on a missing key does.
+pub fn watch_namespace() -> Option<String> {
+    if watch_all_namespaces() {
+        return None;
+    }
+    let ns = crate::env::var("WATCH_NAMESPACE")?;
+    if ns.is_empty() {
+        warn!(
+            "WATCH_NAMESPACE is set but empty, falling back to cluster-scoped mode; \
+             set it to a namespace name or unset it to make this deliberate"
+        );
+        return None;
+    }
+    Some(ns)
+}
+
 impl Context {
     pub(crate) fn new(client: Client) -> Self {
         let (image_overrides, legacy_image_override_apps) = load_image_overrides();
@@ -45,12 +65,7 @@ impl Context {
             controller: "servarr-operator".into(),
             instance: crate::env::var("POD_NAME"),
         };
-        let watch_all = watch_all_namespaces();
-        let watch_namespace = if watch_all {
-            None
-        } else {
-            crate::env::var("WATCH_NAMESPACE").filter(|s| !s.is_empty())
-        };
+        let watch_namespace = watch_namespace();
         if let Some(ref ns) = watch_namespace {
             info!(%ns, "namespace-scoped mode");
         } else {
@@ -384,15 +399,7 @@ mod tests {
 
     // ── WATCH_NAMESPACE reading ──
 
-    /// Mirrors the watch_namespace derivation from Context::new.
-    fn derive_watch_namespace() -> Option<String> {
-        let watch_all = watch_all_namespaces();
-        if watch_all {
-            None
-        } else {
-            crate::env::var("WATCH_NAMESPACE").filter(|s| !s.is_empty())
-        }
-    }
+    use super::watch_namespace as derive_watch_namespace;
 
     #[test]
     fn watch_namespace_returned_when_not_all() {
