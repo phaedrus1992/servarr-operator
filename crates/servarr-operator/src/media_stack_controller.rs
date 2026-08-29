@@ -403,13 +403,21 @@ pub async fn reconcile(stack: Arc<MediaStack>, ctx: Arc<Context>) -> Result<Acti
         // a transient failure (may clear on its own next reconcile) so on-call doesn't have to
         // guess from operator logs alone. "Permission fix" rather than "RBAC fix": a 401/403 can
         // also come from an expired credential, a ResourceQuota, or an admission policy, not
-        // only a Role/RoleBinding.
+        // only a Role/RoleBinding. #673 adds a third bucket: a `spec.persistence` config error
+        // (e.g. a mount-path collision) is likewise a manual fix, not a retry.
         let mut causes = Vec::new();
         if !stuck_orphans.forbidden.is_empty() {
             causes.push(format!(
                 "{} awaiting a manual permission fix (will not self-resolve on retry): {}",
                 stuck_orphans.forbidden.len(),
                 stuck_orphans.forbidden.join(", ")
+            ));
+        }
+        if !stuck_orphans.config_error.is_empty() {
+            causes.push(format!(
+                "{} awaiting a spec.persistence fix (will not self-resolve on retry): {}",
+                stuck_orphans.config_error.len(),
+                stuck_orphans.config_error.join(", ")
             ));
         }
         if !stuck_orphans.transient.is_empty() {
@@ -618,15 +626,19 @@ fn is_not_found(e: &kube::Error) -> bool {
     servarr_api::k8s::is_kube_not_found(e)
 }
 
-/// Why a PVC-detach step failed, for on-call triage (#610): a permission denial needs a manual
-/// fix and will never clear on retry, while a transient error (5xx, network) may resolve on its
-/// own next reconcile. On-call can't tell these apart from an identical `warn!` +
-/// forever-retry line alone.
+/// Why a PVC-detach step failed, for on-call triage (#610): a permission denial or a config
+/// problem both need a manual fix and will never clear on retry, while a transient error (5xx,
+/// network) may resolve on its own next reconcile. On-call can't tell these apart from an
+/// identical `warn!` + forever-retry line alone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DetachFailureCause {
     /// A `401`/`403` API response, or a `kube::Error::Auth` (credential/exec-plugin) failure.
     Forbidden,
-    /// Any other failure (5xx, network, an unreachable PVC spec).
+    /// `pvc::build_all` failed before issuing any PVC call -- in practice, a
+    /// `resolve_persistence` mount-path collision the admission webhook didn't catch (#673).
+    /// Needs the CR's `spec.persistence` fixed; will not self-resolve on retry.
+    ConfigError,
+    /// Any other failure (5xx, network).
     Transient,
 }
 
@@ -645,18 +657,27 @@ impl DetachFailureCause {
     fn as_str(self) -> &'static str {
         match self {
             Self::Forbidden => "permission-denied",
+            Self::ConfigError => "config-error",
             Self::Transient => "transient",
         }
     }
 
-    /// A child can hit more than one failure cause across its PVCs -- prefer `Forbidden` since
-    /// it's the more actionable signal (won't self-resolve on retry the way a transient one
-    /// might).
+    /// A child can hit more than one failure cause across its PVCs -- prefer whichever cause is
+    /// least likely to self-resolve, since that's the more actionable signal to surface.
+    /// `Forbidden` (needs a cluster-admin permission fix) outranks `ConfigError` (needs the CR's
+    /// owner to fix `spec.persistence`), which outranks `Transient` (may clear on its own).
     fn most_severe(self, other: Self) -> Self {
-        if self == Self::Forbidden || other == Self::Forbidden {
-            Self::Forbidden
+        fn rank(cause: DetachFailureCause) -> u8 {
+            match cause {
+                DetachFailureCause::Forbidden => 2,
+                DetachFailureCause::ConfigError => 1,
+                DetachFailureCause::Transient => 0,
+            }
+        }
+        if rank(self) >= rank(other) {
+            self
         } else {
-            Self::Transient
+            other
         }
     }
 }
@@ -668,17 +689,20 @@ impl DetachFailureCause {
 struct StuckOrphans {
     /// Blocked on a `401`/`403`/auth failure -- will not self-resolve without a permission fix.
     forbidden: Vec<String>,
+    /// Blocked on a `pvc::build_all` config error (e.g. a mount-path collision) -- will not
+    /// self-resolve without a `spec.persistence` fix (#673).
+    config_error: Vec<String>,
     /// Blocked on any other failure -- may self-resolve on retry.
     transient: Vec<String>,
 }
 
 impl StuckOrphans {
     fn is_empty(&self) -> bool {
-        self.forbidden.is_empty() && self.transient.is_empty()
+        self.forbidden.is_empty() && self.config_error.is_empty() && self.transient.is_empty()
     }
 
     fn len(&self) -> usize {
-        self.forbidden.len() + self.transient.len()
+        self.forbidden.len() + self.config_error.len() + self.transient.len()
     }
 }
 
@@ -758,10 +782,12 @@ async fn cleanup_orphaned_children(
                 }
             }
             Err(e) => {
-                // Not a `kube::Error` (see `pvc::build_all`'s docs on why this branch is
-                // provably unreachable for any real `ServarrApp`) -- kept as `Transient` since
-                // there's no RBAC status code to classify.
-                detach_failure = Some(DetachFailureCause::Transient);
+                // Not a `kube::Error` -- `pvc::build_all` has two independent causes (see its
+                // doc comment). The `AppType`-defaults-lookup cause is provably unreachable for
+                // any real `ServarrApp`; the `resolve_persistence` mount-path-collision cause
+                // *is* reachable (#673) and is a config problem, not a transient one -- it needs
+                // `spec.persistence` fixed and will not clear on retry.
+                detach_failure = Some(DetachFailureCause::ConfigError);
                 warn!(
                     %name, child = %child_name, error = %e,
                     "failed to compute child's PVCs before orphan cleanup"
@@ -778,6 +804,9 @@ async fn cleanup_orphaned_children(
             );
             match cause {
                 DetachFailureCause::Forbidden => stuck_orphans.forbidden.push(child_name.clone()),
+                DetachFailureCause::ConfigError => {
+                    stuck_orphans.config_error.push(child_name.clone());
+                }
                 DetachFailureCause::Transient => stuck_orphans.transient.push(child_name.clone()),
             }
             continue;
@@ -1212,6 +1241,41 @@ mod tests {
         assert!(stuck.forbidden.is_empty(), "got {stuck:?}");
     }
 
+    #[tokio::test]
+    async fn cleanup_orphaned_children_classifies_mount_collision_as_config_error() {
+        // #673: `pvc::build_all` can fail before it ever issues a PVC PATCH -- a
+        // `resolve_persistence` mount-path collision that the (optional) admission webhook
+        // didn't catch. That must not be lumped in with `Transient`: fixing `spec.persistence`
+        // is the only way this clears, and telling on-call "may self-resolve" is misleading.
+        let mock_server = wiremock::MockServer::start().await;
+        let client = crate::testutils::build_mock_client(&mock_server.uri()).await;
+        let sa_api = Api::<ServarrApp>::namespaced(client.clone(), "test");
+        let pvc_api = Api::<PersistentVolumeClaim>::namespaced(client.clone(), "test");
+
+        let mut orphan = make_orphan("orphan-app", "test");
+        orphan.spec.persistence = Some(servarr_crds::PersistenceSpec {
+            volumes: vec![],
+            nfs_mounts: vec![servarr_crds::NfsMount {
+                name: "downloads-nfs".into(),
+                server: "nas.local".into(),
+                path: "/export/downloads".into(),
+                mount_path: "/downloads".into(),
+                read_only: false,
+            }],
+            removed_default_volumes: vec![],
+        });
+
+        let existing = orphan_list(vec![orphan]);
+        let desired: HashSet<String> = HashSet::new();
+
+        let stuck =
+            cleanup_orphaned_children(&sa_api, &pvc_api, "stack", &desired, &existing).await;
+
+        assert_eq!(stuck.config_error, vec!["orphan-app".to_string()]);
+        assert!(stuck.forbidden.is_empty(), "got {stuck:?}");
+        assert!(stuck.transient.is_empty(), "got {stuck:?}");
+    }
+
     #[test]
     fn detach_failure_cause_most_severe_prefers_forbidden() {
         assert_eq!(
@@ -1228,6 +1292,22 @@ mod tests {
         );
     }
 
+    #[test]
+    fn detach_failure_cause_most_severe_ranks_config_error_between_forbidden_and_transient() {
+        assert_eq!(
+            DetachFailureCause::ConfigError.most_severe(DetachFailureCause::Forbidden),
+            DetachFailureCause::Forbidden
+        );
+        assert_eq!(
+            DetachFailureCause::ConfigError.most_severe(DetachFailureCause::Transient),
+            DetachFailureCause::ConfigError
+        );
+        assert_eq!(
+            DetachFailureCause::ConfigError.most_severe(DetachFailureCause::ConfigError),
+            DetachFailureCause::ConfigError
+        );
+    }
+
     mod stuck_orphans_proptests {
         use super::*;
         use proptest::prelude::*;
@@ -1235,6 +1315,7 @@ mod tests {
         fn any_cause() -> impl Strategy<Value = DetachFailureCause> {
             proptest::sample::select(&[
                 DetachFailureCause::Forbidden,
+                DetachFailureCause::ConfigError,
                 DetachFailureCause::Transient,
             ])
         }
@@ -1249,10 +1330,15 @@ mod tests {
             #[test]
             fn len_and_is_empty_agree(
                 forbidden in proptest::collection::vec("[a-z-]{1,8}", 0..4),
+                config_error in proptest::collection::vec("[a-z-]{1,8}", 0..4),
                 transient in proptest::collection::vec("[a-z-]{1,8}", 0..4),
             ) {
-                let stuck = StuckOrphans { forbidden: forbidden.clone(), transient: transient.clone() };
-                prop_assert_eq!(stuck.len(), forbidden.len() + transient.len());
+                let stuck = StuckOrphans {
+                    forbidden: forbidden.clone(),
+                    config_error: config_error.clone(),
+                    transient: transient.clone(),
+                };
+                prop_assert_eq!(stuck.len(), forbidden.len() + config_error.len() + transient.len());
                 // Deliberately comparing `len() == 0` against `is_empty()` -- this is the
                 // invariant under test, not a style choice `is_empty()` would make tautological.
                 #[expect(clippy::len_zero, reason = "cross-checking is_empty() against len()")]
