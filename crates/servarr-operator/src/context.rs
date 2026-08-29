@@ -35,27 +35,27 @@ pub struct Context {
 /// exists — e.g. deciding whether the `crd_check` self-check has the RBAC to run (#543,
 /// `ClusterRole`-only) — don't duplicate the parsing.
 pub fn watch_all_namespaces() -> bool {
-    match std::env::var("WATCH_ALL_NAMESPACES") {
-        Ok(v) if v.eq_ignore_ascii_case("true") || v == "1" || v.eq_ignore_ascii_case("yes") => {
-            true
-        }
-        Ok(v)
-            if v.eq_ignore_ascii_case("false")
-                || v == "0"
-                || v.eq_ignore_ascii_case("no")
-                || v.is_empty() =>
-        {
-            false
-        }
-        Ok(v) => {
-            warn!(
-                value = %v,
-                "unrecognized WATCH_ALL_NAMESPACES value, expected true/false/1/0/yes/no; defaulting to false"
-            );
-            false
-        }
-        Err(_) => false,
+    crate::env::var_bool("WATCH_ALL_NAMESPACES", false)
+}
+
+/// Resolves the namespace to watch. `None` means cluster-scoped.
+///
+/// An empty `WATCH_NAMESPACE` widens the operator from one namespace to the whole cluster, so
+/// it warns rather than falling through in silence. The downward API never produces an empty
+/// value, but a hand-written pod spec or a `valueFrom` on a missing key does.
+pub fn watch_namespace() -> Option<String> {
+    if watch_all_namespaces() {
+        return None;
     }
+    let ns = crate::env::var("WATCH_NAMESPACE")?;
+    if ns.is_empty() {
+        warn!(
+            "WATCH_NAMESPACE is set but empty, falling back to cluster-scoped mode; \
+             set it to a namespace name or unset it to make this deliberate"
+        );
+        return None;
+    }
+    Some(ns)
 }
 
 impl Context {
@@ -63,16 +63,9 @@ impl Context {
         let (image_overrides, legacy_image_override_apps) = load_image_overrides();
         let reporter = Reporter {
             controller: "servarr-operator".into(),
-            instance: std::env::var("POD_NAME").ok(),
+            instance: crate::env::var("POD_NAME"),
         };
-        let watch_all = watch_all_namespaces();
-        let watch_namespace = if watch_all {
-            None
-        } else {
-            std::env::var("WATCH_NAMESPACE")
-                .ok()
-                .filter(|s| !s.is_empty())
-        };
+        let watch_namespace = watch_namespace();
         if let Some(ref ns) = watch_namespace {
             info!(%ns, "namespace-scoped mode");
         } else {
@@ -107,8 +100,8 @@ fn load_image_overrides() -> (HashMap<String, ImageSpec>, HashSet<String>) {
         let repo_key = format!("DEFAULT_IMAGE_{}_REPO", name.to_uppercase());
         let tag_key = format!("DEFAULT_IMAGE_{}_TAG", name.to_uppercase());
 
-        if let Ok(repo) = std::env::var(&repo_key) {
-            let tag = std::env::var(&tag_key).unwrap_or_default();
+        if let Some(repo) = crate::env::var(&repo_key) {
+            let tag = crate::env::var(&tag_key).unwrap_or_default();
             info!(%name, %repo, %tag, "loaded image override from env");
             overrides.insert(
                 name.to_string(),
@@ -129,9 +122,9 @@ fn load_image_overrides() -> (HashMap<String, ImageSpec>, HashSet<String>) {
     // whether the operator still recognizes that key) — and that override would silently stop
     // applying after upgrade, falling back to the new default image with no warning.
     if !overrides.contains_key("seerr")
-        && let Ok(repo) = std::env::var("DEFAULT_IMAGE_OVERSEERR_REPO")
+        && let Some(repo) = crate::env::var("DEFAULT_IMAGE_OVERSEERR_REPO")
     {
-        let tag = std::env::var("DEFAULT_IMAGE_OVERSEERR_TAG").unwrap_or_default();
+        let tag = crate::env::var("DEFAULT_IMAGE_OVERSEERR_TAG").unwrap_or_default();
         warn!(
             %repo, %tag,
             "loaded image override from deprecated DEFAULT_IMAGE_OVERSEERR_* env vars — \
@@ -406,17 +399,7 @@ mod tests {
 
     // ── WATCH_NAMESPACE reading ──
 
-    /// Mirrors the watch_namespace derivation from Context::new.
-    fn derive_watch_namespace() -> Option<String> {
-        let watch_all = watch_all_namespaces();
-        if watch_all {
-            None
-        } else {
-            std::env::var("WATCH_NAMESPACE")
-                .ok()
-                .filter(|s| !s.is_empty())
-        }
-    }
+    use super::watch_namespace as derive_watch_namespace;
 
     #[test]
     fn watch_namespace_returned_when_not_all() {
