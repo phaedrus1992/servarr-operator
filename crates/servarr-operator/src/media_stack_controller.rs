@@ -304,10 +304,7 @@ pub async fn reconcile(stack: Arc<MediaStack>, ctx: Arc<Context>) -> Result<Acti
             // Read back child status.  Bypassed apps count as "ready" for tier
             // advancement but the actual ready flag is preserved in status.
             let was_bypassed = prev_bypassed.contains(child_name.as_str());
-            let actual_ready = match sa_api.get(child_name).await {
-                Ok(sa) => sa.status.as_ref().is_some_and(|s| s.ready),
-                Err(_) => false,
-            };
+            let actual_ready = read_child_ready(&sa_api, &name, child_name).await;
 
             if actual_ready {
                 ready_count += 1;
@@ -427,11 +424,21 @@ pub async fn reconcile(stack: Arc<MediaStack>, ctx: Arc<Context>) -> Result<Acti
                 stuck_orphans.transient.join(", ")
             ));
         }
+        if !stuck_orphans.delete_failed.is_empty() {
+            // #722: detach succeeded here -- the child delete itself failed, so this bucket
+            // needs its own message rather than being folded into "awaiting PVC detach".
+            causes.push(format!(
+                "{} whose delete failed after a successful PVC detach (will retry next \
+                 reconcile): {}",
+                stuck_orphans.delete_failed.len(),
+                stuck_orphans.delete_failed.join(", ")
+            ));
+        }
         status.set_condition(Condition::fail(
             "OrphanCleanupHealthy",
             "PvcDetachFailed",
             TenantSafeMessage::new(format!(
-                "{} orphaned child(ren) awaiting PVC detach before cleanup can proceed: {}",
+                "{} orphaned child(ren) not yet cleaned up: {}",
                 stuck_orphans.len(),
                 causes.join("; ")
             )),
@@ -626,6 +633,66 @@ fn is_not_found(e: &kube::Error) -> bool {
     servarr_api::k8s::is_kube_not_found(e)
 }
 
+/// Detaches the ownerReference from each named PVC, returning the most severe failure
+/// encountered (if any). A 404 is treated as "already detached", not a failure (#670).
+async fn detach_pvc_owner_refs<'a>(
+    pvc_api: &Api<PersistentVolumeClaim>,
+    name: &str,
+    child_name: &str,
+    pvc_names: impl Iterator<Item = &'a str>,
+) -> Option<DetachFailureCause> {
+    let mut detach_failure: Option<DetachFailureCause> = None;
+    for pvc_name in pvc_names {
+        let detach = serde_json::json!({ "metadata": { "ownerReferences": null } });
+        match pvc_api
+            .patch(pvc_name, &PatchParams::default(), &Patch::Merge(detach))
+            .await
+        {
+            Ok(_) => {}
+            Err(e) if is_not_found(&e) => {
+                // #670: a 404 here is ambiguous by construction -- it could mean the PVC was
+                // already detached (a prior reconcile's patch already succeeded, or the PVC was
+                // deleted out-of-band), or it could mean the computed PVC name never matched
+                // any real PVC (a naming-convention drift between it and the PVC's actual
+                // creation path). Neither blocks cleanup today, but this line gives on-call a
+                // breadcrumb: a PVC name that should exist showing up here repeatedly is a
+                // signal to check `servarr_resources::pvc`/`common::child_name` for drift.
+                debug!(
+                    %name, child = %child_name, pvc = %pvc_name,
+                    "PVC ownerReference detach returned 404 -- already detached/deleted, or the \
+                     computed PVC name never matched a real PVC"
+                );
+            }
+            Err(e) => {
+                let cause = DetachFailureCause::from_kube_error(&e);
+                detach_failure = Some(detach_failure.map_or(cause, |prev| prev.most_severe(cause)));
+                warn!(
+                    %name, child = %child_name, pvc = %pvc_name,
+                    error = %kube_err_summary(&e), cause = cause.as_str(),
+                    "failed to detach PVC ownership before orphan cleanup"
+                );
+            }
+        }
+    }
+    detach_failure
+}
+
+/// Reads back a child's ready status after applying it. A real API/network failure here is
+/// indistinguishable from "still starting up" if silently folded into `false` -- log it so
+/// on-call can tell the two apart (#721).
+async fn read_child_ready(sa_api: &Api<ServarrApp>, name: &str, child_name: &str) -> bool {
+    match sa_api.get(child_name).await {
+        Ok(sa) => sa.status.as_ref().is_some_and(|s| s.ready),
+        Err(e) => {
+            warn!(
+                %name, child = %child_name, error = %kube_err_summary(&e),
+                "failed to read back child status after apply"
+            );
+            false
+        }
+    }
+}
+
 /// Why a PVC-detach step failed, for on-call triage (#610): a permission denial or a config
 /// problem both need a manual fix and will never clear on retry, while a transient error (5xx,
 /// network) may resolve on its own next reconcile. On-call can't tell these apart from an
@@ -694,15 +761,24 @@ struct StuckOrphans {
     config_error: Vec<String>,
     /// Blocked on any other failure -- may self-resolve on retry.
     transient: Vec<String>,
+    /// PVC detach succeeded, but the child delete itself failed -- previously only a `warn!`
+    /// log line, invisible outside logs (#722).
+    delete_failed: Vec<String>,
 }
 
 impl StuckOrphans {
     fn is_empty(&self) -> bool {
-        self.forbidden.is_empty() && self.config_error.is_empty() && self.transient.is_empty()
+        self.forbidden.is_empty()
+            && self.config_error.is_empty()
+            && self.transient.is_empty()
+            && self.delete_failed.is_empty()
     }
 
     fn len(&self) -> usize {
-        self.forbidden.len() + self.config_error.len() + self.transient.len()
+        self.forbidden.len()
+            + self.config_error.len()
+            + self.transient.len()
+            + self.delete_failed.len()
     }
 }
 
@@ -738,48 +814,13 @@ async fn cleanup_orphaned_children(
         // cleanup. Everything *else* the child owns (Deployment, Service, Secrets,
         // NetworkPolicy, routes) should still be torn down normally -- a
         // removed/renamed app must actually stop running, not linger unmanaged.
-        let mut detach_failure: Option<DetachFailureCause> = None;
-        match servarr_resources::pvc::build_all(child) {
+        let detach_failure = match servarr_resources::pvc::build_all(child) {
             Ok(pvcs) => {
-                for pvc in &pvcs {
-                    let Some(pvc_name) = pvc.metadata.name.as_deref() else {
-                        continue;
-                    };
-                    let detach = serde_json::json!({ "metadata": { "ownerReferences": null } });
-                    match pvc_api
-                        .patch(pvc_name, &PatchParams::default(), &Patch::Merge(detach))
-                        .await
-                    {
-                        Ok(_) => {}
-                        Err(e) if is_not_found(&e) => {
-                            // #670: a 404 here is ambiguous by construction -- it could mean
-                            // the PVC was already detached (a prior reconcile's patch already
-                            // succeeded, or the PVC was deleted out-of-band), or it could mean
-                            // `pvc::build_all` computed a name that never matched any real PVC
-                            // (a naming-convention drift between it and the PVC's actual
-                            // creation path). Neither blocks cleanup today, but this line gives
-                            // on-call a breadcrumb: a PVC name that should exist showing up
-                            // here repeatedly is a signal to check
-                            // `servarr_resources::pvc`/`common::child_name` for drift.
-                            debug!(
-                                %name, child = %child_name, pvc = %pvc_name,
-                                "PVC ownerReference detach returned 404 -- already \
-                                 detached/deleted, or the computed PVC name never matched a \
-                                 real PVC"
-                            );
-                        }
-                        Err(e) => {
-                            let cause = DetachFailureCause::from_kube_error(&e);
-                            detach_failure =
-                                Some(detach_failure.map_or(cause, |prev| prev.most_severe(cause)));
-                            warn!(
-                                %name, child = %child_name, pvc = %pvc_name,
-                                error = %kube_err_summary(&e), cause = cause.as_str(),
-                                "failed to detach PVC ownership before orphan cleanup"
-                            );
-                        }
-                    }
-                }
+                let pvc_names: Vec<&str> = pvcs
+                    .iter()
+                    .filter_map(|pvc| pvc.metadata.name.as_deref())
+                    .collect();
+                detach_pvc_owner_refs(pvc_api, name, &child_name, pvc_names.into_iter()).await
             }
             Err(e) => {
                 // Not a `kube::Error` -- `pvc::build_all` has two independent causes (see its
@@ -787,13 +828,45 @@ async fn cleanup_orphaned_children(
                 // any real `ServarrApp`; the `resolve_persistence` mount-path-collision cause
                 // *is* reachable (#673) and is a config problem, not a transient one -- it needs
                 // `spec.persistence` fixed and will not clear on retry.
-                detach_failure = Some(DetachFailureCause::ConfigError);
+                //
+                // #719: the only reason `build_all` failed is that it can't recompute this
+                // child's PVC names from its (broken) spec -- it doesn't mean the PVCs
+                // themselves are gone. Fall back to finding them by the
+                // `app.kubernetes.io/instance` label every PVC this operator creates already
+                // carries (`servarr_resources::common::labels`), so the detach can still run
+                // instead of leaving the PVC's ownerReference attached forever.
                 warn!(
                     %name, child = %child_name, error = %e,
-                    "failed to compute child's PVCs before orphan cleanup"
+                    "failed to compute child's PVCs before orphan cleanup; falling back to a \
+                     label-based lookup"
                 );
+                let selector = format!("app.kubernetes.io/instance={child_name}");
+                match pvc_api.list(&ListParams::default().labels(&selector)).await {
+                    Ok(list) if list.items.is_empty() => {
+                        // Can't confirm there's nothing to detach -- treat as unresolved rather
+                        // than risk deleting a child whose PVC ownership is unknown.
+                        Some(DetachFailureCause::ConfigError)
+                    }
+                    Ok(list) => {
+                        let pvc_names: Vec<&str> = list
+                            .items
+                            .iter()
+                            .filter_map(|pvc| pvc.metadata.name.as_deref())
+                            .collect();
+                        detach_pvc_owner_refs(pvc_api, name, &child_name, pvc_names.into_iter())
+                            .await
+                    }
+                    Err(list_err) => {
+                        warn!(
+                            %name, child = %child_name, error = %kube_err_summary(&list_err),
+                            "label-based PVC lookup also failed; orphan will retry PVC detach \
+                             next reconcile"
+                        );
+                        Some(DetachFailureCause::ConfigError)
+                    }
+                }
             }
-        }
+        };
         // Detaching every PVC didn't unambiguously succeed -- deleting the child now
         // would let cascading GC take a still-owned PVC down with it. Leave the child
         // as an orphan; it gets retried on the next reconcile.
@@ -820,6 +893,7 @@ async fn cleanup_orphaned_children(
                 error = %kube_err_summary(&e),
                 "failed to delete orphaned child"
             );
+            stuck_orphans.delete_failed.push(child_name.clone());
         }
     }
     stuck_orphans
@@ -1073,6 +1147,108 @@ mod tests {
     }
 
     // ------------------------------------------------------------------
+    // read_child_ready (#721)
+    //
+    // A capturing tracing Layer, not a fixed dependency: `tracing_subscriber` (with the
+    // `registry` feature, on by default) is already a dependency of this crate for
+    // telemetry.rs. Lets the test assert a real API error is logged, not just silently
+    // folded into "not ready" -- the whole point of the fix.
+    // ------------------------------------------------------------------
+
+    #[derive(Clone, Default)]
+    struct CapturedEvents(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
+
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for CapturedEvents {
+        fn on_event(
+            &self,
+            event: &tracing::Event<'_>,
+            _ctx: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            struct MessageVisitor(String);
+            impl tracing::field::Visit for MessageVisitor {
+                fn record_debug(
+                    &mut self,
+                    field: &tracing::field::Field,
+                    value: &dyn std::fmt::Debug,
+                ) {
+                    if field.name() == "message" {
+                        self.0 = format!("{value:?}");
+                    }
+                }
+            }
+            let mut visitor = MessageVisitor(String::new());
+            event.record(&mut visitor);
+            self.0.lock().unwrap().push(visitor.0);
+        }
+    }
+
+    #[tokio::test]
+    async fn read_child_ready_returns_true_when_ready() {
+        let mock_server = wiremock::MockServer::start().await;
+        let client = crate::testutils::build_mock_client(&mock_server.uri()).await;
+        let sa_api = Api::<ServarrApp>::namespaced(client.clone(), "test");
+
+        let mut child = make_orphan("child-app", "test");
+        child.status = Some(servarr_crds::ServarrAppStatus {
+            ready: true,
+            ..Default::default()
+        });
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path(
+                "/apis/servarr.dev/v1alpha1/namespaces/test/servarrapps/child-app",
+            ))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .set_body_json(serde_json::to_value(&child).unwrap()),
+            )
+            .mount(&mock_server)
+            .await;
+
+        let ready = read_child_ready(&sa_api, "stack", "child-app").await;
+        assert!(ready);
+    }
+
+    #[tokio::test]
+    async fn read_child_ready_returns_false_and_warns_on_api_error() {
+        use tracing_subscriber::layer::SubscriberExt;
+
+        let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let subscriber = tracing_subscriber::registry().with(CapturedEvents(events.clone()));
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let mock_server = wiremock::MockServer::start().await;
+        let client = crate::testutils::build_mock_client(&mock_server.uri()).await;
+        let sa_api = Api::<ServarrApp>::namespaced(client.clone(), "test");
+
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path(
+                "/apis/servarr.dev/v1alpha1/namespaces/test/servarrapps/child-app",
+            ))
+            .respond_with(
+                wiremock::ResponseTemplate::new(500).set_body_json(serde_json::json!({
+                    "apiVersion": "v1",
+                    "kind": "Status",
+                    "status": "Failure",
+                    "reason": "InternalError",
+                    "code": 500
+                })),
+            )
+            .mount(&mock_server)
+            .await;
+
+        let ready = read_child_ready(&sa_api, "stack", "child-app").await;
+        assert!(!ready);
+
+        let logged = events.lock().unwrap();
+        assert!(
+            logged
+                .iter()
+                .any(|msg| msg.contains("failed to read back child status")),
+            "expected a warn! about the readback failure, got {logged:?}"
+        );
+    }
+
+    // ------------------------------------------------------------------
     // cleanup_orphaned_children / DetachFailureCause (#549, #610)
     //
     // Unit-testable independently of the full reconcile wiremock harness: only the two API
@@ -1112,15 +1288,22 @@ mod tests {
 
         // Unmocked PVC PATCH -> wiremock's default 404, which `is_not_found` treats as
         // "already detached", not a failure.
+        //
+        // "kind": "Status" (not "ServarrApp") -- kube's `request_status` picks the response
+        // type by that field, and a body claiming "ServarrApp" without the required `spec`
+        // fails to deserialize (that gap is exactly what made the #722 regression test below
+        // catch a bug hiding in *this* mock: it was never actually exercising a successful
+        // delete, just a silently-swallowed serde error that happened to also not match
+        // `is_not_found`).
         wiremock::Mock::given(wiremock::matchers::method("DELETE"))
             .and(wiremock::matchers::path(
                 "/apis/servarr.dev/v1alpha1/namespaces/test/servarrapps/orphan-app",
             ))
             .respond_with(
                 wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                    "apiVersion": "servarr.dev/v1alpha1",
-                    "kind": "ServarrApp",
-                    "metadata": { "name": "orphan-app", "namespace": "test" }
+                    "apiVersion": "v1",
+                    "kind": "Status",
+                    "status": "Success"
                 })),
             )
             .expect(1)
@@ -1138,6 +1321,46 @@ mod tests {
             "no PVC-detach failure -> no stuck orphans, got {stuck:?}"
         );
         // The DELETE mock's expect(1) is verified when mock_server drops.
+    }
+
+    #[tokio::test]
+    async fn cleanup_orphaned_children_tracks_stuck_delete_failure() {
+        // #722: unlike a PVC-detach failure (tracked via `StuckOrphans` since #610/#673), a
+        // failed child *delete* after a successful detach used to only get a `warn!` log line --
+        // invisible outside logs. Must surface via `StuckOrphans` too.
+        let mock_server = wiremock::MockServer::start().await;
+        let client = crate::testutils::build_mock_client(&mock_server.uri()).await;
+        let sa_api = Api::<ServarrApp>::namespaced(client.clone(), "test");
+        let pvc_api = Api::<PersistentVolumeClaim>::namespaced(client.clone(), "test");
+
+        // Unmocked PVC PATCH -> wiremock's default 404, "already detached" -- detach succeeds,
+        // so the child reaches the delete call below.
+        wiremock::Mock::given(wiremock::matchers::method("DELETE"))
+            .and(wiremock::matchers::path(
+                "/apis/servarr.dev/v1alpha1/namespaces/test/servarrapps/orphan-app",
+            ))
+            .respond_with(
+                wiremock::ResponseTemplate::new(500).set_body_json(serde_json::json!({
+                    "apiVersion": "v1",
+                    "kind": "Status",
+                    "status": "Failure",
+                    "reason": "InternalError",
+                    "code": 500
+                })),
+            )
+            .mount(&mock_server)
+            .await;
+
+        let existing = orphan_list(vec![make_orphan("orphan-app", "test")]);
+        let desired: HashSet<String> = HashSet::new();
+
+        let stuck =
+            cleanup_orphaned_children(&sa_api, &pvc_api, "stack", &desired, &existing).await;
+
+        assert_eq!(stuck.delete_failed, vec!["orphan-app".to_string()]);
+        assert!(stuck.forbidden.is_empty(), "got {stuck:?}");
+        assert!(stuck.config_error.is_empty(), "got {stuck:?}");
+        assert!(stuck.transient.is_empty(), "got {stuck:?}");
     }
 
     #[tokio::test]
@@ -1276,6 +1499,100 @@ mod tests {
         assert!(stuck.transient.is_empty(), "got {stuck:?}");
     }
 
+    #[tokio::test]
+    async fn cleanup_orphaned_children_falls_back_to_label_lookup_on_config_error() {
+        // #719: `pvc::build_all`'s `Err` branch used to give up entirely -- the only way it
+        // found a child's PVCs was recomputing their names via the same call that just failed,
+        // so the PVC ownerReference detach (and the child delete) never ran. That leaves the
+        // PVC still owned by the child, so a later stack delete cascades GC into it -- the
+        // exact data loss the detach step exists to prevent. A label-based lookup (by
+        // `app.kubernetes.io/instance`, the label every PVC this operator creates already
+        // carries -- see `servarr_resources::common::labels`) must find the PVC even when
+        // `pvc::build_all` can't recompute its name.
+        let mock_server = wiremock::MockServer::start().await;
+        let client = crate::testutils::build_mock_client(&mock_server.uri()).await;
+        let sa_api = Api::<ServarrApp>::namespaced(client.clone(), "test");
+        let pvc_api = Api::<PersistentVolumeClaim>::namespaced(client.clone(), "test");
+
+        let mut orphan = make_orphan("orphan-app", "test");
+        orphan.spec.persistence = Some(servarr_crds::PersistenceSpec {
+            volumes: vec![],
+            nfs_mounts: vec![servarr_crds::NfsMount {
+                name: "downloads-nfs".into(),
+                server: "nas.local".into(),
+                path: "/export/downloads".into(),
+                mount_path: "/downloads".into(),
+                read_only: false,
+            }],
+            removed_default_volumes: vec![],
+        });
+
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path(
+                "/api/v1/namespaces/test/persistentvolumeclaims",
+            ))
+            .and(wiremock::matchers::query_param(
+                "labelSelector",
+                "app.kubernetes.io/instance=orphan-app",
+            ))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "apiVersion": "v1",
+                    "kind": "PersistentVolumeClaimList",
+                    "items": [{
+                        "apiVersion": "v1",
+                        "kind": "PersistentVolumeClaim",
+                        "metadata": { "name": "orphan-app-config", "namespace": "test" }
+                    }]
+                })),
+            )
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        wiremock::Mock::given(wiremock::matchers::method("PATCH"))
+            .and(wiremock::matchers::path(
+                "/api/v1/namespaces/test/persistentvolumeclaims/orphan-app-config",
+            ))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "apiVersion": "v1",
+                    "kind": "PersistentVolumeClaim",
+                    "metadata": { "name": "orphan-app-config", "namespace": "test" }
+                })),
+            )
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        wiremock::Mock::given(wiremock::matchers::method("DELETE"))
+            .and(wiremock::matchers::path(
+                "/apis/servarr.dev/v1alpha1/namespaces/test/servarrapps/orphan-app",
+            ))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "apiVersion": "v1",
+                    "kind": "Status",
+                    "status": "Success"
+                })),
+            )
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let existing = orphan_list(vec![orphan]);
+        let desired: HashSet<String> = HashSet::new();
+
+        let stuck =
+            cleanup_orphaned_children(&sa_api, &pvc_api, "stack", &desired, &existing).await;
+
+        assert!(
+            stuck.is_empty(),
+            "label-based fallback found and detached the PVC -> no stuck orphan, got {stuck:?}"
+        );
+        // The GET/PATCH/DELETE mocks' expect(1) are verified when mock_server drops.
+    }
+
     #[test]
     fn detach_failure_cause_most_severe_prefers_forbidden() {
         assert_eq!(
@@ -1332,13 +1649,18 @@ mod tests {
                 forbidden in proptest::collection::vec("[a-z-]{1,8}", 0..4),
                 config_error in proptest::collection::vec("[a-z-]{1,8}", 0..4),
                 transient in proptest::collection::vec("[a-z-]{1,8}", 0..4),
+                delete_failed in proptest::collection::vec("[a-z-]{1,8}", 0..4),
             ) {
                 let stuck = StuckOrphans {
                     forbidden: forbidden.clone(),
                     config_error: config_error.clone(),
                     transient: transient.clone(),
+                    delete_failed: delete_failed.clone(),
                 };
-                prop_assert_eq!(stuck.len(), forbidden.len() + config_error.len() + transient.len());
+                prop_assert_eq!(
+                    stuck.len(),
+                    forbidden.len() + config_error.len() + transient.len() + delete_failed.len()
+                );
                 // Deliberately comparing `len() == 0` against `is_empty()` -- this is the
                 // invariant under test, not a style choice `is_empty()` would make tautological.
                 #[expect(clippy::len_zero, reason = "cross-checking is_empty() against len()")]
