@@ -76,6 +76,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   any file drops below its own. A file with no entry uses a default floor, so a new module added
   without tests cannot slip through. Both gates read a single `cargo llvm-cov` JSON report, so
   coverage is still measured once per CI run (#643).
+- The coverage step in the branch CI workflow no longer pipes its result through `tee`. That pipe
+  ran without `pipefail`, so it masked the exit code — the same defect #70 fixed once already, in
+  the same place. The gate's exit status is now the step's status (#643).
 - Raised the workspace coverage threshold from 86% to 90%. Line coverage currently measures
   91.25%. `controller.rs`, the module that motivated the original 75% floor, is at 87.73% —
   it was 43.21% when that issue was written (#71).
