@@ -3,9 +3,8 @@
 #
 # Prerequisites:
 #   - kubectl configured and pointing at a reachable cluster
-#   - docker (to build the operator image)
+#   - docker (builds the operator image via the repo's own Dockerfile)
 #   - helm
-#   - cargo (to build the operator binary)
 #
 # The script creates a dedicated namespace (default: smoke-<timestamp>), runs
 # all smoke tests inside it, then deletes the namespace on exit.
@@ -87,28 +86,17 @@ CLUSTER_TYPE=$(detect_cluster_type)
 echo "  Cluster type: ${CLUSTER_TYPE}"
 
 # ---------------------------------------------------------------------------
-# Build operator binary (native, not musl — just needs to run locally)
-# ---------------------------------------------------------------------------
-echo ""
-echo "Building operator binary..."
-cd "$REPO_ROOT"
-cargo build --release --bin servarr-operator
-
-# ---------------------------------------------------------------------------
 # Build Docker image
 # ---------------------------------------------------------------------------
+# Built from the real Dockerfile (cargo-chef, multi-stage), not a host-built
+# binary copied into a throwaway Dockerfile. A host build targets the host's
+# own OS/arch (e.g. macOS Mach-O on Apple Silicon), which the container
+# can never run ("exec format error") regardless of CPU architecture — only
+# a build that compiles *inside* a Linux container is guaranteed to produce
+# a binary the image can actually execute, on every host OS.
 echo ""
 echo "Building operator Docker image (${IMAGE_NAME}:${IMAGE_TAG})..."
-docker build \
-  -t "${IMAGE_NAME}:${IMAGE_TAG}" \
-  --build-arg BINARY_PATH="target/release/servarr-operator" \
-  -f- "$REPO_ROOT" <<'DOCKERFILE'
-FROM debian:bookworm-slim
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && apt-get clean && rm -rf /var/lib/apt/lists/*
-COPY target/release/servarr-operator /servarr-operator
-USER nobody:nogroup
-ENTRYPOINT ["/servarr-operator"]
-DOCKERFILE
+docker build -t "${IMAGE_NAME}:${IMAGE_TAG}" -f "$REPO_ROOT/Dockerfile" "$REPO_ROOT"
 
 # ---------------------------------------------------------------------------
 # Load image into the cluster
