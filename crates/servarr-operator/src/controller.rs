@@ -87,13 +87,15 @@ pub fn print_crd() -> Result<()> {
     Ok(())
 }
 
-pub async fn run(client: kube::Client, server_state: crate::server::ServerState) -> Result<()> {
+pub async fn run(
+    client: kube::Client,
+    server_state: crate::server::ServerState,
+    ctx: Arc<Context>,
+) -> Result<()> {
     // Validate that every AppType has a complete entry in image-defaults.toml.
     // Fail fast at startup rather than panicking inside the reconcile hot path.
     servarr_crds::AppDefaults::validate_all()
         .map_err(|e| anyhow::anyhow!("image-defaults.toml validation failed: {e}"))?;
-
-    let ctx = Arc::new(Context::new(client.clone())?);
 
     let (apps, deployments, services, config_maps, secrets) =
         if let Some(ref ns) = ctx.watch_namespace {
@@ -168,12 +170,9 @@ pub async fn run(client: kube::Client, server_state: crate::server::ServerState)
         })
         .await;
 
-    // Drain any ReconcileError Event publishes `error_policy` spawned but that this stream's
-    // own completion doesn't wait for (#752) -- the Controller has no visibility into a task
-    // spawned outside its own reconcile loop, so without this a publish still in flight when
-    // the process exits is dropped before it is ever polled.
-    ctx.event_publish_tasks.close();
-    ctx.event_publish_tasks.wait().await;
+    // `ctx.event_publish_tasks` (any `error_policy` Event publish this stream's own
+    // completion doesn't wait for, #752) is drained process-wide in `main.rs` after its
+    // `tokio::select!` resolves, not here -- see `Context::drain_event_publish_tasks` (#755).
 
     Ok(())
 }

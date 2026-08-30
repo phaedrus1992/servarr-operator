@@ -80,7 +80,7 @@ impl Context {
     ///
     /// Returns [`EnvError`] when `WATCH_NAMESPACE` is set to a value the operator cannot read.
     /// Widening to cluster scope on a value the user did not choose is not a safe default.
-    pub(crate) fn new(client: Client) -> Result<Self, EnvError> {
+    pub fn new(client: Client) -> Result<Self, EnvError> {
         let (image_overrides, legacy_image_override_apps) = load_image_overrides();
         let reporter = Reporter {
             controller: "servarr-operator".into(),
@@ -101,6 +101,29 @@ impl Context {
             app_api_base_override: None,
             event_publish_tasks: tokio_util::task::TaskTracker::new(),
         })
+    }
+
+    /// Closes `event_publish_tasks` and waits up to `timeout` for every tracked Event publish
+    /// to finish, then gives up.
+    ///
+    /// Call this once per `Context` after the process-wide shutdown signal fires, from
+    /// outside any single controller's own future -- not from inside `controller::run` or
+    /// `media_stack_controller::run`. Both controllers race each other in `main.rs`'s
+    /// `tokio::select!`; whichever future resolves first cancels the others mid-poll, so a
+    /// drain awaited inside a losing future never runs (#755). Bounded by `timeout` so a hung
+    /// publish cannot block shutdown past `terminationGracePeriodSeconds`.
+    pub async fn drain_event_publish_tasks(&self, timeout: std::time::Duration) {
+        self.event_publish_tasks.close();
+        if tokio::time::timeout(timeout, self.event_publish_tasks.wait())
+            .await
+            .is_err()
+        {
+            warn!(
+                timeout_secs = timeout.as_secs(),
+                pending = self.event_publish_tasks.len(),
+                "gave up waiting for in-flight Event publishes to finish before shutdown"
+            );
+        }
     }
 }
 
@@ -239,6 +262,63 @@ fn effective_image(app: &AppType, spec: &ImageSpec) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
+
+    fn make_test_context(client: Client) -> Context {
+        Context {
+            client,
+            image_overrides: HashMap::new(),
+            legacy_image_override_apps: HashSet::new(),
+            reporter: Reporter {
+                controller: "servarr-operator-test".into(),
+                instance: None,
+            },
+            watch_namespace: None,
+            app_api_base_override: None,
+            event_publish_tasks: tokio_util::task::TaskTracker::new(),
+        }
+    }
+
+    // ── drain_event_publish_tasks (#755) ──
+
+    /// A quick pending task must actually finish before the drain returns -- proves the
+    /// helper awaits the tracker rather than returning immediately regardless of it.
+    #[tokio::test]
+    async fn drain_event_publish_tasks_awaits_a_pending_task() {
+        let client = crate::testutils::build_mock_client("http://127.0.0.1:1").await;
+        let ctx = make_test_context(client);
+        let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag_for_task = flag.clone();
+        ctx.event_publish_tasks.spawn(async move {
+            flag_for_task.store(true, std::sync::atomic::Ordering::SeqCst);
+        });
+
+        ctx.drain_event_publish_tasks(Duration::from_secs(5)).await;
+
+        assert!(
+            flag.load(std::sync::atomic::Ordering::SeqCst),
+            "drain must wait for the tracked task to run to completion"
+        );
+    }
+
+    /// A publish that hangs past `timeout` must not block the drain forever -- shutdown has
+    /// to give up and proceed rather than stall past `terminationGracePeriodSeconds` (#755).
+    #[tokio::test(start_paused = true)]
+    async fn drain_event_publish_tasks_gives_up_after_timeout() {
+        let client = crate::testutils::build_mock_client("http://127.0.0.1:1").await;
+        let ctx = make_test_context(client);
+        ctx.event_publish_tasks
+            .spawn(async move { tokio::time::sleep(Duration::from_secs(3600)).await });
+
+        // Paused virtual time auto-advances through the timeout instead of burning real
+        // wall-clock time waiting on the still-hung task.
+        tokio::time::timeout(
+            Duration::from_secs(10),
+            ctx.drain_event_publish_tasks(Duration::from_secs(1)),
+        )
+        .await
+        .expect("drain_event_publish_tasks must return once its own timeout elapses");
+    }
 
     // ── load_image_overrides ──
 
