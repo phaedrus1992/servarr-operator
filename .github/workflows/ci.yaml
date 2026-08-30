@@ -185,6 +185,29 @@ jobs:
       - name: Run cargo deny
         run: cargo deny check
 
+  shear:
+    needs: [fmt, actionlint, zizmor, pre-commit-config-lint]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+
+      - name: Install cargo-shear
+        uses: taiki-e/install-action@6cd13508893c0e7eab5f273c2575d3859bd7229a # v2.86.6
+        with:
+          tool: cargo-shear
+
+      # --check-test-targets is required: dev-dependencies used only from
+      # crates/*/tests/ (proptest, HTTP mock crates) would otherwise be
+      # false-flagged as unused, since a source-only scan skips test targets.
+      - name: Run cargo shear
+        run: cargo shear --check-test-targets
+
   test:
     needs: [fmt, actionlint, zizmor, pre-commit-config-lint]
     runs-on: ubuntu-latest
