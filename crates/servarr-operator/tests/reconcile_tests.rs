@@ -1398,10 +1398,10 @@ async fn test_sonarr_reconcile_survives_stale_warning_event_publish_failure() {
         .mount(&mock_server)
         .await;
 
-    // Only the StaleDefaultImage publish fails -- the reconcile-completion event (which IS
-    // load-bearing, see the final `.map_err(Error::Kube)?` in `reconcile`) must still succeed,
-    // or this test would conflate an unrelated, pre-existing failure mode with the one it's
-    // actually checking.
+    // Only the StaleDefaultImage publish fails. The reconcile-completion event still
+    // succeeds, so this test isolates the one failure mode it checks. Every event is
+    // advisory since #746, so a second failure would not change the assertion below. It
+    // would still muddy which publish the test actually exercises.
     Mock::given(method("POST"))
         .and(path("/apis/events.k8s.io/v1/namespaces/test/events"))
         .and(BodyContains("StaleDefaultImage"))
