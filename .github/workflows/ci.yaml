@@ -211,6 +211,15 @@ jobs:
           mkdir -p .tmp
           cargo llvm-cov --workspace --json --output-path .tmp/coverage.json
 
+      # Separate from the coverage run above, which is the only other test command in this
+      # workflow. `cargo llvm-cov` skips doctests unless it is given --doctests, and that flag
+      # is unstable. Without this step the compile_fail doctests never run in CI. Those
+      # doctests are the guard that a raw &str cannot satisfy `impl Into<TenantSafeMessage>`,
+      # so a From<&str> impl added later would defeat every tenant-safe Condition message with
+      # nothing to catch it. (#744)
+      - name: Run doctests
+        run: cargo test --doc --workspace
+
       # Enforces the aggregate threshold and the per-file floors from the report above, so
       # coverage is measured once. Its exit status is the step's status — no pipe, no tee.
       - name: Enforce coverage gates
