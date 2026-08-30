@@ -81,6 +81,7 @@ fn test_context(client: kube::Client) -> Arc<Context> {
         },
         watch_namespace: Some("test".into()),
         app_api_base_override: None,
+        event_publish_tasks: tokio_util::task::TaskTracker::new(),
     })
 }
 
@@ -111,6 +112,7 @@ fn test_context_with_legacy_seerr_override(client: kube::Client) -> Arc<Context>
         },
         watch_namespace: Some("test".into()),
         app_api_base_override: None,
+        event_publish_tasks: tokio_util::task::TaskTracker::new(),
     })
 }
 
@@ -138,6 +140,7 @@ fn test_context_with_stale_sonarr_override(client: kube::Client) -> Arc<Context>
         },
         watch_namespace: Some("test".into()),
         app_api_base_override: None,
+        event_publish_tasks: tokio_util::task::TaskTracker::new(),
     })
 }
 
@@ -168,6 +171,7 @@ fn test_context_with_current_sonarr_override(client: kube::Client) -> Arc<Contex
         },
         watch_namespace: Some("test".into()),
         app_api_base_override: None,
+        event_publish_tasks: tokio_util::task::TaskTracker::new(),
     })
 }
 
@@ -200,6 +204,7 @@ fn test_context_with_partial_repo_only_sonarr_override(client: kube::Client) -> 
         },
         watch_namespace: Some("test".into()),
         app_api_base_override: None,
+        event_publish_tasks: tokio_util::task::TaskTracker::new(),
     })
 }
 

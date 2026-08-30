@@ -131,6 +131,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   call sites capped their own input, which left every new site to remember the limit on its own.
   The cap now lives in the one function every note passes through, and it cuts on a character
   boundary so a multibyte character can't be split (#747).
+- Fix a failed ServarrApp list silently leaving `servarr_operator_managed_apps` stuck at its last
+  value — an RBAC change or an API server under pressure now warns and counts under a new
+  `servarr_operator_managed_apps_list_failures_total` metric instead of a gauge that looks
+  current forever (#751).
+- Fix `error_policy`'s `ReconcileError` event publish running in a detached task with the handle
+  dropped, so a shutdown before that task got polled skipped the publish, and with it the
+  failure metric that lives inside it. The publish is now tracked and drained on shutdown
+  instead (#752).
+- Fix the same stale-gauge bug in `servarr_operator_managed_stacks`, found while fixing #751 — a
+  failed MediaStack list now warns and counts under a new
+  `servarr_operator_managed_stacks_list_failures_total` metric (#753).
+- Fix backup-retention pruning silently skipping when listing existing backups failed, letting
+  old backups accumulate past retention with nothing to say pruning didn't run. It now warns and
+  counts under `servarr_operator_backup_operations_total{operation="prune",result="error"}` (#753).
 
 ### Changed
 

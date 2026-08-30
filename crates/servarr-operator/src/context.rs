@@ -30,6 +30,11 @@ pub struct Context {
     /// Override base URL for in-cluster app API calls. `None` in production (URLs
     /// are built from `<name>.<ns>.svc:<port>`). Tests set this to a wiremock URI.
     pub app_api_base_override: Option<String>,
+    /// Tracks Event-publish tasks spawned outside the Controller's own reconcile
+    /// stream -- currently only `error_policy`'s `ReconcileError` publish. Awaited
+    /// during shutdown so a runtime exit does not drop a task before it is ever
+    /// polled (#752).
+    pub event_publish_tasks: tokio_util::task::TaskTracker,
 }
 
 /// Parses `WATCH_ALL_NAMESPACES`. Standalone (not just an inline step of [`Context::new`]) so
@@ -94,6 +99,7 @@ impl Context {
             reporter,
             watch_namespace,
             app_api_base_override: None,
+            event_publish_tasks: tokio_util::task::TaskTracker::new(),
         })
     }
 }
