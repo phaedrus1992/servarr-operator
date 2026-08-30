@@ -81,6 +81,15 @@ lazy_static::lazy_static! {
         &["reason"]
     )
     .unwrap();
+
+    pub static ref MANAGED_APPS_LIST_FAILURES_TOTAL: IntCounterVec = prometheus::register_int_counter_vec!(
+        Opts::new(
+            "servarr_operator_managed_apps_list_failures_total",
+            "Total number of failures listing ServarrApps to refresh the managed-apps gauge"
+        ),
+        &[]
+    )
+    .unwrap();
 }
 
 pub(crate) fn increment_reconcile_total(app_type: &str, result: &str) {
@@ -109,6 +118,12 @@ pub(crate) fn set_managed_apps(app_type: &str, namespace: &str, count: i64) {
     MANAGED_APPS
         .with_label_values(&[app_type, namespace])
         .set(count);
+}
+
+pub(crate) fn increment_managed_apps_list_failure() {
+    MANAGED_APPS_LIST_FAILURES_TOTAL
+        .with_label_values(&[] as &[&str])
+        .inc();
 }
 
 pub(crate) fn increment_stack_reconcile_total(result: &str) {
@@ -176,6 +191,18 @@ mod tests {
         increment_event_publish_failure("TestReason");
         let after = EVENT_PUBLISH_FAILURES_TOTAL
             .with_label_values(&["TestReason"])
+            .get();
+        assert_eq!(after, before + 1);
+    }
+
+    #[test]
+    fn increment_managed_apps_list_failure_increments_counter() {
+        let before = MANAGED_APPS_LIST_FAILURES_TOTAL
+            .with_label_values(&[] as &[&str])
+            .get();
+        increment_managed_apps_list_failure();
+        let after = MANAGED_APPS_LIST_FAILURES_TOTAL
+            .with_label_values(&[] as &[&str])
             .get();
         assert_eq!(after, before + 1);
     }

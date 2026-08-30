@@ -25,7 +25,8 @@ use tracing::{debug, error, info, warn};
 use crate::context::Context;
 use crate::metrics::{
     increment_backup_operations, increment_drift_corrections, increment_event_publish_failure,
-    increment_reconcile_total, observe_reconcile_duration, set_managed_apps,
+    increment_managed_apps_list_failure, increment_reconcile_total, observe_reconcile_duration,
+    set_managed_apps,
 };
 
 mod cleanup;
@@ -1132,20 +1133,7 @@ pub async fn reconcile(app: Arc<ServarrApp>, ctx: Arc<Context>) -> Result<Action
     } else {
         Api::<ServarrApp>::all(client.clone())
     };
-    if let Ok(app_list) = gauge_api.list(&kube::api::ListParams::default()).await {
-        let mut counts: std::collections::HashMap<(String, String), i64> =
-            std::collections::HashMap::new();
-        for a in &app_list.items {
-            let key = (
-                a.spec.app.as_str().to_owned(),
-                a.namespace().unwrap_or_default(),
-            );
-            *counts.entry(key).or_default() += 1;
-        }
-        for ((t, n), count) in &counts {
-            set_managed_apps(t, n, *count);
-        }
-    }
+    update_managed_apps_gauge(&gauge_api).await;
 
     publish_reconcile_success(&recorder, &obj_ref, duration).await;
 
@@ -1153,6 +1141,38 @@ pub async fn reconcile(app: Arc<ServarrApp>, ctx: Arc<Context>) -> Result<Action
     // the operator retries quickly once the app finishes starting up.
     let requeue_secs = if admin_creds_pending { 30 } else { 300 };
     Ok(Action::requeue(Duration::from_secs(requeue_secs)))
+}
+
+/// Refresh the `servarr_operator_managed_apps` gauge from a fresh list of ServarrApps.
+///
+/// A failed list is not silently dropped (#751): it warns and increments
+/// `servarr_operator_managed_apps_list_failures_total`, so a persistent failure -- an RBAC
+/// change, an API server under pressure -- shows up in metrics instead of leaving the gauge
+/// frozen at its last good value with nothing to say it stopped updating.
+async fn update_managed_apps_gauge(gauge_api: &Api<ServarrApp>) {
+    match gauge_api.list(&kube::api::ListParams::default()).await {
+        Ok(app_list) => {
+            let mut counts: std::collections::HashMap<(String, String), i64> =
+                std::collections::HashMap::new();
+            for a in &app_list.items {
+                let key = (
+                    a.spec.app.as_str().to_owned(),
+                    a.namespace().unwrap_or_default(),
+                );
+                *counts.entry(key).or_default() += 1;
+            }
+            for ((t, n), count) in &counts {
+                set_managed_apps(t, n, *count);
+            }
+        }
+        Err(e) => {
+            warn!(
+                error = %kube_err_summary(&e),
+                "failed to list ServarrApps for managed-apps gauge; gauge value is now stale"
+            );
+            increment_managed_apps_list_failure();
+        }
+    }
 }
 
 /// Create the API key Secret the first time `apiKeySecret` is reconciled.
@@ -6573,6 +6593,34 @@ mod tests {
 
         let after = crate::metrics::EVENT_PUBLISH_FAILURES_TOTAL
             .with_label_values(&["MetricTestReason"])
+            .get();
+        assert_eq!(after, before + 1);
+    }
+
+    // ---- update_managed_apps_gauge (#751): a failed list must not leave the gauge stale
+    // with no signal that it stopped updating ----
+    //
+    // Both guarantees are asserted in one test because `MANAGED_APPS_LIST_FAILURES_TOTAL`
+    // carries no labels -- a second test incrementing the same global counter would race
+    // this one under cargo's default parallel test execution and make the +1 delta
+    // unprovable (same reasoning as the shared `ReconcileSuccess` counter test below).
+    #[tokio::test]
+    async fn update_managed_apps_gauge_warns_and_counts_without_panicking_on_list_failure() {
+        // No Mock mounted for the servarrapps list endpoint, so the call fails
+        // (wiremock returns 404 for any unmatched request) — the function must
+        // warn and count the failure, never panic.
+        let mock_server = MockServer::start().await;
+        let client = build_mock_client(&mock_server.uri()).await;
+        let gauge_api = Api::<ServarrApp>::namespaced(client, "test");
+
+        let before = crate::metrics::MANAGED_APPS_LIST_FAILURES_TOTAL
+            .with_label_values(&[] as &[&str])
+            .get();
+
+        update_managed_apps_gauge(&gauge_api).await;
+
+        let after = crate::metrics::MANAGED_APPS_LIST_FAILURES_TOTAL
+            .with_label_values(&[] as &[&str])
             .get();
         assert_eq!(after, before + 1);
     }
