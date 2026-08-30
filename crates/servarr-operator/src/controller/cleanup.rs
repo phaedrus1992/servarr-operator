@@ -1,5 +1,5 @@
 use kube::api::Api;
-use kube::runtime::events::{Event, EventType, Recorder};
+use kube::runtime::events::{EventType, Recorder};
 use kube::{Client, ResourceExt};
 use servarr_api::TenantSafeMessage;
 use servarr_api::k8s::{is_kube_not_found, is_kube_permission_denied, kube_err_summary};
@@ -367,7 +367,7 @@ pub(super) async fn cleanup_prowlarr_registration_body(
             recorder,
             obj_ref,
             "ProwlarrCleanup",
-            format!("Removed {} from Prowlarr", app.name_any()),
+            TenantSafeMessage::new(format!("Removed {} from Prowlarr", app.name_any())),
         )
         .await;
     }
@@ -568,18 +568,17 @@ async fn finish_cleanup(
 async fn publish_cleanup_normal(
     recorder: &Recorder,
     obj_ref: &k8s_openapi::api::core::v1::ObjectReference,
-    reason: &str,
-    note: String,
+    reason: &'static str,
+    note: TenantSafeMessage,
 ) {
     super::publish_event(
         recorder,
         obj_ref,
-        Event {
+        super::TenantEvent {
             type_: EventType::Normal,
-            reason: reason.into(),
-            note: Some(note),
-            action: "Finalize".into(),
-            secondary: None,
+            reason,
+            note,
+            action: "Finalize",
         },
     )
     .await;
@@ -600,12 +599,11 @@ async fn publish_cleanup_failed(
     super::publish_event(
         recorder,
         obj_ref,
-        Event {
+        super::TenantEvent {
             type_: EventType::Warning,
-            reason: "CleanupFailed".into(),
-            note: Some(msg.as_ref().to_string()),
-            action: "Finalize".into(),
-            secondary: None,
+            reason: "CleanupFailed",
+            note: msg.clone(),
+            action: "Finalize",
         },
     )
     .await;
@@ -727,7 +725,7 @@ pub(super) async fn cleanup_seerr_registration_body(
             recorder,
             obj_ref,
             "SeerrCleanup",
-            format!("Removed {} from Seerr", app.name_any()),
+            TenantSafeMessage::new(format!("Removed {} from Seerr", app.name_any())),
         )
         .await;
     }
@@ -779,7 +777,7 @@ mod tests {
             &recorder,
             &make_obj_ref(),
             "CleanupNormalMetricTest",
-            "test note".to_string(),
+            TenantSafeMessage::new("test note"),
         )
         .await;
 
