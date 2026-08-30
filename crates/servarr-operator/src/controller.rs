@@ -2986,18 +2986,28 @@ async fn maybe_run_backup(
             )
             .await;
 
-            // Prune old backups if over retention count
+            // Prune old backups if over retention count. A failed list is not silently
+            // dropped: it warns and counts the failure, so old backups quietly accumulating
+            // past retention is visible in metrics rather than only in absent DELETE calls.
             let retention = backup_spec.retention_count;
-            if let Ok(backups) = api_client.list_backups().await
-                && backups.len() as u32 > retention
-            {
-                let mut sorted = backups;
-                sorted.sort_by(|a, b| a.time.cmp(&b.time));
-                let to_delete = sorted.len() - retention as usize;
-                for old in sorted.iter().take(to_delete) {
-                    if let Err(e) = api_client.delete_backup(old.id).await {
-                        warn!(backup_id = old.id, error = %e.log_summary(), "failed to prune old backup");
+            match api_client.list_backups().await {
+                Ok(backups) if backups.len() as u32 > retention => {
+                    let mut sorted = backups;
+                    sorted.sort_by(|a, b| a.time.cmp(&b.time));
+                    let to_delete = sorted.len() - retention as usize;
+                    for old in sorted.iter().take(to_delete) {
+                        if let Err(e) = api_client.delete_backup(old.id).await {
+                            warn!(backup_id = old.id, error = %e.log_summary(), "failed to prune old backup");
+                        }
                     }
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    warn!(
+                        app = %app_name, error = %e.log_summary(),
+                        "failed to list backups for retention pruning; old backups may accumulate"
+                    );
+                    increment_backup_operations(app_type, "prune", "error");
                 }
             }
 
@@ -8991,6 +9001,69 @@ mod tests {
             status.backup_count, 2,
             "backup_count must be clamped to retention"
         );
+    }
+
+    // A failed list_backups() during pruning must not be silently dropped: pruning is skipped
+    // (nothing to sort/delete without a list), but the failure is now counted so old backups
+    // silently accumulating past retention is visible in metrics, not just absent DELETE calls.
+    #[tokio::test]
+    async fn maybe_run_backup_list_failure_during_pruning_counts_the_failure() {
+        use servarr_crds::BackupSpec;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock_server = MockServer::start().await;
+        let client = build_mock_client(&mock_server.uri()).await;
+        let mut app = make_test_app("my-sonarr", "test", AppType::Sonarr);
+        app.spec.backup = Some(BackupSpec {
+            enabled: true,
+            schedule: "0 3 * * *".into(),
+            retention_count: 2,
+        });
+        app.spec.api_key_secret = Some("sonarr-key".into());
+
+        Mock::given(method("GET"))
+            .and(path("/api/v1/namespaces/test/secrets/sonarr-key"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "apiVersion": "v1", "kind": "Secret",
+                "metadata": { "name": "sonarr-key", "namespace": "test" },
+                "data": { "api-key": "c29uYXJyLWtleQ==" }
+            })))
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/v3/system/backup"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": 3,
+                "name": "sonarr_backup.zip",
+                "path": "/config/Backups/sonarr_backup.zip",
+                "size": 1048576,
+                "time": "2026-06-25T03:00:00Z"
+            })))
+            .mount(&mock_server)
+            .await;
+
+        // No Mock mounted for GET /api/v3/system/backup, so list_backups() fails (wiremock
+        // returns 404 for any unmatched request) — pruning must warn and count the failure,
+        // never silently skip with no signal.
+        let app_type = app.spec.app.as_str();
+        let before = crate::metrics::BACKUP_OPERATIONS_TOTAL
+            .with_label_values(&[app_type, "prune", "error"])
+            .get();
+
+        let recorder = make_recorder(&client);
+        let obj_ref = app.object_ref(&());
+        let mock_uri = mock_server.uri();
+        let result = maybe_run_backup(&client, &app, &recorder, &obj_ref, Some(&mock_uri)).await;
+
+        let status = result.expect("should return Some(BackupStatus) on success");
+        assert_eq!(status.last_backup_result.as_deref(), Some("success"));
+
+        let after = crate::metrics::BACKUP_OPERATIONS_TOTAL
+            .with_label_values(&[app_type, "prune", "error"])
+            .get();
+        assert_eq!(after, before + 1);
     }
 
     #[tokio::test]
