@@ -3,6 +3,7 @@ use kube::runtime::events::Reporter;
 use servarr_crds::{AppDefaults, AppType, ImageSpec};
 
 use crate::env::EnvError;
+use crate::metrics::increment_event_publish_failure;
 use std::collections::{HashMap, HashSet};
 use tracing::{info, warn};
 
@@ -112,17 +113,24 @@ impl Context {
     /// `tokio::select!`; whichever future resolves first cancels the others mid-poll, so a
     /// drain awaited inside a losing future never runs (#755). Bounded by `timeout` so a hung
     /// publish cannot block shutdown past `terminationGracePeriodSeconds`.
+    ///
+    /// Every publish still pending when `timeout` elapses is abandoned -- the same outcome
+    /// `increment_event_publish_failure` already tracks for an in-band publish error (#752) --
+    /// so this counts each one under the `"ShutdownTimeout"` reason, matching that convention.
     pub async fn drain_event_publish_tasks(&self, timeout: std::time::Duration) {
         self.event_publish_tasks.close();
         if tokio::time::timeout(timeout, self.event_publish_tasks.wait())
             .await
             .is_err()
         {
+            let pending = self.event_publish_tasks.len();
             warn!(
                 timeout_secs = timeout.as_secs(),
-                pending = self.event_publish_tasks.len(),
-                "gave up waiting for in-flight Event publishes to finish before shutdown"
+                pending, "gave up waiting for in-flight Event publishes to finish before shutdown"
             );
+            for _ in 0..pending {
+                increment_event_publish_failure("ShutdownTimeout");
+            }
         }
     }
 }
@@ -318,6 +326,37 @@ mod tests {
         )
         .await
         .expect("drain_event_publish_tasks must return once its own timeout elapses");
+    }
+
+    /// An abandoned publish must be countable the same way an in-band publish failure already
+    /// is (#752) -- an operator watching `EVENT_PUBLISH_FAILURES_TOTAL` must see a shutdown
+    /// timeout, not just a log line nothing alerts on.
+    #[tokio::test(start_paused = true)]
+    async fn drain_event_publish_tasks_counts_each_abandoned_publish() {
+        let client = crate::testutils::build_mock_client("http://127.0.0.1:1").await;
+        let ctx = make_test_context(client);
+        ctx.event_publish_tasks
+            .spawn(async move { tokio::time::sleep(Duration::from_secs(3600)).await });
+
+        let before = crate::metrics::EVENT_PUBLISH_FAILURES_TOTAL
+            .with_label_values(&["ShutdownTimeout"])
+            .get();
+
+        tokio::time::timeout(
+            Duration::from_secs(10),
+            ctx.drain_event_publish_tasks(Duration::from_secs(1)),
+        )
+        .await
+        .expect("drain_event_publish_tasks must return once its own timeout elapses");
+
+        let after = crate::metrics::EVENT_PUBLISH_FAILURES_TOTAL
+            .with_label_values(&["ShutdownTimeout"])
+            .get();
+        assert_eq!(
+            after,
+            before + 1,
+            "an abandoned publish must increment the same counter an in-band publish failure does"
+        );
     }
 
     // ── load_image_overrides ──
