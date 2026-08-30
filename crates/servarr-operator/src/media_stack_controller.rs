@@ -22,7 +22,8 @@ use tracing::{debug, error, info, warn};
 
 use crate::context::Context;
 use crate::metrics::{
-    increment_stack_reconcile_total, observe_stack_reconcile_duration, set_managed_stacks,
+    increment_managed_stacks_list_failure, increment_stack_reconcile_total,
+    observe_stack_reconcile_duration, set_managed_stacks,
 };
 
 const FIELD_MANAGER: &str = "servarr-operator-stack";
@@ -491,16 +492,7 @@ pub async fn reconcile(stack: Arc<MediaStack>, ctx: Arc<Context>) -> Result<Acti
     } else {
         Api::<MediaStack>::all(client.clone())
     };
-    if let Ok(stack_list) = gauge_api.list(&ListParams::default()).await {
-        let mut counts: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
-        for s in &stack_list.items {
-            let key = s.namespace().unwrap_or_default();
-            *counts.entry(key).or_default() += 1;
-        }
-        for (ns_key, count) in &counts {
-            set_managed_stacks(ns_key, *count);
-        }
-    }
+    update_managed_stacks_gauge(&gauge_api).await;
 
     let duration = start_time.elapsed().as_secs_f64();
     observe_stack_reconcile_duration(duration);
@@ -515,6 +507,35 @@ pub async fn reconcile(stack: Arc<MediaStack>, ctx: Arc<Context>) -> Result<Acti
     };
 
     Ok(Action::requeue(requeue))
+}
+
+/// Refresh the `servarr_operator_managed_stacks` gauge from a fresh list of MediaStacks.
+///
+/// A failed list is not silently dropped: it warns and increments
+/// `servarr_operator_managed_stacks_list_failures_total`, so a persistent failure shows up in
+/// metrics instead of leaving the gauge frozen at its last good value with nothing to say it
+/// stopped updating (same pattern as the ServarrApp managed-apps gauge, #751).
+async fn update_managed_stacks_gauge(gauge_api: &Api<MediaStack>) {
+    match gauge_api.list(&ListParams::default()).await {
+        Ok(stack_list) => {
+            let mut counts: std::collections::HashMap<String, i64> =
+                std::collections::HashMap::new();
+            for s in &stack_list.items {
+                let key = s.namespace().unwrap_or_default();
+                *counts.entry(key).or_default() += 1;
+            }
+            for (ns_key, count) in &counts {
+                set_managed_stacks(ns_key, *count);
+            }
+        }
+        Err(e) => {
+            warn!(
+                error = %kube_err_summary(&e),
+                "failed to list MediaStacks for managed-stacks gauge; gauge value is now stale"
+            );
+            increment_managed_stacks_list_failure();
+        }
+    }
 }
 
 /// Apply (or clean up) the in-cluster NFS server StatefulSet and Service.
@@ -1044,6 +1065,35 @@ mod tests {
             app_api_base_override: None,
             event_publish_tasks: tokio_util::task::TaskTracker::new(),
         })
+    }
+
+    // ---- update_managed_stacks_gauge: a failed list must not leave the gauge stale with
+    // no signal that it stopped updating (same pattern as #751, fixed here for MediaStack) ----
+    //
+    // Both guarantees asserted in one test: `MANAGED_STACKS_LIST_FAILURES_TOTAL` carries no
+    // labels, so a second test incrementing the same global counter would race this one under
+    // cargo's default parallel test execution.
+    #[tokio::test]
+    async fn update_managed_stacks_gauge_warns_and_counts_without_panicking_on_list_failure() {
+        use wiremock::MockServer;
+
+        // No Mock mounted for the mediastacks list endpoint, so the call fails (wiremock
+        // returns 404 for any unmatched request) — the function must warn and count the
+        // failure, never panic.
+        let mock_server = MockServer::start().await;
+        let client = build_mock_client(&mock_server.uri()).await;
+        let gauge_api = Api::<MediaStack>::namespaced(client, "test");
+
+        let before = crate::metrics::MANAGED_STACKS_LIST_FAILURES_TOTAL
+            .with_label_values(&[] as &[&str])
+            .get();
+
+        update_managed_stacks_gauge(&gauge_api).await;
+
+        let after = crate::metrics::MANAGED_STACKS_LIST_FAILURES_TOTAL
+            .with_label_values(&[] as &[&str])
+            .get();
+        assert_eq!(after, before + 1);
     }
 
     // ---- error_policy ----
