@@ -102,6 +102,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Fix a stuck orphan's failed child delete (after a successful PVC detach) being visible only in
   operator logs — it now surfaces via the `OrphanCleanupHealthy` status condition like the other
   failure buckets (#722).
+- Fix the version number in the `UpdateAvailable` condition being copied straight out of the app's
+  update API with no length limit and no character filter. Two things went wrong with that. A long
+  enough value pushed the condition message past the 32768 bytes Kubernetes allows, so the status
+  patch was rejected and the app reconciled in a loop; and whatever the app returned was shown to
+  you verbatim. The version is now filtered to the characters a version number actually uses and
+  capped, and a value that survives neither is reported as "A new version is available" rather than
+  costing you the whole condition (#744).
+- Fix `servarr_operator_event_publish_failures_total` not counting the two events the finalizer
+  cleanup path publishes. One of those sites discarded its publish failure outright and the other
+  only logged it, so an `events.k8s.io` outage during cleanup showed up in neither the metric nor,
+  for the first site, anywhere at all (#708).
+- Fix the operator logging that it failed to publish an event without saying which app it was for.
+  None of these log lines carried the object name, so on a cluster-wide operator the line named a
+  reason and nothing else (#744).
 
 ### Changed
 
