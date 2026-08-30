@@ -46,6 +46,17 @@ pub enum EnvError {
         /// The length of the unreadable value, in bytes.
         bytes: usize,
     },
+    /// The variable is set to a value outside the accepted boolean spellings.
+    #[error(
+        "{key} is set to an unrecognized value ({bytes} bytes). \
+         Set {key} to one of true/false/1/0/yes/no, or unset it to use the default."
+    )]
+    NotBool {
+        /// The variable's name.
+        key: String,
+        /// The length of the unrecognized value, in bytes.
+        bytes: usize,
+    },
     /// The variable is set to a readable value that the caller cannot use.
     #[error(
         "{key} is set to a value this operator cannot use: {reason} \
@@ -54,20 +65,21 @@ pub enum EnvError {
     Unusable {
         /// The variable's name.
         key: String,
-        /// What the caller expected. Never contains the value itself.
-        reason: String,
+        /// What the caller expected.
+        ///
+        /// `&'static str` on purpose. A variable can carry a credential, and this message
+        /// reaches the operator's logs, so the type refuses to hold anything read at run time.
+        /// A reason that needs a measurement gets its own variant, as [`Self::NotBool`] does.
+        reason: &'static str,
     },
 }
 
 impl EnvError {
     /// Builds an [`EnvError::Unusable`]. State in `reason` what the caller expected.
-    ///
-    /// Never pass the variable's value. A value can carry a credential, and this message reaches
-    /// the operator's logs.
-    pub fn unusable(key: &str, reason: impl Into<String>) -> Self {
+    pub fn unusable(key: &str, reason: &'static str) -> Self {
         Self::Unusable {
             key: key.to_string(),
-            reason: reason.into(),
+            reason,
         }
     }
 }
@@ -125,7 +137,7 @@ pub fn var_strict(key: &str) -> Result<Option<String>, EnvError> {
 ///
 /// # Errors
 ///
-/// Returns [`EnvError::NotUnicode`] when `key` is not valid UTF-8. Returns [`EnvError::Unusable`]
+/// Returns [`EnvError::NotUnicode`] when `key` is not valid UTF-8. Returns [`EnvError::NotBool`]
 /// when `key` holds a non-empty value outside the accepted spellings.
 pub fn var_bool_strict(key: &str, default: bool) -> Result<bool, EnvError> {
     let Some(value) = var_strict(key)? else {
@@ -144,13 +156,10 @@ pub fn var_bool_strict(key: &str, default: bool) -> Result<bool, EnvError> {
     if value.eq_ignore_ascii_case("false") || value == "0" || value.eq_ignore_ascii_case("no") {
         return Ok(false);
     }
-    Err(EnvError::unusable(
-        key,
-        format!(
-            "expected true/false/1/0/yes/no, got {} bytes of something else.",
-            value.len()
-        ),
-    ))
+    Err(EnvError::NotBool {
+        key: key.to_string(),
+        bytes: value.len(),
+    })
 }
 
 /// Reads `key` as a filesystem path.
