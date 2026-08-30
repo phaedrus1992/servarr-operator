@@ -258,6 +258,36 @@ async fn publish_deprecated_image_override(
     .await
 }
 
+/// Publish the terminal `ReconcileSuccess` Event at the end of a successful reconcile.
+///
+/// Advisory, like every other Event this operator writes. A failed publish does not fail the
+/// reconcile. Every resource is already reconciled when this runs, and
+/// `increment_reconcile_total(.., "success")` already recorded the success. To return an error
+/// here would make three signals disagree about one reconcile: the success counter would say
+/// success, the reconcile result would say failure, and the publish-failure metric would stay
+/// at zero. It would also send an otherwise-complete reconcile down the error-backoff requeue
+/// path, which repeats real work because one informational write failed.
+///
+/// The loss is not silent. `publish_event` warns with the object name and increments
+/// `servarr_operator_event_publish_failures_total` under the `ReconcileSuccess` label. (#746)
+async fn publish_reconcile_success(
+    recorder: &Recorder,
+    obj_ref: &k8s_openapi::api::core::v1::ObjectReference,
+    duration: f64,
+) {
+    publish_event(
+        recorder,
+        obj_ref,
+        TenantEvent {
+            type_: EventType::Normal,
+            reason: "ReconcileSuccess",
+            note: TenantSafeMessage::new(format!("All resources reconciled in {duration:.2}s")),
+            action: "Reconcile",
+        },
+    )
+    .await;
+}
+
 pub async fn reconcile(app: Arc<ServarrApp>, ctx: Arc<Context>) -> Result<Action, Error> {
     let client = &ctx.client;
     let name = app.name_any();
@@ -1090,19 +1120,7 @@ pub async fn reconcile(app: Arc<ServarrApp>, ctx: Arc<Context>) -> Result<Action
         }
     }
 
-    recorder
-        .publish(
-            &Event {
-                type_: EventType::Normal,
-                reason: "ReconcileSuccess".into(),
-                note: Some(format!("All resources reconciled in {duration:.2}s")),
-                action: "Reconcile".into(),
-                secondary: None,
-            },
-            &obj_ref,
-        )
-        .await
-        .map_err(Error::Kube)?;
+    publish_reconcile_success(&recorder, &obj_ref, duration).await;
 
     // Use a short requeue interval when admin credential sync is still pending so
     // the operator retries quickly once the app finishes starting up.
@@ -6530,6 +6548,45 @@ mod tests {
             .with_label_values(&["MetricTestReason"])
             .get();
         assert_eq!(after, before + 1);
+    }
+
+    // The terminal ReconcileSuccess Event is advisory (#746). Two guarantees, asserted in one
+    // test because both need the shared `ReconcileSuccess` counter label -- a second test on
+    // the same label would race this one and make the +1 delta unprovable.
+    //
+    // 1. A failed publish does not fail the reconcile. `publish_reconcile_success` returns
+    //    `()`, so it cannot propagate an error to the caller, and the call must not panic.
+    // 2. The failure is still counted, which is what makes guarantee 1 safe and not silent.
+    //
+    // No Mock is mounted for the events endpoint, so wiremock answers 404 and the publish
+    // fails.
+    #[tokio::test]
+    async fn publish_reconcile_success_is_advisory_but_counts_the_failure() {
+        let mock_server = MockServer::start().await;
+        let client = crate::testutils::build_mock_client(&mock_server.uri()).await;
+        let recorder = make_recorder(&client);
+        let obj_ref = k8s_openapi::api::core::v1::ObjectReference {
+            kind: Some("ServarrApp".into()),
+            name: Some("my-app".into()),
+            namespace: Some("test".into()),
+            uid: Some("app-uid-1".into()),
+            ..Default::default()
+        };
+
+        let before = crate::metrics::EVENT_PUBLISH_FAILURES_TOTAL
+            .with_label_values(&["ReconcileSuccess"])
+            .get();
+
+        publish_reconcile_success(&recorder, &obj_ref, 1.5).await;
+
+        let after = crate::metrics::EVENT_PUBLISH_FAILURES_TOTAL
+            .with_label_values(&["ReconcileSuccess"])
+            .get();
+        assert_eq!(
+            after,
+            before + 1,
+            "a failed ReconcileSuccess publish must be counted, not swallowed"
+        );
     }
 
     // ---- Helper: build a minimal ServarrApp for testing ----
