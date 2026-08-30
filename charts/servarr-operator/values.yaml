@@ -13,6 +13,11 @@ resources:
 
 webhook:
   enabled: true
+  # Port the webhook server listens on. The container port, the Service targetPort, and the
+  # operator's own WEBHOOK_PORT all read this one value. Change it here, never in one place
+  # only — the API server reaches the webhook through the Service, so a mismatch makes every
+  # ServarrApp write fail under failurePolicy: Fail.
+  port: 9443
 
 # By default the operator watches only its own namespace (Role/RoleBinding).
 # Set to true to watch all namespaces (ClusterRole/ClusterRoleBinding).

@@ -83,24 +83,45 @@ async fn main() -> Result<()> {
 
     let state = server::ServerState::new();
 
-    // Optionally start the webhook server if WEBHOOK_ENABLED=true
-    let webhook_enabled = env::var_bool("WEBHOOK_ENABLED", false);
+    // Optionally start the webhook server if WEBHOOK_ENABLED=true.
+    //
+    // #732: a value like `on` or `y` expresses an intent to enable the webhook. Treating it as
+    // `false` disables validating admission, and the only other signal is the absence of a log
+    // line. Refuse to start instead, and say which variable is wrong.
+    let webhook_enabled = env::var_bool_strict("WEBHOOK_ENABLED", false)?;
 
-    if webhook_enabled {
-        let webhook_config = webhook::WebhookConfig::default();
-        info!(port = webhook_config.port, "webhook server enabled");
-        let webhook_client = client.clone();
-        tokio::spawn(async move {
-            if let Err(e) = webhook::run(webhook_client, webhook_config).await {
-                error!(%e, "webhook server failed");
-            }
-        });
-    }
+    let webhook_config = if webhook_enabled {
+        let config = webhook::WebhookConfig::from_env()?;
+        info!(port = config.port, "webhook server enabled");
+        Some(config)
+    } else {
+        None
+    };
 
-    // Run the metrics/health server and both controllers concurrently.
+    // The operator was told to run a webhook, so a webhook that cannot run is fatal.
+    //
+    // `from_env` proves the TLS variables name paths. It cannot prove those paths hold a
+    // loadable certificate, and it cannot bind the port — both happen inside `webhook::run`.
+    // A detached task that only logs its error leaves `/readyz` at 200 and the pod Ready, while
+    // `failurePolicy: Fail` rejects every ServarrApp write in the cluster. Restarting with a
+    // stated reason beats a healthy-looking pod that blocks the whole cluster (#733).
+    let webhook_client = client.clone();
+    let webhook = async move {
+        match webhook_config {
+            Some(config) => webhook::run(webhook_client, config).await,
+            // The webhook is disabled, so this branch must never win the select below.
+            None => std::future::pending().await,
+        }
+    };
+
+    // Run the metrics/health server, the webhook, and both controllers concurrently.
     // If any exits, shut down.
     let state2 = state.clone();
     tokio::select! {
+        res = webhook => {
+            error!("webhook server exited: {res:?}");
+            res
+        }
         res = server::run(METRICS_PORT, state.clone()) => {
             error!("metrics server exited: {res:?}");
             res

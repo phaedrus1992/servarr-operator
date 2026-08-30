@@ -1,6 +1,8 @@
 use kube::Client;
 use kube::runtime::events::Reporter;
-use servarr_crds::{AppType, ImageSpec};
+use servarr_crds::{AppDefaults, AppType, ImageSpec};
+
+use crate::env::EnvError;
 use std::collections::{HashMap, HashSet};
 use tracing::{info, warn};
 
@@ -38,47 +40,61 @@ pub fn watch_all_namespaces() -> bool {
     crate::env::var_bool("WATCH_ALL_NAMESPACES", false)
 }
 
-/// Resolves the namespace to watch. `None` means cluster-scoped.
+/// Resolves the namespace to watch. `Ok(None)` means cluster-scoped.
 ///
 /// An empty `WATCH_NAMESPACE` widens the operator from one namespace to the whole cluster, so
 /// it warns rather than falling through in silence. The downward API never produces an empty
 /// value, but a hand-written pod spec or a `valueFrom` on a missing key does.
-pub fn watch_namespace() -> Option<String> {
+///
+/// An *unreadable* value widens the same way, and it is not a case the user chose. "Unset, so
+/// watch everything" and "set, so it must be usable" are different situations, and only the
+/// first is an instruction. Widening scope changes a security posture, so the second is fatal.
+///
+/// # Errors
+///
+/// Returns [`EnvError`] when `WATCH_NAMESPACE` is set to a value that is not valid UTF-8.
+pub fn watch_namespace() -> Result<Option<String>, EnvError> {
     if watch_all_namespaces() {
-        return None;
+        return Ok(None);
     }
-    let ns = crate::env::var("WATCH_NAMESPACE")?;
+    let Some(ns) = crate::env::var_strict("WATCH_NAMESPACE")? else {
+        return Ok(None);
+    };
     if ns.is_empty() {
         warn!(
             "WATCH_NAMESPACE is set but empty, falling back to cluster-scoped mode; \
              set it to a namespace name or unset it to make this deliberate"
         );
-        return None;
+        return Ok(None);
     }
-    Some(ns)
+    Ok(Some(ns))
 }
 
 impl Context {
-    pub(crate) fn new(client: Client) -> Self {
+    /// # Errors
+    ///
+    /// Returns [`EnvError`] when `WATCH_NAMESPACE` is set to a value the operator cannot read.
+    /// Widening to cluster scope on a value the user did not choose is not a safe default.
+    pub(crate) fn new(client: Client) -> Result<Self, EnvError> {
         let (image_overrides, legacy_image_override_apps) = load_image_overrides();
         let reporter = Reporter {
             controller: "servarr-operator".into(),
             instance: crate::env::var("POD_NAME"),
         };
-        let watch_namespace = watch_namespace();
+        let watch_namespace = watch_namespace()?;
         if let Some(ref ns) = watch_namespace {
             info!(%ns, "namespace-scoped mode");
         } else {
             info!("cluster-scoped mode (watching all namespaces)");
         }
-        Self {
+        Ok(Self {
             client,
             image_overrides,
             legacy_image_override_apps,
             reporter,
             watch_namespace,
             app_api_base_override: None,
-        }
+        })
     }
 }
 
@@ -100,19 +116,20 @@ fn load_image_overrides() -> (HashMap<String, ImageSpec>, HashSet<String>) {
         let repo_key = format!("DEFAULT_IMAGE_{}_REPO", name.to_uppercase());
         let tag_key = format!("DEFAULT_IMAGE_{}_TAG", name.to_uppercase());
 
-        if let Some(repo) = crate::env::var(&repo_key) {
-            let tag = crate::env::var(&tag_key).unwrap_or_default();
-            info!(%name, %repo, %tag, "loaded image override from env");
-            overrides.insert(
-                name.to_string(),
-                ImageSpec {
-                    repository: repo,
-                    tag,
-                    digest: String::new(),
-                    pull_policy: "IfNotPresent".into(),
-                },
-            );
-        }
+        let Some(repo) = read_override_repo(&repo_key, name) else {
+            continue;
+        };
+        let Some(tag) = read_override_tag(&tag_key, name) else {
+            continue;
+        };
+        let spec = ImageSpec {
+            repository: repo,
+            tag,
+            digest: String::new(),
+            pull_policy: "IfNotPresent".into(),
+        };
+        info!(%name, image = %effective_image(app, &spec), "loaded image override from env");
+        overrides.insert(name.to_string(), spec);
     }
 
     // Issue #44: fall back to the pre-rename DEFAULT_IMAGE_OVERSEERR_* env vars if the new
@@ -122,27 +139,95 @@ fn load_image_overrides() -> (HashMap<String, ImageSpec>, HashSet<String>) {
     // whether the operator still recognizes that key) — and that override would silently stop
     // applying after upgrade, falling back to the new default image with no warning.
     if !overrides.contains_key("seerr")
-        && let Some(repo) = crate::env::var("DEFAULT_IMAGE_OVERSEERR_REPO")
+        && let Some(repo) = read_override_repo("DEFAULT_IMAGE_OVERSEERR_REPO", "seerr")
+        && let Some(tag) = read_override_tag("DEFAULT_IMAGE_OVERSEERR_TAG", "seerr")
     {
-        let tag = crate::env::var("DEFAULT_IMAGE_OVERSEERR_TAG").unwrap_or_default();
+        let spec = ImageSpec {
+            repository: repo,
+            tag,
+            digest: String::new(),
+            pull_policy: "IfNotPresent".into(),
+        };
         warn!(
-            %repo, %tag,
+            image = %effective_image(&AppType::Seerr, &spec),
             "loaded image override from deprecated DEFAULT_IMAGE_OVERSEERR_* env vars — \
              rename defaultImages.overseerr to defaultImages.seerr in your Helm values"
         );
-        overrides.insert(
-            "seerr".to_string(),
-            ImageSpec {
-                repository: repo,
-                tag,
-                digest: String::new(),
-                pull_policy: "IfNotPresent".into(),
-            },
-        );
+        overrides.insert("seerr".to_string(), spec);
         legacy.insert("seerr".to_string());
     }
 
     (overrides, legacy)
+}
+
+/// Reads one `DEFAULT_IMAGE_<APP>_TAG`, returning `None` when the whole override must be dropped.
+///
+/// An *unset* tag yields `Some("")`. That is deliberate: the chart renders `value: ""` when a
+/// user overrides only `repository`, and the compiled default tag fills the empty half in during
+/// the merge (#38).
+///
+/// A *present but unreadable* tag yields `None`. Keeping the override there would pair the user's
+/// repository with the operator's compiled default tag — an image nobody requested, which may not
+/// exist in the registry, or may exist and be the wrong build (#734). The consistent compiled
+/// default is the better answer.
+fn read_override_tag(tag_key: &str, name: &str) -> Option<String> {
+    match crate::env::var_strict(tag_key) {
+        Ok(tag) => Some(tag.unwrap_or_default()),
+        Err(error) => {
+            warn_dropped_override(name, &error);
+            None
+        }
+    }
+}
+
+/// Reads one `DEFAULT_IMAGE_<APP>_REPO`, returning `None` when there is no override to apply.
+///
+/// An *unset* repository means the user asked for no override on this app, so there is nothing to
+/// report. An *empty* one is kept, for the same reason an empty tag is: the chart renders
+/// `value: ""` when a user overrides only the other half.
+///
+/// A *present but unreadable* repository drops the override, for the reason given on
+/// [`read_override_tag`].
+fn read_override_repo(repo_key: &str, name: &str) -> Option<String> {
+    match crate::env::var_strict(repo_key) {
+        Ok(repo) => repo,
+        Err(error) => {
+            warn_dropped_override(name, &error);
+            None
+        }
+    }
+}
+
+/// Reports that an app's whole image override was dropped, and what the operator will pull now.
+///
+/// [`crate::env::var`]'s own warning says "using the default", which is too narrow here. The
+/// operator is not defaulting one variable. It is discarding the app's whole override — including
+/// a readable sibling variable the user did set — and will pull its own compiled image instead.
+fn warn_dropped_override(name: &str, error: &crate::env::EnvError) {
+    warn!(
+        %name, %error,
+        "dropping this app's whole image override; the operator will pull its own compiled \
+         default image, not the requested one"
+    );
+}
+
+/// Formats the image an override will actually produce, after the compiled defaults fill in the
+/// fields the user left empty.
+///
+/// The raw override alone misleads a reader: an override that sets only `repository` prints an
+/// empty tag, so nobody can tell from the startup logs which image the operator will pull (#734).
+fn effective_image(app: &AppType, spec: &ImageSpec) -> String {
+    let merged = match AppDefaults::try_for_app(app) {
+        Ok(defaults) => spec.clone().merge_with(&defaults.image),
+        // `AppDefaults::validate_all` reports a broken `image-defaults.toml` at startup, so this
+        // process is already on its way down. Say the merge was skipped, so a reader does not
+        // take the unmerged empty half for a real one.
+        Err(error) => {
+            warn!(%error, "cannot merge the compiled defaults; reporting the override as given");
+            spec.clone()
+        }
+    };
+    format!("{}:{}", merged.repository, merged.tag)
 }
 
 #[cfg(test)]
@@ -182,6 +267,163 @@ mod tests {
                 assert_eq!(spec.repository, "my-repo/radarr");
                 assert!(spec.tag.is_empty());
             },
+        );
+    }
+
+    /// Builds an `OsString` that is not valid UTF-8, to exercise the unreadable-value branch.
+    #[cfg(unix)]
+    fn invalid_utf8() -> std::ffi::OsString {
+        use std::os::unix::ffi::OsStringExt;
+        std::ffi::OsString::from_vec(vec![0x34, 0x80, 0x30])
+    }
+
+    /// #734: a present-but-unreadable tag must not pair the user's repository with the
+    /// operator's compiled default tag. That names an image the user never requested, and it may
+    /// not exist in the registry at all.
+    #[test]
+    #[cfg(unix)]
+    fn load_image_overrides_drops_the_whole_override_on_an_unreadable_tag() {
+        temp_env::with_var("DEFAULT_IMAGE_SONARR_REPO", Some("myrepo/sonarr"), || {
+            temp_env::with_var("DEFAULT_IMAGE_SONARR_TAG", Some(invalid_utf8()), || {
+                let (overrides, _legacy) = load_image_overrides();
+                assert!(
+                    !overrides.contains_key("sonarr"),
+                    "an unreadable tag must not yield a hybrid repo/tag pairing"
+                );
+            });
+        });
+    }
+
+    /// The repository half gets the same treatment as the tag half. Keeping a readable tag
+    /// beside the operator's own repository would name an image nobody requested.
+    #[test]
+    #[cfg(unix)]
+    fn load_image_overrides_drops_the_whole_override_on_an_unreadable_repo() {
+        temp_env::with_var("DEFAULT_IMAGE_SONARR_TAG", Some("4.0"), || {
+            temp_env::with_var("DEFAULT_IMAGE_SONARR_REPO", Some(invalid_utf8()), || {
+                let (overrides, _legacy) = load_image_overrides();
+                assert!(
+                    !overrides.contains_key("sonarr"),
+                    "an unreadable repository must not keep the readable tag beside a default repo"
+                );
+            });
+        });
+    }
+
+    /// #38: an *unset* tag is deliberate. The chart renders `value: ""` when a user overrides
+    /// only `repository`, and the compiled default tag fills it in during the merge.
+    #[test]
+    fn load_image_overrides_keeps_the_override_when_the_tag_is_merely_unset() {
+        temp_env::with_vars(
+            [
+                ("DEFAULT_IMAGE_SONARR_REPO", Some("myrepo/sonarr")),
+                ("DEFAULT_IMAGE_SONARR_TAG", None::<&str>),
+            ],
+            || {
+                let (overrides, _legacy) = load_image_overrides();
+                let spec = overrides
+                    .get("sonarr")
+                    .expect("an unset tag keeps the override");
+                assert_eq!(spec.repository, "myrepo/sonarr");
+                assert!(spec.tag.is_empty());
+            },
+        );
+    }
+
+    /// The same rule applies to the deprecated pre-rename fallback.
+    #[test]
+    #[cfg(unix)]
+    fn load_image_overrides_drops_the_legacy_override_on_an_unreadable_tag() {
+        temp_env::with_vars(
+            [
+                ("DEFAULT_IMAGE_SEERR_REPO", None::<&str>),
+                ("DEFAULT_IMAGE_SEERR_TAG", None::<&str>),
+                ("DEFAULT_IMAGE_OVERSEERR_REPO", Some("myrepo/overseerr")),
+            ],
+            || {
+                temp_env::with_var("DEFAULT_IMAGE_OVERSEERR_TAG", Some(invalid_utf8()), || {
+                    let (overrides, legacy) = load_image_overrides();
+                    assert!(!overrides.contains_key("seerr"));
+                    assert!(!legacy.contains("seerr"));
+                });
+            },
+        );
+    }
+
+    /// #734: the log must name the image that will actually be pulled, so a reader can confirm
+    /// an override took effect. The raw override alone prints an empty tag.
+    #[test]
+    fn effective_image_fills_an_empty_tag_from_the_compiled_default() {
+        let spec = ImageSpec {
+            repository: "myrepo/sonarr".into(),
+            tag: String::new(),
+            digest: String::new(),
+            pull_policy: "IfNotPresent".into(),
+        };
+        let rendered = effective_image(&AppType::Sonarr, &spec);
+        assert!(rendered.starts_with("myrepo/sonarr:"), "{rendered}");
+        assert!(
+            !rendered.ends_with(':'),
+            "the tag must come from the compiled default, got {rendered}"
+        );
+    }
+
+    fn arb_image_spec() -> impl proptest::strategy::Strategy<Value = ImageSpec> {
+        use proptest::prelude::*;
+        ("[a-z0-9/._-]{0,24}", "[a-zA-Z0-9._-]{0,16}").prop_map(|(repository, tag)| ImageSpec {
+            repository,
+            tag,
+            digest: String::new(),
+            pull_policy: "IfNotPresent".into(),
+        })
+    }
+
+    proptest::proptest! {
+        /// Every app in `AppType::ALL` has a compiled default with both halves filled, so the
+        /// merge can never leave a half empty. A rendered `repo:` or `:tag` is a broken image
+        /// reference, and the log exists to let a reader confirm which image will be pulled.
+        #[test]
+        fn effective_image_never_renders_an_empty_half(
+            index in 0usize..AppType::ALL.len(),
+            spec in arb_image_spec(),
+        ) {
+            let app = &AppType::ALL[index];
+            let rendered = effective_image(app, &spec);
+            proptest::prop_assert!(!rendered.starts_with(':'), "{0}", rendered);
+            proptest::prop_assert!(!rendered.ends_with(':'), "{0}", rendered);
+        }
+
+        /// A half the user set explicitly always survives the merge. The compiled default fills
+        /// the empty halves only — it never overwrites a value the user chose.
+        #[test]
+        fn effective_image_keeps_every_half_the_user_set(
+            index in 0usize..AppType::ALL.len(),
+            spec in arb_image_spec(),
+        ) {
+            let app = &AppType::ALL[index];
+            let rendered = effective_image(app, &spec);
+            let repo_prefix = format!("{}:", spec.repository);
+            let tag_suffix = format!(":{}", spec.tag);
+            if !spec.repository.is_empty() {
+                proptest::prop_assert!(rendered.starts_with(&repo_prefix), "{0}", rendered);
+            }
+            if !spec.tag.is_empty() {
+                proptest::prop_assert!(rendered.ends_with(&tag_suffix), "{0}", rendered);
+            }
+        }
+    }
+
+    #[test]
+    fn effective_image_keeps_an_explicit_tag() {
+        let spec = ImageSpec {
+            repository: "myrepo/sonarr".into(),
+            tag: "4.0".into(),
+            digest: String::new(),
+            pull_policy: "IfNotPresent".into(),
+        };
+        assert_eq!(
+            effective_image(&AppType::Sonarr, &spec),
+            "myrepo/sonarr:4.0"
         );
     }
 
@@ -409,7 +651,7 @@ mod tests {
                 ("WATCH_NAMESPACE", Some("my-ns")),
             ],
             || {
-                assert_eq!(derive_watch_namespace(), Some("my-ns".to_string()));
+                assert_eq!(derive_watch_namespace().unwrap(), Some("my-ns".to_string()));
             },
         );
     }
@@ -422,7 +664,7 @@ mod tests {
                 ("WATCH_NAMESPACE", Some("my-ns")),
             ],
             || {
-                assert_eq!(derive_watch_namespace(), None);
+                assert_eq!(derive_watch_namespace().unwrap(), None);
             },
         );
     }
@@ -435,9 +677,23 @@ mod tests {
                 ("WATCH_NAMESPACE", Some("")),
             ],
             || {
-                assert_eq!(derive_watch_namespace(), None);
+                assert_eq!(derive_watch_namespace().unwrap(), None);
             },
         );
+    }
+
+    /// An unreadable value widens the operator to the whole cluster, and the user did not choose
+    /// that. Refuse to start rather than take a broader scope than the one that was requested.
+    #[test]
+    #[cfg(unix)]
+    fn watch_namespace_errors_when_set_but_unreadable() {
+        temp_env::with_var("WATCH_ALL_NAMESPACES", Some("false"), || {
+            temp_env::with_var("WATCH_NAMESPACE", Some(invalid_utf8()), || {
+                let error = derive_watch_namespace()
+                    .expect_err("an unreadable namespace must not widen the scope");
+                assert!(error.to_string().contains("WATCH_NAMESPACE"));
+            });
+        });
     }
 
     #[test]
@@ -448,7 +704,7 @@ mod tests {
                 ("WATCH_NAMESPACE", None::<&str>),
             ],
             || {
-                assert_eq!(derive_watch_namespace(), None);
+                assert_eq!(derive_watch_namespace().unwrap(), None);
             },
         );
     }

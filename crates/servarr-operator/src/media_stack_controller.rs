@@ -49,7 +49,7 @@ pub fn print_crd() -> Result<()> {
 }
 
 pub async fn run(client: kube::Client, server_state: crate::server::ServerState) -> Result<()> {
-    let ctx = Arc::new(Context::new(client.clone()));
+    let ctx = Arc::new(Context::new(client.clone())?);
 
     let (stacks, apps) = if let Some(ref ns) = ctx.watch_namespace {
         (

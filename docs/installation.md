@@ -209,8 +209,19 @@ helm install servarr-operator \
 | Key | Default | Description |
 |-----|---------|-------------|
 | `webhook.enabled` | `true` | Enable the validating admission webhook |
+| `webhook.port` | `9443` | Port the webhook server listens on. Drives the container port, the Service target, and the operator's `WEBHOOK_PORT` together. |
 | `webhook.certIssuer` | `selfsigned-issuer` | cert-manager issuer name |
 | `webhook.certIssuerKind` | `ClusterIssuer` | cert-manager issuer kind |
+
+The operator refuses to start when a webhook variable is set to a value it cannot use. That covers
+an unparseable or zero `WEBHOOK_PORT`, an unrecognized `WEBHOOK_ENABLED`, and an empty
+`WEBHOOK_TLS_DIR`, `WEBHOOK_TLS_CERT`, or `WEBHOOK_TLS_KEY`. A webhook that cannot bind its port
+or load its certificate also stops the operator.
+
+This is deliberate. The validating webhook uses `failurePolicy: Fail`, so a webhook that is
+running but wrong rejects every `ServarrApp` write in the cluster while the pod still reports
+Ready. A pod that restarts and states the reason is easier to diagnose than one that looks
+healthy. Leave a variable unset to take its default.
 
 To disable webhooks (removes the cert-manager dependency):
 

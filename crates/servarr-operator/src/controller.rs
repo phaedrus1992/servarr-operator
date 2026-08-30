@@ -92,7 +92,7 @@ pub async fn run(client: kube::Client, server_state: crate::server::ServerState)
     servarr_crds::AppDefaults::validate_all()
         .map_err(|e| anyhow::anyhow!("image-defaults.toml validation failed: {e}"))?;
 
-    let ctx = Arc::new(Context::new(client.clone()));
+    let ctx = Arc::new(Context::new(client.clone())?);
 
     let (apps, deployments, services, config_maps, secrets) =
         if let Some(ref ns) = ctx.watch_namespace {
@@ -10980,7 +10980,9 @@ mod tests {
         mount_servarrapp_finalizer_patch_mock(&mock_server, "my-sonarr").await;
 
         let app = make_deleting_app_with_finalizers("my-sonarr", "test");
-        let ctx = Arc::new(Context::new(client.clone()));
+        let ctx = Arc::new(
+            Context::new(client.clone()).expect("test env has a readable WATCH_NAMESPACE"),
+        );
 
         let result = reconcile(Arc::new(app), ctx).await;
 
@@ -11028,7 +11030,9 @@ mod tests {
         mount_servarrapp_finalizer_patch_mock(&mock_server, "my-sonarr").await;
 
         let app = make_deleting_app_with_finalizers("my-sonarr", "test");
-        let ctx = Arc::new(Context::new(client.clone()));
+        let ctx = Arc::new(
+            Context::new(client.clone()).expect("test env has a readable WATCH_NAMESPACE"),
+        );
         let result = reconcile(Arc::new(app), ctx).await;
 
         assert!(
@@ -11078,7 +11082,9 @@ mod tests {
         mount_servarrapp_finalizer_patch_mock(&mock_server, "my-sonarr").await;
 
         let app = make_deleting_app_with_finalizers("my-sonarr", "test");
-        let ctx = Arc::new(Context::new(client.clone()));
+        let ctx = Arc::new(
+            Context::new(client.clone()).expect("test env has a readable WATCH_NAMESPACE"),
+        );
 
         let result = reconcile(Arc::new(app), ctx).await;
 
