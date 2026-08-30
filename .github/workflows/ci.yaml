@@ -185,6 +185,27 @@ jobs:
       - name: Run cargo deny
         run: cargo deny check
 
+  semgrep:
+    needs: [fmt, actionlint, zizmor, pre-commit-config-lint]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Semgrep
+        run: python3 -m pip install --quiet 'semgrep==1.175.0'
+
+      # CodeQL has no Rust extractor, so Semgrep is the applicable SAST tool here.
+      # p/secrets is the standard secrets baseline; p/rust and p/github-actions
+      # scope the rest to this repo's actual languages (Rust source + this
+      # directory of workflow files) rather than pulling in unrelated rulesets.
+      - name: Run Semgrep
+        run: |
+          semgrep --metrics=off --error \
+            --config p/secrets --config p/rust --config p/github-actions .
+
   shear:
     needs: [fmt, actionlint, zizmor, pre-commit-config-lint]
     runs-on: ubuntu-latest
