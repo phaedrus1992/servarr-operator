@@ -19,58 +19,74 @@ use servarr_crds::{
 use tracing::{debug, info, warn};
 
 use crate::controller::normalize_backup_schedule;
+use crate::env::EnvError;
 
 const DEFAULT_WEBHOOK_PORT: u16 = 9443;
 
 const DEFAULT_TLS_DIR: &str = "/etc/webhook/tls";
 
 /// Configuration for the webhook server.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct WebhookConfig {
     pub port: u16,
     tls_cert: PathBuf,
     tls_key: PathBuf,
 }
 
-impl Default for WebhookConfig {
-    fn default() -> Self {
-        let port = match crate::env::var("WEBHOOK_PORT") {
-            // Port 0 parses as a valid `u16`, but it tells the OS to pick any free port. The
-            // Service then routes to a port nothing listens on, and admission fails cluster-wide.
-            Some(s) if s.trim() == "0" => {
-                warn!(
-                    "WEBHOOK_PORT=0 would bind a random port, using default {DEFAULT_WEBHOOK_PORT}"
-                );
-                DEFAULT_WEBHOOK_PORT
-            }
-            Some(s) => match s.parse::<u16>() {
-                Ok(p) => {
-                    debug!(port = p, "using WEBHOOK_PORT from env");
-                    p
-                }
-                Err(e) => {
-                    warn!(value = %s, error = %e, "invalid WEBHOOK_PORT, using default {DEFAULT_WEBHOOK_PORT}");
-                    DEFAULT_WEBHOOK_PORT
-                }
-            },
+impl WebhookConfig {
+    /// Builds the webhook configuration from the environment.
+    ///
+    /// Every variable read here changes an availability posture, so a value that is set but
+    /// unusable aborts startup rather than falling back (#732, #733). An unset variable still
+    /// takes the default, which is the only case where the operator was given no instruction.
+    ///
+    /// The reason a fallback is wrong here is that it succeeds. A bad port leaves the API server
+    /// with connection-refused on every admission call, under `failurePolicy: Fail`. A bad
+    /// certificate path loads the chart's own certificate, so the webhook reports itself healthy
+    /// and serves a certificate the operator never asked for.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `WEBHOOK_PORT`, `WEBHOOK_TLS_DIR`, `WEBHOOK_TLS_CERT`, or
+    /// `WEBHOOK_TLS_KEY` is set to a value the operator cannot use.
+    pub fn from_env() -> Result<Self, EnvError> {
+        let port = match crate::env::var_strict("WEBHOOK_PORT")? {
+            Some(raw) => parse_webhook_port(&raw)?,
             None => DEFAULT_WEBHOOK_PORT,
         };
+        debug!(port, "resolved webhook port");
 
-        let tls_dir =
-            crate::env::var("WEBHOOK_TLS_DIR").unwrap_or_else(|| DEFAULT_TLS_DIR.to_string());
-        let tls_cert = crate::env::var("WEBHOOK_TLS_CERT")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| Path::new(&tls_dir).join("tls.crt"));
-        let tls_key = crate::env::var("WEBHOOK_TLS_KEY")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| Path::new(&tls_dir).join("tls.key"));
+        let tls_dir = crate::env::var_path("WEBHOOK_TLS_DIR")?
+            .unwrap_or_else(|| Path::new(DEFAULT_TLS_DIR).to_path_buf());
+        let tls_cert =
+            crate::env::var_path("WEBHOOK_TLS_CERT")?.unwrap_or_else(|| tls_dir.join("tls.crt"));
+        let tls_key =
+            crate::env::var_path("WEBHOOK_TLS_KEY")?.unwrap_or_else(|| tls_dir.join("tls.key"));
 
-        Self {
+        Ok(Self {
             port,
             tls_cert,
             tls_key,
-        }
+        })
     }
+}
+
+/// Parses `WEBHOOK_PORT`, rejecting a value that binds a port the Service cannot reach.
+fn parse_webhook_port(raw: &str) -> Result<u16, EnvError> {
+    let port: u16 = raw
+        .trim()
+        .parse()
+        .map_err(|_| EnvError::unusable("WEBHOOK_PORT", "expected a port number in 1..=65535."))?;
+    // Port 0 parses as a valid `u16`, but it tells the OS to pick any free port. The Service
+    // then routes to a port nothing listens on, and admission fails cluster-wide.
+    if port == 0 {
+        return Err(EnvError::unusable(
+            "WEBHOOK_PORT",
+            "0 binds a random port that the Service cannot route to; \
+             expected a port number in 1..=65535.",
+        ));
+    }
+    Ok(port)
 }
 
 #[derive(Clone)]
@@ -798,34 +814,54 @@ fn parse_memory(s: &str) -> Option<u64> {
 mod config_tests {
     use super::*;
 
+    /// Clears every variable this config reads, so one test's value cannot leak into another.
+    fn with_clean_env<T>(overrides: Vec<(&str, Option<&str>)>, body: impl FnOnce() -> T) -> T {
+        let mut vars: Vec<(&str, Option<&str>)> = vec![
+            ("WEBHOOK_PORT", None),
+            ("WEBHOOK_TLS_DIR", None),
+            ("WEBHOOK_TLS_CERT", None),
+            ("WEBHOOK_TLS_KEY", None),
+        ];
+        vars.retain(|(key, _)| !overrides.iter().any(|(other, _)| other == key));
+        vars.extend(overrides);
+        temp_env::with_vars(vars, body)
+    }
+
     #[test]
     fn port_falls_back_to_the_default_when_unset() {
-        temp_env::with_var_unset("WEBHOOK_PORT", || {
-            assert_eq!(WebhookConfig::default().port, DEFAULT_WEBHOOK_PORT);
+        with_clean_env(vec![], || {
+            assert_eq!(
+                WebhookConfig::from_env().unwrap().port,
+                DEFAULT_WEBHOOK_PORT
+            );
         });
     }
 
     #[test]
     fn port_uses_an_explicit_value() {
-        temp_env::with_var("WEBHOOK_PORT", Some("8443"), || {
-            assert_eq!(WebhookConfig::default().port, 8443);
+        with_clean_env(vec![("WEBHOOK_PORT", Some("8443"))], || {
+            assert_eq!(WebhookConfig::from_env().unwrap().port, 8443);
+        });
+    }
+
+    /// #732: the Service's `targetPort` follows the intended port. Falling back to 9443 makes the
+    /// API server get connection-refused on every admission call, and `failurePolicy: Fail` then
+    /// rejects every `ServarrApp` write in the cluster.
+    #[test]
+    fn port_is_fatal_when_unparseable() {
+        with_clean_env(vec![("WEBHOOK_PORT", Some("not-a-port"))], || {
+            let error = WebhookConfig::from_env()
+                .expect_err("an unparseable port must not silently become 9443");
+            assert!(error.to_string().contains("WEBHOOK_PORT"));
         });
     }
 
     #[test]
-    fn port_falls_back_to_the_default_when_unparseable() {
-        temp_env::with_var("WEBHOOK_PORT", Some("not-a-port"), || {
-            assert_eq!(WebhookConfig::default().port, DEFAULT_WEBHOOK_PORT);
-        });
-    }
-
-    #[test]
-    fn port_zero_falls_back_to_the_default() {
+    fn port_zero_is_fatal() {
         for value in ["0", " 0 "] {
-            temp_env::with_var("WEBHOOK_PORT", Some(value), || {
-                assert_eq!(
-                    WebhookConfig::default().port,
-                    DEFAULT_WEBHOOK_PORT,
+            with_clean_env(vec![("WEBHOOK_PORT", Some(value))], || {
+                assert!(
+                    WebhookConfig::from_env().is_err(),
                     "{value} must not bind a random port"
                 );
             });
@@ -833,19 +869,79 @@ mod config_tests {
     }
 
     #[test]
+    #[cfg(unix)]
+    fn port_is_fatal_when_not_valid_utf8() {
+        use std::os::unix::ffi::OsStringExt;
+        let raw = std::ffi::OsString::from_vec(vec![0x39, 0x80, 0x34]);
+        temp_env::with_var("WEBHOOK_PORT", Some(raw), || {
+            assert!(WebhookConfig::from_env().is_err());
+        });
+    }
+
+    #[test]
     fn tls_paths_derive_from_the_tls_dir() {
-        temp_env::with_vars(
-            [
+        with_clean_env(vec![("WEBHOOK_TLS_DIR", Some("/custom/tls"))], || {
+            let config = WebhookConfig::from_env().unwrap();
+            assert_eq!(config.tls_cert, Path::new("/custom/tls/tls.crt"));
+            assert_eq!(config.tls_key, Path::new("/custom/tls/tls.key"));
+        });
+    }
+
+    #[test]
+    fn tls_paths_fall_back_to_the_chart_mount_when_unset() {
+        with_clean_env(vec![], || {
+            let config = WebhookConfig::from_env().unwrap();
+            assert_eq!(config.tls_cert, Path::new(DEFAULT_TLS_DIR).join("tls.crt"));
+            assert_eq!(config.tls_key, Path::new(DEFAULT_TLS_DIR).join("tls.key"));
+        });
+    }
+
+    #[test]
+    fn an_explicit_tls_cert_beats_the_tls_dir() {
+        with_clean_env(
+            vec![
                 ("WEBHOOK_TLS_DIR", Some("/custom/tls")),
-                ("WEBHOOK_TLS_CERT", None),
-                ("WEBHOOK_TLS_KEY", None),
+                ("WEBHOOK_TLS_CERT", Some("/issued/cert.pem")),
             ],
             || {
-                let config = WebhookConfig::default();
-                assert_eq!(config.tls_cert, Path::new("/custom/tls/tls.crt"));
+                let config = WebhookConfig::from_env().unwrap();
+                assert_eq!(config.tls_cert, Path::new("/issued/cert.pem"));
                 assert_eq!(config.tls_key, Path::new("/custom/tls/tls.key"));
             },
         );
+    }
+
+    /// #733: the chart mounts a valid certificate at the default path, so falling back means the
+    /// webhook starts and serves a certificate the operator was never asked to serve.
+    #[test]
+    fn an_empty_tls_path_is_fatal() {
+        for key in ["WEBHOOK_TLS_DIR", "WEBHOOK_TLS_CERT", "WEBHOOK_TLS_KEY"] {
+            with_clean_env(vec![(key, Some(""))], || {
+                let error = WebhookConfig::from_env()
+                    .expect_err("an empty path must not fall back to the default certificate");
+                assert!(error.to_string().contains(key), "{key}");
+            });
+        }
+    }
+
+    /// A path is `OsString`-shaped. A non-UTF-8 path must work, not warn and fall back.
+    #[test]
+    #[cfg(unix)]
+    fn a_tls_path_that_is_not_valid_utf8_still_works() {
+        use std::os::unix::ffi::{OsStrExt, OsStringExt};
+        let raw = std::ffi::OsString::from_vec(vec![b'/', 0x80, b'c']);
+        let cleared: [(&str, Option<&str>); 3] = [
+            ("WEBHOOK_PORT", None),
+            ("WEBHOOK_TLS_DIR", None),
+            ("WEBHOOK_TLS_KEY", None),
+        ];
+        temp_env::with_vars(cleared, || {
+            temp_env::with_var("WEBHOOK_TLS_CERT", Some(raw.clone()), || {
+                let config =
+                    WebhookConfig::from_env().expect("a non-UTF-8 path is a legal path on Unix");
+                assert_eq!(config.tls_cert.as_os_str().as_bytes(), raw.as_bytes());
+            });
+        });
     }
 }
 

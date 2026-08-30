@@ -83,11 +83,15 @@ async fn main() -> Result<()> {
 
     let state = server::ServerState::new();
 
-    // Optionally start the webhook server if WEBHOOK_ENABLED=true
-    let webhook_enabled = env::var_bool("WEBHOOK_ENABLED", false);
+    // Optionally start the webhook server if WEBHOOK_ENABLED=true.
+    //
+    // #732: a value like `on` or `y` expresses an intent to enable the webhook. Treating it as
+    // `false` disables validating admission, and the only other signal is the absence of a log
+    // line. Refuse to start instead, and say which variable is wrong.
+    let webhook_enabled = env::var_bool_strict("WEBHOOK_ENABLED", false)?;
 
     if webhook_enabled {
-        let webhook_config = webhook::WebhookConfig::default();
+        let webhook_config = webhook::WebhookConfig::from_env()?;
         info!(port = webhook_config.port, "webhook server enabled");
         let webhook_client = client.clone();
         tokio::spawn(async move {
