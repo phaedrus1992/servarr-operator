@@ -1,6 +1,6 @@
 use kube::Client;
 use kube::runtime::events::Reporter;
-use servarr_crds::{AppType, ImageSpec};
+use servarr_crds::{AppDefaults, AppType, ImageSpec};
 use std::collections::{HashMap, HashSet};
 use tracing::{info, warn};
 
@@ -100,19 +100,20 @@ fn load_image_overrides() -> (HashMap<String, ImageSpec>, HashSet<String>) {
         let repo_key = format!("DEFAULT_IMAGE_{}_REPO", name.to_uppercase());
         let tag_key = format!("DEFAULT_IMAGE_{}_TAG", name.to_uppercase());
 
-        if let Some(repo) = crate::env::var(&repo_key) {
-            let tag = crate::env::var(&tag_key).unwrap_or_default();
-            info!(%name, %repo, %tag, "loaded image override from env");
-            overrides.insert(
-                name.to_string(),
-                ImageSpec {
-                    repository: repo,
-                    tag,
-                    digest: String::new(),
-                    pull_policy: "IfNotPresent".into(),
-                },
-            );
-        }
+        let Some(repo) = crate::env::var(&repo_key) else {
+            continue;
+        };
+        let Some(tag) = read_override_tag(&tag_key, name) else {
+            continue;
+        };
+        let spec = ImageSpec {
+            repository: repo,
+            tag,
+            digest: String::new(),
+            pull_policy: "IfNotPresent".into(),
+        };
+        info!(%name, image = %effective_image(app, &spec), "loaded image override from env");
+        overrides.insert(name.to_string(), spec);
     }
 
     // Issue #44: fall back to the pre-rename DEFAULT_IMAGE_OVERSEERR_* env vars if the new
@@ -123,26 +124,63 @@ fn load_image_overrides() -> (HashMap<String, ImageSpec>, HashSet<String>) {
     // applying after upgrade, falling back to the new default image with no warning.
     if !overrides.contains_key("seerr")
         && let Some(repo) = crate::env::var("DEFAULT_IMAGE_OVERSEERR_REPO")
+        && let Some(tag) = read_override_tag("DEFAULT_IMAGE_OVERSEERR_TAG", "seerr")
     {
-        let tag = crate::env::var("DEFAULT_IMAGE_OVERSEERR_TAG").unwrap_or_default();
+        let spec = ImageSpec {
+            repository: repo,
+            tag,
+            digest: String::new(),
+            pull_policy: "IfNotPresent".into(),
+        };
         warn!(
-            %repo, %tag,
+            image = %effective_image(&AppType::Seerr, &spec),
             "loaded image override from deprecated DEFAULT_IMAGE_OVERSEERR_* env vars — \
              rename defaultImages.overseerr to defaultImages.seerr in your Helm values"
         );
-        overrides.insert(
-            "seerr".to_string(),
-            ImageSpec {
-                repository: repo,
-                tag,
-                digest: String::new(),
-                pull_policy: "IfNotPresent".into(),
-            },
-        );
+        overrides.insert("seerr".to_string(), spec);
         legacy.insert("seerr".to_string());
     }
 
     (overrides, legacy)
+}
+
+/// Reads one `DEFAULT_IMAGE_<APP>_TAG`, returning `None` when the whole override must be dropped.
+///
+/// An *unset* tag yields `Some("")`. That is deliberate: the chart renders `value: ""` when a
+/// user overrides only `repository`, and the compiled default tag fills the empty half in during
+/// the merge (#38).
+///
+/// A *present but unreadable* tag yields `None`. Keeping the override there would pair the user's
+/// repository with the operator's compiled default tag — an image nobody requested, which may not
+/// exist in the registry, or may exist and be the wrong build (#734). The consistent compiled
+/// default is the better answer.
+fn read_override_tag(tag_key: &str, name: &str) -> Option<String> {
+    match crate::env::var_strict(tag_key) {
+        Ok(tag) => Some(tag.unwrap_or_default()),
+        Err(error) => {
+            warn!(
+                %name, %error,
+                "dropping this app's image override, because pairing its repository with the \
+                 operator's default tag would name an image nobody requested"
+            );
+            None
+        }
+    }
+}
+
+/// Formats the image an override will actually produce, after the compiled defaults fill in the
+/// fields the user left empty.
+///
+/// The raw override alone misleads a reader: an override that sets only `repository` prints an
+/// empty tag, so nobody can tell from the startup logs which image the operator will pull (#734).
+fn effective_image(app: &AppType, spec: &ImageSpec) -> String {
+    let merged = match AppDefaults::try_for_app(app) {
+        Ok(defaults) => spec.clone().merge_with(&defaults.image),
+        // `AppDefaults::validate_all` reports a broken `image-defaults.toml` at startup. Report
+        // the override as given rather than invent a merge that cannot be computed.
+        Err(_) => spec.clone(),
+    };
+    format!("{}:{}", merged.repository, merged.tag)
 }
 
 #[cfg(test)]
@@ -182,6 +220,102 @@ mod tests {
                 assert_eq!(spec.repository, "my-repo/radarr");
                 assert!(spec.tag.is_empty());
             },
+        );
+    }
+
+    /// Builds an `OsString` that is not valid UTF-8, to exercise the unreadable-value branch.
+    #[cfg(unix)]
+    fn invalid_utf8() -> std::ffi::OsString {
+        use std::os::unix::ffi::OsStringExt;
+        std::ffi::OsString::from_vec(vec![0x34, 0x80, 0x30])
+    }
+
+    /// #734: a present-but-unreadable tag must not pair the user's repository with the
+    /// operator's compiled default tag. That names an image the user never requested, and it may
+    /// not exist in the registry at all.
+    #[test]
+    #[cfg(unix)]
+    fn load_image_overrides_drops_the_whole_override_on_an_unreadable_tag() {
+        temp_env::with_var("DEFAULT_IMAGE_SONARR_REPO", Some("myrepo/sonarr"), || {
+            temp_env::with_var("DEFAULT_IMAGE_SONARR_TAG", Some(invalid_utf8()), || {
+                let (overrides, _legacy) = load_image_overrides();
+                assert!(
+                    !overrides.contains_key("sonarr"),
+                    "an unreadable tag must not yield a hybrid repo/tag pairing"
+                );
+            });
+        });
+    }
+
+    /// #38: an *unset* tag is deliberate. The chart renders `value: ""` when a user overrides
+    /// only `repository`, and the compiled default tag fills it in during the merge.
+    #[test]
+    fn load_image_overrides_keeps_the_override_when_the_tag_is_merely_unset() {
+        temp_env::with_vars(
+            [
+                ("DEFAULT_IMAGE_SONARR_REPO", Some("myrepo/sonarr")),
+                ("DEFAULT_IMAGE_SONARR_TAG", None::<&str>),
+            ],
+            || {
+                let (overrides, _legacy) = load_image_overrides();
+                let spec = overrides
+                    .get("sonarr")
+                    .expect("an unset tag keeps the override");
+                assert_eq!(spec.repository, "myrepo/sonarr");
+                assert!(spec.tag.is_empty());
+            },
+        );
+    }
+
+    /// The same rule applies to the deprecated pre-rename fallback.
+    #[test]
+    #[cfg(unix)]
+    fn load_image_overrides_drops_the_legacy_override_on_an_unreadable_tag() {
+        temp_env::with_vars(
+            [
+                ("DEFAULT_IMAGE_SEERR_REPO", None::<&str>),
+                ("DEFAULT_IMAGE_SEERR_TAG", None::<&str>),
+                ("DEFAULT_IMAGE_OVERSEERR_REPO", Some("myrepo/overseerr")),
+            ],
+            || {
+                temp_env::with_var("DEFAULT_IMAGE_OVERSEERR_TAG", Some(invalid_utf8()), || {
+                    let (overrides, legacy) = load_image_overrides();
+                    assert!(!overrides.contains_key("seerr"));
+                    assert!(!legacy.contains("seerr"));
+                });
+            },
+        );
+    }
+
+    /// #734: the log must name the image that will actually be pulled, so a reader can confirm
+    /// an override took effect. The raw override alone prints an empty tag.
+    #[test]
+    fn effective_image_fills_an_empty_tag_from_the_compiled_default() {
+        let spec = ImageSpec {
+            repository: "myrepo/sonarr".into(),
+            tag: String::new(),
+            digest: String::new(),
+            pull_policy: "IfNotPresent".into(),
+        };
+        let rendered = effective_image(&AppType::Sonarr, &spec);
+        assert!(rendered.starts_with("myrepo/sonarr:"), "{rendered}");
+        assert!(
+            !rendered.ends_with(':'),
+            "the tag must come from the compiled default, got {rendered}"
+        );
+    }
+
+    #[test]
+    fn effective_image_keeps_an_explicit_tag() {
+        let spec = ImageSpec {
+            repository: "myrepo/sonarr".into(),
+            tag: "4.0".into(),
+            digest: String::new(),
+            pull_policy: "IfNotPresent".into(),
+        };
+        assert_eq!(
+            effective_image(&AppType::Sonarr, &spec),
+            "myrepo/sonarr:4.0"
         );
     }
 
