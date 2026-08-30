@@ -1,3 +1,6 @@
+use std::sync::Arc;
+use std::time::Duration;
+
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use servarr_operator::{
@@ -6,6 +9,11 @@ use servarr_operator::{
 use tracing::{error, info};
 
 const METRICS_PORT: u16 = 8080;
+
+/// Budget for draining each controller's `event_publish_tasks` after shutdown (#755). Kept
+/// well under Kubernetes' default 30s `terminationGracePeriodSeconds` so a hung Event publish
+/// delays pod termination instead of blocking it outright.
+const EVENT_PUBLISH_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Parser)]
 #[command(
@@ -114,10 +122,19 @@ async fn main() -> Result<()> {
         }
     };
 
+    // Built here, before the select! below, so both controllers' `event_publish_tasks`
+    // trackers stay reachable after the select! resolves -- a controller's own future is
+    // cancelled mid-poll the moment it loses the race, so a drain awaited inside it would
+    // never run (#755).
+    let controller_ctx = Arc::new(context::Context::new(client.clone())?);
+    let media_stack_ctx = Arc::new(context::Context::new(client.clone())?);
+    let controller_ctx_for_drain = controller_ctx.clone();
+    let media_stack_ctx_for_drain = media_stack_ctx.clone();
+
     // Run the metrics/health server, the webhook, and both controllers concurrently.
     // If any exits, shut down.
     let state2 = state.clone();
-    tokio::select! {
+    let result = tokio::select! {
         res = webhook => {
             error!("webhook server exited: {res:?}");
             res
@@ -126,11 +143,20 @@ async fn main() -> Result<()> {
             error!("metrics server exited: {res:?}");
             res
         }
-        res = controller::run(client.clone(), state) => {
+        res = controller::run(state, controller_ctx) => {
             res
         }
-        res = media_stack_controller::run(client, state2) => {
+        res = media_stack_controller::run(state2, media_stack_ctx) => {
             res
         }
-    }
+    };
+
+    // Process-wide shutdown drain (#755): run once, after the select! above resolves,
+    // regardless of which branch won -- not inside either controller's own future.
+    tokio::join!(
+        controller_ctx_for_drain.drain_event_publish_tasks(EVENT_PUBLISH_DRAIN_TIMEOUT),
+        media_stack_ctx_for_drain.drain_event_publish_tasks(EVENT_PUBLISH_DRAIN_TIMEOUT),
+    );
+
+    result
 }
