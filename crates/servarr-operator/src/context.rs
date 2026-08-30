@@ -53,7 +53,7 @@ pub fn watch_all_namespaces() -> bool {
 /// # Errors
 ///
 /// Returns [`EnvError`] when `WATCH_NAMESPACE` is set to a value that is not valid UTF-8.
-pub fn watch_namespace() -> Result<Option<String>, EnvError> {
+pub(crate) fn watch_namespace() -> Result<Option<String>, EnvError> {
     if watch_all_namespaces() {
         return Ok(None);
     }

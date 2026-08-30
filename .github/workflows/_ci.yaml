@@ -72,6 +72,12 @@ jobs:
           mkdir -p .tmp
           cargo llvm-cov --workspace --json --output-path .tmp/coverage.json
 
+      # `cargo llvm-cov` skips doctests unless given the unstable --doctests flag, and the
+      # coverage run above is the only other test command here. Without this step the
+      # compile_fail doctests that guard TenantSafeMessage never run in CI. (#744)
+      - name: Run doctests
+        run: cargo test --doc --workspace
+
       # Both gates read the report produced above, so coverage is measured once.
       - name: Enforce coverage gates
         run: bash scripts/check-coverage.sh .tmp/coverage.json

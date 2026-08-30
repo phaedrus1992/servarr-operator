@@ -10,7 +10,7 @@ fn condition_ok_creates_true_condition_with_all_fields() {
     let cond = Condition::ok(
         condition_types::READY,
         "AllReplicasReady",
-        "1 replica(s) available",
+        TenantSafeMessage::new("1 replica(s) available"),
         "2025-06-01T12:00:00Z",
     );
 
@@ -53,7 +53,7 @@ fn set_condition_inserts_new_condition_into_empty_status() {
     let cond = Condition::ok(
         condition_types::READY,
         "Ready",
-        "all good",
+        TenantSafeMessage::new("all good"),
         "2025-06-01T00:00:00Z",
     );
     status.set_condition(cond);
@@ -75,7 +75,7 @@ fn set_condition_updates_existing_condition_of_same_type() {
     status.set_condition(Condition::ok(
         condition_types::DEPLOYMENT_READY,
         "Deployed",
-        "deployment rolled out",
+        TenantSafeMessage::new("deployment rolled out"),
         "2025-06-01T00:00:00Z",
     ));
     assert_eq!(status.conditions.len(), 1);
@@ -112,13 +112,13 @@ fn set_condition_tracks_multiple_different_condition_types() {
     status.set_condition(Condition::ok(
         condition_types::READY,
         "Ready",
-        "ok",
+        TenantSafeMessage::new("ok"),
         "2025-06-01T00:00:00Z",
     ));
     status.set_condition(Condition::ok(
         condition_types::SERVICE_READY,
         "ServiceCreated",
-        "ClusterIP assigned",
+        TenantSafeMessage::new("ClusterIP assigned"),
         "2025-06-01T00:00:01Z",
     ));
     status.set_condition(Condition::fail(
@@ -157,7 +157,7 @@ fn set_condition_tracks_multiple_different_condition_types() {
     status.set_condition(Condition::ok(
         condition_types::NETWORK_POLICY_READY,
         "PolicyReady",
-        "network policy applied",
+        TenantSafeMessage::new("network policy applied"),
         "2025-06-01T00:01:00Z",
     ));
     assert_eq!(status.conditions.len(), 3);
@@ -196,7 +196,7 @@ fn servarr_app_status_serde_roundtrip_with_conditions_and_backup() {
             Condition::ok(
                 condition_types::READY,
                 "AllGood",
-                "all replicas available",
+                TenantSafeMessage::new("all replicas available"),
                 "2025-06-01T10:00:00Z",
             ),
             Condition::fail(
@@ -244,7 +244,7 @@ fn servarr_app_status_serde_roundtrip_camel_case_keys() {
         conditions: vec![Condition::ok(
             condition_types::PROGRESSING,
             "NewReplicaSet",
-            "creating pod",
+            TenantSafeMessage::new("creating pod"),
             "2025-06-01T00:00:00Z",
         )],
         backup_status: None,
@@ -293,7 +293,7 @@ fn bazarr_sync_ready_condition_reflects_sync_success() {
     status.set_condition(Condition::ok(
         condition_types::BAZARR_SYNC_READY,
         "SyncComplete",
-        "Sonarr and Radarr configured in Bazarr",
+        TenantSafeMessage::new("Sonarr and Radarr configured in Bazarr"),
         "2025-06-01T00:00:00Z",
     ));
     let cond = status
@@ -333,7 +333,7 @@ fn restore_ready_condition_reflects_restore_success() {
     status.set_condition(Condition::ok(
         condition_types::RESTORE_READY,
         "RestoreComplete",
-        "Backup 42 restored successfully",
+        TenantSafeMessage::new("Backup 42 restored successfully"),
         "2025-06-01T00:00:00Z",
     ));
     let cond = status
@@ -377,7 +377,7 @@ fn new_sync_condition_types_survive_serde_roundtrip() {
             Condition::ok(
                 condition_types::BAZARR_SYNC_READY,
                 "SyncComplete",
-                "Sonarr and Radarr configured in Bazarr",
+                TenantSafeMessage::new("Sonarr and Radarr configured in Bazarr"),
                 "2025-06-01T00:00:00Z",
             ),
             Condition::fail(
@@ -389,13 +389,13 @@ fn new_sync_condition_types_survive_serde_roundtrip() {
             Condition::ok(
                 condition_types::RESTORE_READY,
                 "RestoreComplete",
-                "Backup 1 restored",
+                TenantSafeMessage::new("Backup 1 restored"),
                 "2025-06-01T00:00:02Z",
             ),
             Condition::ok(
                 condition_types::PROWLARR_SYNC_READY,
                 "SyncComplete",
-                "apps synced from Prowlarr",
+                TenantSafeMessage::new("apps synced from Prowlarr"),
                 "2025-06-01T00:00:03Z",
             ),
             Condition::fail(
@@ -454,7 +454,7 @@ fn new_sync_condition_types_survive_serde_roundtrip() {
 
 #[test]
 fn condition_ok_and_fail_with_empty_strings() {
-    let ok = Condition::ok("", "", "", "");
+    let ok = Condition::ok("", "", TenantSafeMessage::new(""), "");
     assert_eq!(ok.status, "True");
     assert!(ok.condition_type.is_empty());
 
@@ -467,9 +467,9 @@ fn condition_ok_and_fail_with_empty_strings() {
 fn set_condition_on_status_with_preexisting_conditions() {
     let mut status = ServarrAppStatus {
         conditions: vec![
-            Condition::ok("Alpha", "R1", "m1", "t1"),
-            Condition::ok("Beta", "R2", "m2", "t2"),
-            Condition::ok("Gamma", "R3", "m3", "t3"),
+            Condition::ok("Alpha", "R1", TenantSafeMessage::new("m1"), "t1"),
+            Condition::ok("Beta", "R2", TenantSafeMessage::new("m2"), "t2"),
+            Condition::ok("Gamma", "R3", TenantSafeMessage::new("m3"), "t3"),
         ],
         ..Default::default()
     };
@@ -486,7 +486,12 @@ fn set_condition_on_status_with_preexisting_conditions() {
     assert_eq!(status.conditions[1].reason, "Failed");
 
     // Append a new one
-    status.set_condition(Condition::ok("Delta", "R4", "m4", "t5"));
+    status.set_condition(Condition::ok(
+        "Delta",
+        "R4",
+        TenantSafeMessage::new("m4"),
+        "t5",
+    ));
     assert_eq!(status.conditions.len(), 4);
     assert_eq!(status.conditions[3].condition_type, "Delta");
 }

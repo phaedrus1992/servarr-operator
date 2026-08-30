@@ -179,13 +179,23 @@ pub async fn run(client: kube::Client, server_state: crate::server::ServerState)
 /// This is the single publish path for every advisory Event in this file -- only the
 /// terminal `ReconcileSuccess` event stays load-bearing (`.map_err(...)?`), since failing
 /// it fails the whole reconcile by design.
+///
+/// The warning names the object. No reconcile function here carries a `#[instrument]` span, so
+/// without that field the log line does not say which app lost its Event. The metric stays
+/// labelled by `reason` alone -- an object label would grow one time series per app, which is
+/// unbounded cardinality. (#744)
 async fn publish_event(
     recorder: &Recorder,
     obj_ref: &k8s_openapi::api::core::v1::ObjectReference,
     event: Event,
 ) {
     if let Err(e) = recorder.publish(&event, obj_ref).await {
-        warn!(error = %kube_err_summary(&e), reason = %event.reason, "failed to publish event");
+        warn!(
+            error = %kube_err_summary(&e),
+            reason = %event.reason,
+            object = %obj_ref.name.as_deref().unwrap_or("<unknown>"),
+            "failed to publish event"
+        );
         increment_event_publish_failure(&event.reason);
     }
 }
@@ -368,7 +378,7 @@ pub async fn reconcile(app: Arc<ServarrApp>, ctx: Arc<Context>) -> Result<Action
             ConditionSpec {
                 condition_type: condition_types::RESTORE_READY,
                 ok_reason: "RestoreComplete",
-                ok_message: &format!("Restored from backup {restore_id}"),
+                ok_message: TenantSafeMessage::new(format!("Restored from backup {restore_id}")),
                 fail_reason: "RestoreFailed",
                 fail_log: "restore-from-backup failed",
             },
@@ -858,7 +868,9 @@ pub async fn reconcile(app: Arc<ServarrApp>, ctx: Arc<Context>) -> Result<Action
             ConditionSpec {
                 condition_type: condition_types::PROWLARR_SYNC_READY,
                 ok_reason: "SyncComplete",
-                ok_message: "Sonarr, Radarr, and Lidarr synced from Prowlarr",
+                ok_message: TenantSafeMessage::new(
+                    "Sonarr, Radarr, and Lidarr synced from Prowlarr",
+                ),
                 fail_reason: "SyncFailed",
                 fail_log: "Prowlarr sync failed",
             },
@@ -890,7 +902,7 @@ pub async fn reconcile(app: Arc<ServarrApp>, ctx: Arc<Context>) -> Result<Action
             ConditionSpec {
                 condition_type: condition_types::SEERR_SYNC_READY,
                 ok_reason: "SyncComplete",
-                ok_message: "Sonarr and Radarr servers synced into Seerr",
+                ok_message: TenantSafeMessage::new("Sonarr and Radarr servers synced into Seerr"),
                 fail_reason: "SyncFailed",
                 fail_log: "Seerr sync failed",
             },
@@ -920,7 +932,7 @@ pub async fn reconcile(app: Arc<ServarrApp>, ctx: Arc<Context>) -> Result<Action
             ConditionSpec {
                 condition_type: condition_types::BAZARR_SYNC_READY,
                 ok_reason: "SyncComplete",
-                ok_message: "Sonarr and Radarr configured in Bazarr",
+                ok_message: TenantSafeMessage::new("Sonarr and Radarr configured in Bazarr"),
                 fail_reason: "SyncFailed",
                 fail_log: "Bazarr sync failed",
             },
@@ -950,7 +962,9 @@ pub async fn reconcile(app: Arc<ServarrApp>, ctx: Arc<Context>) -> Result<Action
             ConditionSpec {
                 condition_type: condition_types::SUBGEN_SYNC_READY,
                 ok_reason: "SyncComplete",
-                ok_message: "Jellyfin env vars injected into Subgen Deployment",
+                ok_message: TenantSafeMessage::new(
+                    "Jellyfin env vars injected into Subgen Deployment",
+                ),
                 fail_reason: "SyncFailed",
                 fail_log: "Subgen Jellyfin sync failed",
             },
@@ -980,7 +994,9 @@ pub async fn reconcile(app: Arc<ServarrApp>, ctx: Arc<Context>) -> Result<Action
             ConditionSpec {
                 condition_type: condition_types::MAINTAINERR_SYNC_READY,
                 ok_reason: "SyncComplete",
-                ok_message: "Sonarr, Radarr, Seerr, Tautulli, and Plex synced into Maintainerr",
+                ok_message: TenantSafeMessage::new(
+                    "Sonarr, Radarr, Seerr, Tautulli, and Plex synced into Maintainerr",
+                ),
                 fail_reason: "SyncFailed",
                 fail_log: "Maintainerr sync failed",
             },
@@ -1203,7 +1219,7 @@ async fn patch_admin_credentials_checksum(
 /// This function handles the remaining apps via their respective APIs.
 ///
 /// This is idempotent and safe to call on every reconcile cycle.
-pub(crate) async fn sync_admin_credentials(
+async fn sync_admin_credentials(
     client: &Client,
     app: &ServarrApp,
     base_url_override: Option<&str>,
@@ -1469,7 +1485,7 @@ pub(crate) async fn sync_admin_credentials(
         Ok(()) => Condition::ok(
             condition_types::ADMIN_CREDENTIALS_CONFIGURED,
             "Configured",
-            "Admin credentials applied successfully",
+            TenantSafeMessage::new("Admin credentials applied successfully"),
             &now,
         ),
         Err(ref msg) => {
@@ -1886,7 +1902,7 @@ async fn check_api_health(
         Ok(true) => Condition::ok(
             condition_types::APP_HEALTHY,
             "Healthy",
-            "API responded healthy",
+            TenantSafeMessage::new("API responded healthy"),
             &now,
         ),
         Ok(false) => Condition::fail(
@@ -1960,7 +1976,17 @@ async fn check_update_available(
         Some(update) => Condition::ok(
             condition_types::UPDATE_AVAILABLE,
             "UpdateAvailable",
-            &format!("Version {} is available", update.version),
+            // `update.version` is a field of the app's /api/v3/update response body, so it is
+            // external input, not operator text and not tenant-owned. It reaches this
+            // tenant-visible Condition only as sanitizer output -- category (c) of the
+            // TenantSafeMessage::new contract. An oversized or unusable value drops the
+            // version number rather than the whole condition. (#744)
+            TenantSafeMessage::new(
+                match servarr_api::servarr_v3::version_public_summary(&update.version) {
+                    Some(version) => format!("Version {version} is available"),
+                    None => "A new version is available".to_string(),
+                },
+            ),
             now,
         ),
         None => Condition::fail(
@@ -2008,14 +2034,17 @@ const TR_STAT_LOCAL_ERROR: i64 = 3;
 /// Build an `Unknown` `DownloadDataHealthy` condition — used for every non-destructive
 /// failure path in [`check_download_client_health`] so a swallowed error still surfaces on
 /// the ServarrApp status instead of the condition silently disappearing (#483).
-fn download_health_unknown(reason: &str, message: String, now: &str) -> Condition {
-    Condition {
-        condition_type: condition_types::DOWNLOAD_DATA_HEALTHY.to_string(),
-        status: "Unknown".to_string(),
-        reason: reason.to_string(),
-        message,
-        last_transition_time: now.to_string(),
-    }
+///
+/// Takes a [`TenantSafeMessage`] and goes through [`Condition::unknown`] rather than building
+/// the struct directly. A direct struct literal would accept a raw `String` and skip the
+/// sanitized-message check that `Condition::ok` and `Condition::fail` enforce (#709), which
+/// would leave this the one unguarded way to write a tenant-visible Condition message. (#744)
+fn download_health_unknown(
+    reason: &str,
+    message: impl Into<TenantSafeMessage>,
+    now: &str,
+) -> Condition {
+    Condition::unknown(condition_types::DOWNLOAD_DATA_HEALTHY, reason, message, now)
 }
 
 fn is_missing_data_torrent(t: &servarr_api::TorrentInfo) -> bool {
@@ -2120,11 +2149,19 @@ async fn check_download_client_health(
 
     let access = match transmission_access {
         Some(Ok(a)) => a,
-        Some(Err(e)) => return Some(download_health_unknown("ClientBuildError", e.clone(), &now)),
+        // `resolve_transmission_access` builds its error string from `log_summary()`, so this
+        // is sanitizer output -- category (c) of the TenantSafeMessage::new contract.
+        Some(Err(e)) => {
+            return Some(download_health_unknown(
+                "ClientBuildError",
+                TenantSafeMessage::new(e.clone()),
+                &now,
+            ));
+        }
         None => {
             return Some(download_health_unknown(
                 "ClientBuildError",
-                TRANSMISSION_CLIENT_UNRESOLVED.to_string(),
+                TenantSafeMessage::new(TRANSMISSION_CLIENT_UNRESOLVED),
                 &now,
             ));
         }
@@ -2138,7 +2175,7 @@ async fn check_download_client_health(
              password, refusing to proceed unauthenticated on a destructive path");
         return Some(download_health_unknown(
             "CredentialReadError",
-            "adminCredentials secret is missing username or password".to_string(),
+            TenantSafeMessage::new("adminCredentials secret is missing username or password"),
             &now,
         ));
     }
@@ -2151,7 +2188,8 @@ async fn check_download_client_health(
                     "download-client health: torrent-get failed");
             return Some(download_health_unknown(
                 "TorrentGetError",
-                e.log_summary(),
+                // Sanitizer output -- category (c) of the TenantSafeMessage::new contract.
+                TenantSafeMessage::new(e.log_summary()),
                 &now,
             ));
         }
@@ -2179,7 +2217,7 @@ async fn check_download_client_health(
         return Some(Condition::ok(
             condition_types::DOWNLOAD_DATA_HEALTHY,
             "NoStaleData",
-            "No torrents reporting missing data",
+            TenantSafeMessage::new("No torrents reporting missing data"),
             &now,
         ));
     }
@@ -2395,7 +2433,7 @@ fn build_download_health_condition(
         return Condition::ok(
             condition_types::DOWNLOAD_DATA_HEALTHY,
             "DataRecovered",
-            &format!("{stale_count} torrent(s) recovered after verify"),
+            TenantSafeMessage::new(format!("{stale_count} torrent(s) recovered after verify")),
             now,
         );
     }
@@ -2440,7 +2478,10 @@ struct StatusConditions {
 struct ConditionSpec<'a> {
     condition_type: &'a str,
     ok_reason: &'a str,
-    ok_message: &'a str,
+    /// Owned [`TenantSafeMessage`], not a `&str`, so each construction site must make its own
+    /// explicit sanitizer call (#709). A `&str` field would turn [`result_to_condition`] into a
+    /// single unreviewable escape hatch for every caller.
+    ok_message: TenantSafeMessage,
     fail_reason: &'a str,
     fail_log: &'a str,
 }
@@ -2520,7 +2561,7 @@ async fn update_status(
         status.set_condition(Condition::ok(
             condition_types::DEPLOYMENT_READY,
             "ReplicasAvailable",
-            &format!("{ready_replicas} replica(s) ready"),
+            TenantSafeMessage::new(format!("{ready_replicas} replica(s) ready")),
             &now,
         ));
     } else {
@@ -2536,7 +2577,7 @@ async fn update_status(
     status.set_condition(Condition::ok(
         condition_types::SERVICE_READY,
         "Applied",
-        "Service applied",
+        TenantSafeMessage::new("Service applied"),
         &now,
     ));
 
@@ -2553,7 +2594,7 @@ async fn update_status(
         Condition::ok(
             condition_types::READY,
             "DeploymentReady",
-            &format!("{ready_replicas} replica(s) ready"),
+            TenantSafeMessage::new(format!("{ready_replicas} replica(s) ready")),
             &now,
         )
     } else {
@@ -2570,7 +2611,7 @@ async fn update_status(
         status.set_condition(Condition::ok(
             condition_types::DEGRADED,
             "DeploymentNotReady",
-            &format!("{ready_replicas} replica(s) ready"),
+            TenantSafeMessage::new(format!("{ready_replicas} replica(s) ready")),
             &now,
         ));
     } else {
@@ -2662,7 +2703,7 @@ pub(crate) fn normalize_backup_schedule(expr: &str) -> String {
     }
 }
 
-pub(crate) async fn maybe_run_backup(
+async fn maybe_run_backup(
     client: &Client,
     app: &ServarrApp,
     recorder: &Recorder,
@@ -2906,7 +2947,7 @@ pub(crate) async fn maybe_run_backup(
 /// restore API failure, or annotation removal failure (annotation removal failure in
 /// particular is returned as an error so the caller can surface it as a status condition,
 /// which prevents the silent re-trigger loop caused by the annotation remaining).
-pub(crate) async fn maybe_restore_backup(
+async fn maybe_restore_backup(
     client: &Client,
     app: &ServarrApp,
     restore_id: &str,
@@ -3044,7 +3085,7 @@ pub(crate) async fn maybe_restore_backup(
 ///
 /// Separated from `maybe_restore_backup` so the outer function can unconditionally
 /// attempt scale-up regardless of whether this returns `Ok` or `Err`.
-pub(crate) async fn try_restore(
+async fn try_restore(
     client: &Client,
     app: &ServarrApp,
     backup_id: i64,
@@ -3228,7 +3269,7 @@ async fn discover_namespace_apps(
 }
 
 /// Sync discovered namespace apps into Prowlarr as registered applications.
-pub(crate) async fn sync_prowlarr_apps(
+async fn sync_prowlarr_apps(
     client: &Client,
     prowlarr: &ServarrApp,
     target_ns: &str,
@@ -3419,7 +3460,7 @@ async fn prowlarr_sync_exists(client: &Client, namespace: &str) -> bool {
 }
 
 /// Sync discovered Sonarr/Radarr apps into Seerr as registered servers.
-pub(crate) async fn sync_seerr_servers(
+async fn sync_seerr_servers(
     client: &Client,
     seerr: &ServarrApp,
     target_ns: &str,
@@ -3677,7 +3718,7 @@ pub(crate) async fn sync_seerr_servers(
 /// Sync Bazarr's Sonarr/Radarr integration via POST /api/system/settings.
 ///
 /// Called on every reconcile when `bazarr_sync.enabled` is true.
-pub(crate) async fn sync_bazarr_apps(
+async fn sync_bazarr_apps(
     client: &Client,
     bazarr: &ServarrApp,
     target_ns: &str,
@@ -3809,7 +3850,7 @@ pub(crate) async fn sync_bazarr_apps(
 /// `Err` if any registration failed so the `MaintainerrSyncReady` status condition
 /// reflects the partial failure. The caller converts this into a condition rather
 /// than propagating it, so a sync failure never blocks the rest of reconciliation.
-pub(crate) async fn sync_maintainerr_servers(
+async fn sync_maintainerr_servers(
     client: &Client,
     maintainerr: &ServarrApp,
     target_ns: &str,
@@ -4098,7 +4139,7 @@ pub(crate) async fn sync_maintainerr_servers(
 /// Patch Jellyfin env vars onto the Subgen Deployment.
 ///
 /// Called on every reconcile when `subgen_sync.enabled` is true.
-pub(crate) async fn sync_subgen_jellyfin(
+async fn sync_subgen_jellyfin(
     client: &Client,
     subgen: &ServarrApp,
     target_ns: &str,
@@ -4415,7 +4456,7 @@ mod tests {
         let spec = ConditionSpec {
             condition_type: "Restore",
             ok_reason: "Succeeded",
-            ok_message: "restore succeeded",
+            ok_message: TenantSafeMessage::new("restore succeeded"),
             fail_reason: "Failed",
             fail_log: "restore failed",
         };
@@ -9144,7 +9185,7 @@ mod tests {
         let spec = ConditionSpec {
             condition_type: "AppHealthy",
             ok_reason: "AllGood",
-            ok_message: "everything is fine",
+            ok_message: TenantSafeMessage::new("everything is fine"),
             fail_reason: "SomethingBroke",
             fail_log: "reconcile failed",
         };
