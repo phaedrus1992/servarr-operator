@@ -139,11 +139,51 @@ impl Condition {
             last_transition_time: now.to_string(),
         }
     }
+
+    /// Create an Unknown condition.
+    ///
+    /// An `Unknown` message is tenant-visible, so it carries the same
+    /// [`TenantSafeMessage`] requirement as [`Condition::ok`] and [`Condition::fail`].
+    /// This exists so the three status values share one gate: a caller that needs
+    /// `Unknown` no longer has to build the struct directly and skip the check.
+    ///
+    /// ```compile_fail
+    /// use servarr_crds::Condition;
+    /// // A raw &str must not silently satisfy `impl Into<TenantSafeMessage>`:
+    /// let _ = Condition::unknown("Ready", "Unclear", "raw untrusted string", "now");
+    /// ```
+    pub fn unknown(
+        condition_type: &str,
+        reason: &str,
+        message: impl Into<TenantSafeMessage>,
+        now: &str,
+    ) -> Self {
+        Self {
+            condition_type: condition_type.to_string(),
+            status: "Unknown".to_string(),
+            reason: reason.to_string(),
+            message: message.into().to_string(),
+            last_transition_time: now.to_string(),
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unknown_accepts_a_tenant_safe_message_and_preserves_its_text() {
+        let condition = Condition::unknown(
+            "DownloadDataHealthy",
+            "TorrentGetError",
+            TenantSafeMessage::new("curated unknown text"),
+            "2026-01-01T00:00:00Z",
+        );
+        assert_eq!(condition.message, "curated unknown text");
+        assert_eq!(condition.status, "Unknown");
+        assert_eq!(condition.reason, "TorrentGetError");
+    }
 
     #[test]
     fn ok_accepts_a_tenant_safe_message_and_preserves_its_text() {

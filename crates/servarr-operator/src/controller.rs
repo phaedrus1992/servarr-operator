@@ -2024,14 +2024,17 @@ const TR_STAT_LOCAL_ERROR: i64 = 3;
 /// Build an `Unknown` `DownloadDataHealthy` condition — used for every non-destructive
 /// failure path in [`check_download_client_health`] so a swallowed error still surfaces on
 /// the ServarrApp status instead of the condition silently disappearing (#483).
-fn download_health_unknown(reason: &str, message: String, now: &str) -> Condition {
-    Condition {
-        condition_type: condition_types::DOWNLOAD_DATA_HEALTHY.to_string(),
-        status: "Unknown".to_string(),
-        reason: reason.to_string(),
-        message,
-        last_transition_time: now.to_string(),
-    }
+///
+/// Takes a [`TenantSafeMessage`] and goes through [`Condition::unknown`] rather than building
+/// the struct directly. A direct struct literal would accept a raw `String` and skip the
+/// sanitized-message check that `Condition::ok` and `Condition::fail` enforce (#709), which
+/// would leave this the one unguarded way to write a tenant-visible Condition message. (#744)
+fn download_health_unknown(
+    reason: &str,
+    message: impl Into<TenantSafeMessage>,
+    now: &str,
+) -> Condition {
+    Condition::unknown(condition_types::DOWNLOAD_DATA_HEALTHY, reason, message, now)
 }
 
 fn is_missing_data_torrent(t: &servarr_api::TorrentInfo) -> bool {
@@ -2136,11 +2139,19 @@ async fn check_download_client_health(
 
     let access = match transmission_access {
         Some(Ok(a)) => a,
-        Some(Err(e)) => return Some(download_health_unknown("ClientBuildError", e.clone(), &now)),
+        // `resolve_transmission_access` builds its error string from `log_summary()`, so this
+        // is sanitizer output -- category (c) of the TenantSafeMessage::new contract.
+        Some(Err(e)) => {
+            return Some(download_health_unknown(
+                "ClientBuildError",
+                TenantSafeMessage::new(e.clone()),
+                &now,
+            ));
+        }
         None => {
             return Some(download_health_unknown(
                 "ClientBuildError",
-                TRANSMISSION_CLIENT_UNRESOLVED.to_string(),
+                TenantSafeMessage::new(TRANSMISSION_CLIENT_UNRESOLVED),
                 &now,
             ));
         }
@@ -2154,7 +2165,7 @@ async fn check_download_client_health(
              password, refusing to proceed unauthenticated on a destructive path");
         return Some(download_health_unknown(
             "CredentialReadError",
-            "adminCredentials secret is missing username or password".to_string(),
+            TenantSafeMessage::new("adminCredentials secret is missing username or password"),
             &now,
         ));
     }
@@ -2167,7 +2178,8 @@ async fn check_download_client_health(
                     "download-client health: torrent-get failed");
             return Some(download_health_unknown(
                 "TorrentGetError",
-                e.log_summary(),
+                // Sanitizer output -- category (c) of the TenantSafeMessage::new contract.
+                TenantSafeMessage::new(e.log_summary()),
                 &now,
             ));
         }
