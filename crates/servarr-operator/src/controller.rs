@@ -189,6 +189,33 @@ struct TenantEvent {
     action: &'static str,
 }
 
+/// The largest `note` the `events.k8s.io/v1` API accepts, in bytes.
+///
+/// The API server measures this field in bytes, not characters. Several notes here contain an
+/// em dash, which is 3 bytes, so a character count would let an oversized note through.
+const MAX_EVENT_NOTE_BYTES: usize = 1024;
+
+/// Cut `note` to the length the Events API accepts.
+///
+/// An oversized note makes the API server reject the publish, so the tenant loses the whole
+/// event rather than the tail of one message. Some call sites cap their own input, but a cap
+/// repeated at each call site drifts as sites are added. Every note passes through
+/// [`publish_event`], so the guard belongs here instead. (#747)
+///
+/// The cut lands on a character boundary. A byte-count cut through a multi-byte character
+/// would panic.
+fn clamp_event_note(note: &str) -> String {
+    const ELLIPSIS: &str = "...";
+    if note.len() <= MAX_EVENT_NOTE_BYTES {
+        return note.to_string();
+    }
+    let mut end = MAX_EVENT_NOTE_BYTES - ELLIPSIS.len();
+    while end > 0 && !note.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}{ELLIPSIS}", &note[..end])
+}
+
 /// Publish `event` and warn (never panic or silently drop) if the publish itself fails --
 /// RBAC restriction, API server unavailable, namespace being torn down. The underlying
 /// reconcile/operation error is expected to already be logged by the caller; this only
@@ -218,7 +245,7 @@ async fn publish_event(
     let kube_event = Event {
         type_,
         reason: reason.to_string(),
-        note: Some(note.as_ref().to_string()),
+        note: Some(clamp_event_note(note.as_ref())),
         action: action.to_string(),
         secondary: None,
     };
@@ -6587,6 +6614,73 @@ mod tests {
             before + 1,
             "a failed ReconcileSuccess publish must be counted, not swallowed"
         );
+    }
+
+    #[test]
+    fn clamp_event_note_keeps_a_note_within_the_limit_unchanged() {
+        let note = "All resources reconciled in 1.50s";
+        assert_eq!(clamp_event_note(note), note);
+    }
+
+    #[test]
+    fn clamp_event_note_cuts_an_oversized_note() {
+        let note = "a".repeat(MAX_EVENT_NOTE_BYTES + 500);
+        let clamped = clamp_event_note(&note);
+        assert!(clamped.len() <= MAX_EVENT_NOTE_BYTES);
+        assert!(clamped.ends_with("..."));
+    }
+
+    // The cut is measured in bytes, so a note padded with multi-byte characters is where a
+    // naive slice would panic on a character boundary. An em dash is 3 bytes and appears in
+    // several real notes in this file.
+    #[test]
+    fn clamp_event_note_cuts_on_a_character_boundary() {
+        let note = "—".repeat(MAX_EVENT_NOTE_BYTES);
+        let clamped = clamp_event_note(&note);
+        assert!(clamped.len() <= MAX_EVENT_NOTE_BYTES);
+        assert!(clamped.ends_with("..."));
+    }
+
+    use proptest::prelude::*;
+
+    // Draw from the full `char` range, up to a length that reaches well past the byte limit.
+    // A plain ".*" strategy almost never produces a string over 1024 bytes, so it exercises
+    // only the pass-through arm and proves nothing about the cut.
+    fn any_note() -> impl Strategy<Value = String> {
+        proptest::collection::vec(any::<char>(), 0..3000)
+            .prop_map(|chars| chars.into_iter().collect())
+    }
+
+    // A note guaranteed to fit. 200 characters reach 800 bytes at the 4-byte maximum per
+    // character, so every draw is under the limit. Filtering `any_note()` down to this range
+    // instead would reject almost every draw and abort the run.
+    fn note_within_limit() -> impl Strategy<Value = String> {
+        proptest::collection::vec(any::<char>(), 0..200)
+            .prop_map(|chars| chars.into_iter().collect())
+    }
+
+    proptest! {
+        // No note this operator can build may exceed the Events API limit, whatever the
+        // input. An oversized note makes the API server reject the publish, so the tenant
+        // loses the whole event. A cut through a multi-byte character panics, so this also
+        // covers the character-boundary case.
+        #[test]
+        fn clamp_event_note_never_exceeds_the_api_limit(note in any_note()) {
+            let clamped = clamp_event_note(&note);
+            prop_assert!(
+                clamped.len() <= MAX_EVENT_NOTE_BYTES,
+                "clamped note is {} bytes, over the {MAX_EVENT_NOTE_BYTES}-byte limit",
+                clamped.len()
+            );
+        }
+
+        // A note that already fits must pass through byte-for-byte. Truncating a note that
+        // did not need it would drop detail the tenant needs.
+        #[test]
+        fn clamp_event_note_is_lossless_within_the_limit(note in note_within_limit()) {
+            prop_assert!(note.len() <= MAX_EVENT_NOTE_BYTES, "strategy must stay under the limit");
+            prop_assert_eq!(clamp_event_note(&note), note);
+        }
     }
 
     // ---- Helper: build a minimal ServarrApp for testing ----
