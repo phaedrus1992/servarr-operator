@@ -1,6 +1,8 @@
 use kube::Client;
 use kube::runtime::events::Reporter;
 use servarr_crds::{AppDefaults, AppType, ImageSpec};
+
+use crate::env::EnvError;
 use std::collections::{HashMap, HashSet};
 use tracing::{info, warn};
 
@@ -38,47 +40,61 @@ pub fn watch_all_namespaces() -> bool {
     crate::env::var_bool("WATCH_ALL_NAMESPACES", false)
 }
 
-/// Resolves the namespace to watch. `None` means cluster-scoped.
+/// Resolves the namespace to watch. `Ok(None)` means cluster-scoped.
 ///
 /// An empty `WATCH_NAMESPACE` widens the operator from one namespace to the whole cluster, so
 /// it warns rather than falling through in silence. The downward API never produces an empty
 /// value, but a hand-written pod spec or a `valueFrom` on a missing key does.
-pub fn watch_namespace() -> Option<String> {
+///
+/// An *unreadable* value widens the same way, and it is not a case the user chose. "Unset, so
+/// watch everything" and "set, so it must be usable" are different situations, and only the
+/// first is an instruction. Widening scope changes a security posture, so the second is fatal.
+///
+/// # Errors
+///
+/// Returns [`EnvError`] when `WATCH_NAMESPACE` is set to a value that is not valid UTF-8.
+pub fn watch_namespace() -> Result<Option<String>, EnvError> {
     if watch_all_namespaces() {
-        return None;
+        return Ok(None);
     }
-    let ns = crate::env::var("WATCH_NAMESPACE")?;
+    let Some(ns) = crate::env::var_strict("WATCH_NAMESPACE")? else {
+        return Ok(None);
+    };
     if ns.is_empty() {
         warn!(
             "WATCH_NAMESPACE is set but empty, falling back to cluster-scoped mode; \
              set it to a namespace name or unset it to make this deliberate"
         );
-        return None;
+        return Ok(None);
     }
-    Some(ns)
+    Ok(Some(ns))
 }
 
 impl Context {
-    pub(crate) fn new(client: Client) -> Self {
+    /// # Errors
+    ///
+    /// Returns [`EnvError`] when `WATCH_NAMESPACE` is set to a value the operator cannot read.
+    /// Widening to cluster scope on a value the user did not choose is not a safe default.
+    pub(crate) fn new(client: Client) -> Result<Self, EnvError> {
         let (image_overrides, legacy_image_override_apps) = load_image_overrides();
         let reporter = Reporter {
             controller: "servarr-operator".into(),
             instance: crate::env::var("POD_NAME"),
         };
-        let watch_namespace = watch_namespace();
+        let watch_namespace = watch_namespace()?;
         if let Some(ref ns) = watch_namespace {
             info!(%ns, "namespace-scoped mode");
         } else {
             info!("cluster-scoped mode (watching all namespaces)");
         }
-        Self {
+        Ok(Self {
             client,
             image_overrides,
             legacy_image_override_apps,
             reporter,
             watch_namespace,
             app_api_base_override: None,
-        }
+        })
     }
 }
 
@@ -635,7 +651,7 @@ mod tests {
                 ("WATCH_NAMESPACE", Some("my-ns")),
             ],
             || {
-                assert_eq!(derive_watch_namespace(), Some("my-ns".to_string()));
+                assert_eq!(derive_watch_namespace().unwrap(), Some("my-ns".to_string()));
             },
         );
     }
@@ -648,7 +664,7 @@ mod tests {
                 ("WATCH_NAMESPACE", Some("my-ns")),
             ],
             || {
-                assert_eq!(derive_watch_namespace(), None);
+                assert_eq!(derive_watch_namespace().unwrap(), None);
             },
         );
     }
@@ -661,9 +677,23 @@ mod tests {
                 ("WATCH_NAMESPACE", Some("")),
             ],
             || {
-                assert_eq!(derive_watch_namespace(), None);
+                assert_eq!(derive_watch_namespace().unwrap(), None);
             },
         );
+    }
+
+    /// An unreadable value widens the operator to the whole cluster, and the user did not choose
+    /// that. Refuse to start rather than take a broader scope than the one that was requested.
+    #[test]
+    #[cfg(unix)]
+    fn watch_namespace_errors_when_set_but_unreadable() {
+        temp_env::with_var("WATCH_ALL_NAMESPACES", Some("false"), || {
+            temp_env::with_var("WATCH_NAMESPACE", Some(invalid_utf8()), || {
+                let error = derive_watch_namespace()
+                    .expect_err("an unreadable namespace must not widen the scope");
+                assert!(error.to_string().contains("WATCH_NAMESPACE"));
+            });
+        });
     }
 
     #[test]
@@ -674,7 +704,7 @@ mod tests {
                 ("WATCH_NAMESPACE", None::<&str>),
             ],
             || {
-                assert_eq!(derive_watch_namespace(), None);
+                assert_eq!(derive_watch_namespace().unwrap(), None);
             },
         );
     }
