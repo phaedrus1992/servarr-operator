@@ -25,7 +25,8 @@ use tracing::{debug, error, info, warn};
 use crate::context::Context;
 use crate::metrics::{
     increment_backup_operations, increment_drift_corrections, increment_event_publish_failure,
-    increment_reconcile_total, observe_reconcile_duration, set_managed_apps,
+    increment_managed_apps_list_failure, increment_reconcile_total, observe_reconcile_duration,
+    set_managed_apps,
 };
 
 mod cleanup;
@@ -158,7 +159,7 @@ pub async fn run(client: kube::Client, server_state: crate::server::ServerState)
                 .collect::<Vec<_>>()
         })
         .shutdown_on_signal()
-        .run(reconcile, error_policy, ctx)
+        .run(reconcile, error_policy, ctx.clone())
         .for_each(|res| async move {
             match res {
                 Ok(o) => info!(?o, "reconciled"),
@@ -166,6 +167,13 @@ pub async fn run(client: kube::Client, server_state: crate::server::ServerState)
             }
         })
         .await;
+
+    // Drain any ReconcileError Event publishes `error_policy` spawned but that this stream's
+    // own completion doesn't wait for (#752) -- the Controller has no visibility into a task
+    // spawned outside its own reconcile loop, so without this a publish still in flight when
+    // the process exits is dropped before it is ever polled.
+    ctx.event_publish_tasks.close();
+    ctx.event_publish_tasks.wait().await;
 
     Ok(())
 }
@@ -1132,20 +1140,7 @@ pub async fn reconcile(app: Arc<ServarrApp>, ctx: Arc<Context>) -> Result<Action
     } else {
         Api::<ServarrApp>::all(client.clone())
     };
-    if let Ok(app_list) = gauge_api.list(&kube::api::ListParams::default()).await {
-        let mut counts: std::collections::HashMap<(String, String), i64> =
-            std::collections::HashMap::new();
-        for a in &app_list.items {
-            let key = (
-                a.spec.app.as_str().to_owned(),
-                a.namespace().unwrap_or_default(),
-            );
-            *counts.entry(key).or_default() += 1;
-        }
-        for ((t, n), count) in &counts {
-            set_managed_apps(t, n, *count);
-        }
-    }
+    update_managed_apps_gauge(&gauge_api).await;
 
     publish_reconcile_success(&recorder, &obj_ref, duration).await;
 
@@ -1153,6 +1148,38 @@ pub async fn reconcile(app: Arc<ServarrApp>, ctx: Arc<Context>) -> Result<Action
     // the operator retries quickly once the app finishes starting up.
     let requeue_secs = if admin_creds_pending { 30 } else { 300 };
     Ok(Action::requeue(Duration::from_secs(requeue_secs)))
+}
+
+/// Refresh the `servarr_operator_managed_apps` gauge from a fresh list of ServarrApps.
+///
+/// A failed list is not silently dropped (#751): it warns and increments
+/// `servarr_operator_managed_apps_list_failures_total`, so a persistent failure -- an RBAC
+/// change, an API server under pressure -- shows up in metrics instead of leaving the gauge
+/// frozen at its last good value with nothing to say it stopped updating.
+async fn update_managed_apps_gauge(gauge_api: &Api<ServarrApp>) {
+    match gauge_api.list(&kube::api::ListParams::default()).await {
+        Ok(app_list) => {
+            let mut counts: std::collections::HashMap<(String, String), i64> =
+                std::collections::HashMap::new();
+            for a in &app_list.items {
+                let key = (
+                    a.spec.app.as_str().to_owned(),
+                    a.namespace().unwrap_or_default(),
+                );
+                *counts.entry(key).or_default() += 1;
+            }
+            for ((t, n), count) in &counts {
+                set_managed_apps(t, n, *count);
+            }
+        }
+        Err(e) => {
+            warn!(
+                error = %kube_err_summary(&e),
+                "failed to list ServarrApps for managed-apps gauge; gauge value is now stale"
+            );
+            increment_managed_apps_list_failure();
+        }
+    }
 }
 
 /// Create the API key Secret the first time `apiKeySecret` is reconciled.
@@ -2746,7 +2773,11 @@ pub fn error_policy(app: Arc<ServarrApp>, error: &Error, ctx: Arc<Context>) -> A
     // The Event note is tenant-visible (readable via `kubectl get events` in the app's
     // namespace), so it must go through the stricter public_summary(), not the plain Display.
     let event_msg = TenantSafeMessage::new(error.public_summary());
-    tokio::spawn(async move {
+    // Tracked, not a bare detached spawn (#752): a detached task can be dropped mid-flight if
+    // the runtime shuts down before it is polled, which would also skip the failure-metric
+    // increment that lives inside `publish_event`. `ctx.event_publish_tasks` is drained on
+    // shutdown in `run()` so this publish gets to finish first.
+    ctx.event_publish_tasks.spawn(async move {
         publish_event(
             &recorder,
             &obj_ref,
@@ -2955,18 +2986,28 @@ async fn maybe_run_backup(
             )
             .await;
 
-            // Prune old backups if over retention count
+            // Prune old backups if over retention count. A failed list is not silently
+            // dropped: it warns and counts the failure, so old backups quietly accumulating
+            // past retention is visible in metrics rather than only in absent DELETE calls.
             let retention = backup_spec.retention_count;
-            if let Ok(backups) = api_client.list_backups().await
-                && backups.len() as u32 > retention
-            {
-                let mut sorted = backups;
-                sorted.sort_by(|a, b| a.time.cmp(&b.time));
-                let to_delete = sorted.len() - retention as usize;
-                for old in sorted.iter().take(to_delete) {
-                    if let Err(e) = api_client.delete_backup(old.id).await {
-                        warn!(backup_id = old.id, error = %e.log_summary(), "failed to prune old backup");
+            match api_client.list_backups().await {
+                Ok(backups) if backups.len() as u32 > retention => {
+                    let mut sorted = backups;
+                    sorted.sort_by(|a, b| a.time.cmp(&b.time));
+                    let to_delete = sorted.len() - retention as usize;
+                    for old in sorted.iter().take(to_delete) {
+                        if let Err(e) = api_client.delete_backup(old.id).await {
+                            warn!(backup_id = old.id, error = %e.log_summary(), "failed to prune old backup");
+                        }
                     }
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    warn!(
+                        app = %app_name, error = %e.log_summary(),
+                        "failed to list backups for retention pruning; old backups may accumulate"
+                    );
+                    increment_backup_operations(app_type, "prune", "error");
                 }
             }
 
@@ -6577,6 +6618,34 @@ mod tests {
         assert_eq!(after, before + 1);
     }
 
+    // ---- update_managed_apps_gauge (#751): a failed list must not leave the gauge stale
+    // with no signal that it stopped updating ----
+    //
+    // Both guarantees are asserted in one test because `MANAGED_APPS_LIST_FAILURES_TOTAL`
+    // carries no labels -- a second test incrementing the same global counter would race
+    // this one under cargo's default parallel test execution and make the +1 delta
+    // unprovable (same reasoning as the shared `ReconcileSuccess` counter test below).
+    #[tokio::test]
+    async fn update_managed_apps_gauge_warns_and_counts_without_panicking_on_list_failure() {
+        // No Mock mounted for the servarrapps list endpoint, so the call fails
+        // (wiremock returns 404 for any unmatched request) — the function must
+        // warn and count the failure, never panic.
+        let mock_server = MockServer::start().await;
+        let client = build_mock_client(&mock_server.uri()).await;
+        let gauge_api = Api::<ServarrApp>::namespaced(client, "test");
+
+        let before = crate::metrics::MANAGED_APPS_LIST_FAILURES_TOTAL
+            .with_label_values(&[] as &[&str])
+            .get();
+
+        update_managed_apps_gauge(&gauge_api).await;
+
+        let after = crate::metrics::MANAGED_APPS_LIST_FAILURES_TOTAL
+            .with_label_values(&[] as &[&str])
+            .get();
+        assert_eq!(after, before + 1);
+    }
+
     // The terminal ReconcileSuccess Event is advisory (#746). Two guarantees, asserted in one
     // test because both need the shared `ReconcileSuccess` counter label -- a second test on
     // the same label would race this one and make the +1 delta unprovable.
@@ -6697,6 +6766,50 @@ mod tests {
         app.metadata.resource_version = Some("1".into());
         app.metadata.generation = Some(1);
         app
+    }
+
+    fn make_test_context(client: Client) -> Context {
+        Context {
+            client,
+            image_overrides: std::collections::HashMap::new(),
+            legacy_image_override_apps: std::collections::HashSet::new(),
+            reporter: kube::runtime::events::Reporter {
+                controller: "servarr-operator-test".into(),
+                instance: None,
+            },
+            watch_namespace: None,
+            app_api_base_override: None,
+            event_publish_tasks: tokio_util::task::TaskTracker::new(),
+        }
+    }
+
+    // ---- error_policy (#752): the ReconcileError Event publish must be tracked so shutdown
+    // can drain it instead of risking a silent drop ----
+
+    #[tokio::test]
+    async fn error_policy_tracks_its_event_publish_task_for_shutdown_drain() {
+        let mock_server = MockServer::start().await;
+        let client = build_mock_client(&mock_server.uri()).await;
+        let ctx = Arc::new(make_test_context(client));
+        assert_eq!(ctx.event_publish_tasks.len(), 0);
+
+        let app = Arc::new(make_test_app("my-sonarr", "test", AppType::Sonarr));
+        let error = Error::CleanupPending;
+        let _action = error_policy(app, &error, ctx.clone());
+
+        // A bare detached `tokio::spawn` (the #752 bug) would leave the tracker empty here --
+        // the task would run outside it entirely, invisible to any shutdown drain. Checked
+        // before yielding to the runtime (no `.await` yet on this task), so the spawned task
+        // has not had a chance to run and be removed from the tracker yet.
+        assert_eq!(
+            ctx.event_publish_tasks.len(),
+            1,
+            "error_policy must register its Event publish with the tracker, not spawn it detached"
+        );
+
+        // Let the tracked task run to completion before the test ends.
+        ctx.event_publish_tasks.close();
+        ctx.event_publish_tasks.wait().await;
     }
 
     // ---- update_status tests ----
@@ -8888,6 +9001,69 @@ mod tests {
             status.backup_count, 2,
             "backup_count must be clamped to retention"
         );
+    }
+
+    // A failed list_backups() during pruning must not be silently dropped: pruning is skipped
+    // (nothing to sort/delete without a list), but the failure is now counted so old backups
+    // silently accumulating past retention is visible in metrics, not just absent DELETE calls.
+    #[tokio::test]
+    async fn maybe_run_backup_list_failure_during_pruning_counts_the_failure() {
+        use servarr_crds::BackupSpec;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock_server = MockServer::start().await;
+        let client = build_mock_client(&mock_server.uri()).await;
+        let mut app = make_test_app("my-sonarr", "test", AppType::Sonarr);
+        app.spec.backup = Some(BackupSpec {
+            enabled: true,
+            schedule: "0 3 * * *".into(),
+            retention_count: 2,
+        });
+        app.spec.api_key_secret = Some("sonarr-key".into());
+
+        Mock::given(method("GET"))
+            .and(path("/api/v1/namespaces/test/secrets/sonarr-key"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "apiVersion": "v1", "kind": "Secret",
+                "metadata": { "name": "sonarr-key", "namespace": "test" },
+                "data": { "api-key": "c29uYXJyLWtleQ==" }
+            })))
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/v3/system/backup"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": 3,
+                "name": "sonarr_backup.zip",
+                "path": "/config/Backups/sonarr_backup.zip",
+                "size": 1048576,
+                "time": "2026-06-25T03:00:00Z"
+            })))
+            .mount(&mock_server)
+            .await;
+
+        // No Mock mounted for GET /api/v3/system/backup, so list_backups() fails (wiremock
+        // returns 404 for any unmatched request) — pruning must warn and count the failure,
+        // never silently skip with no signal.
+        let app_type = app.spec.app.as_str();
+        let before = crate::metrics::BACKUP_OPERATIONS_TOTAL
+            .with_label_values(&[app_type, "prune", "error"])
+            .get();
+
+        let recorder = make_recorder(&client);
+        let obj_ref = app.object_ref(&());
+        let mock_uri = mock_server.uri();
+        let result = maybe_run_backup(&client, &app, &recorder, &obj_ref, Some(&mock_uri)).await;
+
+        let status = result.expect("should return Some(BackupStatus) on success");
+        assert_eq!(status.last_backup_result.as_deref(), Some("success"));
+
+        let after = crate::metrics::BACKUP_OPERATIONS_TOTAL
+            .with_label_values(&[app_type, "prune", "error"])
+            .get();
+        assert_eq!(after, before + 1);
     }
 
     #[tokio::test]
