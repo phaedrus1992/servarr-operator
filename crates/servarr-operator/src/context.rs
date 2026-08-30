@@ -352,6 +352,51 @@ mod tests {
         );
     }
 
+    fn arb_image_spec() -> impl proptest::strategy::Strategy<Value = ImageSpec> {
+        use proptest::prelude::*;
+        ("[a-z0-9/._-]{0,24}", "[a-zA-Z0-9._-]{0,16}").prop_map(|(repository, tag)| ImageSpec {
+            repository,
+            tag,
+            digest: String::new(),
+            pull_policy: "IfNotPresent".into(),
+        })
+    }
+
+    proptest::proptest! {
+        /// Every app in `AppType::ALL` has a compiled default with both halves filled, so the
+        /// merge can never leave a half empty. A rendered `repo:` or `:tag` is a broken image
+        /// reference, and the log exists to let a reader confirm which image will be pulled.
+        #[test]
+        fn effective_image_never_renders_an_empty_half(
+            index in 0usize..AppType::ALL.len(),
+            spec in arb_image_spec(),
+        ) {
+            let app = &AppType::ALL[index];
+            let rendered = effective_image(app, &spec);
+            proptest::prop_assert!(!rendered.starts_with(':'), "{0}", rendered);
+            proptest::prop_assert!(!rendered.ends_with(':'), "{0}", rendered);
+        }
+
+        /// A half the user set explicitly always survives the merge. The compiled default fills
+        /// the empty halves only — it never overwrites a value the user chose.
+        #[test]
+        fn effective_image_keeps_every_half_the_user_set(
+            index in 0usize..AppType::ALL.len(),
+            spec in arb_image_spec(),
+        ) {
+            let app = &AppType::ALL[index];
+            let rendered = effective_image(app, &spec);
+            let repo_prefix = format!("{}:", spec.repository);
+            let tag_suffix = format!(":{}", spec.tag);
+            if !spec.repository.is_empty() {
+                proptest::prop_assert!(rendered.starts_with(&repo_prefix), "{0}", rendered);
+            }
+            if !spec.tag.is_empty() {
+                proptest::prop_assert!(rendered.ends_with(&tag_suffix), "{0}", rendered);
+            }
+        }
+    }
+
     #[test]
     fn effective_image_keeps_an_explicit_tag() {
         let spec = ImageSpec {

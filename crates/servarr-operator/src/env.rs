@@ -413,7 +413,80 @@ mod tests {
             .any(|known| value.eq_ignore_ascii_case(known))
     }
 
+    /// Rewrites `canonical` with the characters `uppercase_mask` selects put in upper case.
+    fn respell(canonical: &str, uppercase_mask: &[bool]) -> String {
+        canonical
+            .chars()
+            .enumerate()
+            .map(|(i, c)| {
+                if *uppercase_mask.get(i).unwrap_or(&false) {
+                    c.to_ascii_uppercase()
+                } else {
+                    c
+                }
+            })
+            .collect()
+    }
+
     proptest::proptest! {
+        /// The strict reader returns the value unchanged for every readable value.
+        #[test]
+        fn var_strict_round_trips_every_readable_value(value in "[^\u{0}]{0,64}") {
+            temp_env::with_var(KEY, Some(value.as_str()), || {
+                proptest::prop_assert_eq!(var_strict(KEY)?, Some(value.clone()));
+                Ok(())
+            })?;
+        }
+
+        /// The lenient reader agrees with the strict one wherever the strict one succeeds.
+        /// They must never disagree on a value both can read.
+        #[test]
+        fn var_agrees_with_var_strict_on_every_readable_value(value in "[^\u{0}]{0,64}") {
+            temp_env::with_var(KEY, Some(value.as_str()), || {
+                proptest::prop_assert_eq!(var(KEY), var_strict(KEY)?);
+                Ok(())
+            })?;
+        }
+
+        /// The strict boolean reader never substitutes the default for a value it does not
+        /// recognize. That is the whole difference from [`var_bool`], so it must hold for
+        /// every unrecognized value, not just the four in the example test.
+        #[test]
+        fn var_bool_strict_errors_for_every_unrecognized_value(value in "[^\u{0}]{0,32}") {
+            proptest::prop_assume!(!value.is_empty() && !is_recognized(&value));
+            temp_env::with_var(KEY, Some(value.as_str()), || {
+                proptest::prop_assert!(var_bool_strict(KEY, true).is_err());
+                proptest::prop_assert!(var_bool_strict(KEY, false).is_err());
+                Ok(())
+            })?;
+        }
+
+        /// Case never changes the strict reader's result either.
+        #[test]
+        fn var_bool_strict_ignores_case_for_every_recognized_value(
+            index in 0usize..RECOGNIZED.len(),
+            uppercase_mask in proptest::collection::vec(proptest::bool::ANY, 5),
+        ) {
+            let canonical = RECOGNIZED[index];
+            let spelled = respell(canonical, &uppercase_mask);
+            let expected = matches!(canonical, "true" | "1" | "yes");
+            temp_env::with_var(KEY, Some(spelled.as_str()), || {
+                proptest::prop_assert_eq!(var_bool_strict(KEY, !expected)?, expected);
+                Ok(())
+            })?;
+        }
+
+        /// A non-empty value is always a usable path, whatever it contains. Only the empty
+        /// value is refused, and the variable's name always reaches the message.
+        #[test]
+        fn var_path_accepts_every_non_empty_value(value in "[^\u{0}]{1,64}") {
+            temp_env::with_var(KEY, Some(value.as_str()), || {
+                let path = var_path(KEY)?.expect("a non-empty value is a path");
+                proptest::prop_assert_eq!(path, std::path::PathBuf::from(&value));
+                Ok(())
+            })?;
+        }
+
         /// Any value outside the recognized set yields the caller's default, whatever it is.
         #[test]
         fn var_bool_yields_the_default_for_every_unrecognized_value(
@@ -434,17 +507,7 @@ mod tests {
             uppercase_mask in proptest::collection::vec(proptest::bool::ANY, 5),
         ) {
             let canonical = RECOGNIZED[index];
-            let spelled: String = canonical
-                .chars()
-                .enumerate()
-                .map(|(i, c)| {
-                    if *uppercase_mask.get(i).unwrap_or(&false) {
-                        c.to_ascii_uppercase()
-                    } else {
-                        c
-                    }
-                })
-                .collect();
+            let spelled = respell(canonical, &uppercase_mask);
             let expected = matches!(canonical, "true" | "1" | "yes");
             temp_env::with_var(KEY, Some(spelled.as_str()), || {
                 proptest::prop_assert_eq!(var_bool(KEY, !expected), expected);

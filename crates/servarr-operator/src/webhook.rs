@@ -924,6 +924,33 @@ mod config_tests {
         }
     }
 
+    proptest::proptest! {
+        /// Every port the OS can actually route to round-trips, with or without surrounding
+        /// whitespace. The example test covers 8443 only.
+        #[test]
+        fn parse_webhook_port_round_trips_every_routable_port(port in 1u16..=u16::MAX) {
+            proptest::prop_assert_eq!(parse_webhook_port(&port.to_string())?, port);
+            proptest::prop_assert_eq!(parse_webhook_port(&format!("  {port}\t"))?, port);
+        }
+
+        /// The parser never yields 0. A random port the Service cannot route to is the one
+        /// outcome that breaks admission cluster-wide, so it must be unreachable for any input.
+        #[test]
+        fn parse_webhook_port_never_yields_zero(raw in "[^\u{0}]{0,12}") {
+            if let Ok(port) = parse_webhook_port(&raw) {
+                proptest::prop_assert_ne!(port, 0, "{:?} must not bind a random port", raw);
+            }
+        }
+
+        /// Anything outside `1..=65535` is refused, and the message always names the variable.
+        #[test]
+        fn parse_webhook_port_refuses_every_out_of_range_number(value in 65536u32..=u32::MAX) {
+            let error = parse_webhook_port(&value.to_string())
+                .expect_err("a number above 65535 is not a port");
+            proptest::prop_assert!(error.to_string().contains("WEBHOOK_PORT"));
+        }
+    }
+
     /// A path is `OsString`-shaped. A non-UTF-8 path must work, not warn and fall back.
     #[test]
     #[cfg(unix)]
