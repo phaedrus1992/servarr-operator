@@ -9,14 +9,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased] - ReleaseDate
 
+### Added
+
+- Add a `webhook.port` Helm value (default `9443`). The Service hardcoded `targetPort: 9443` and
+  the Deployment hardcoded `containerPort: 9443`, so `WEBHOOK_PORT` was never actually usable —
+  setting it moved the operator's listener and left the API server dialing a port nothing was on.
+  The one value now drives the container port, the Service target, and the operator's own
+  `WEBHOOK_PORT` together (#732).
+
 ### Fixed
 
 - Fix every environment-variable read in the operator treating "you never set this" and "you set
   this to something I can't read" as the same thing — a value that isn't valid UTF-8 was silently
-  discarded and the built-in default applied with no log line at all. Each such read now warns and
-  names the variable, while a genuinely unset variable logs at `debug!`. Covers
-  `WATCH_ALL_NAMESPACES`, `WATCH_NAMESPACE`, `POD_NAME`, `WEBHOOK_ENABLED`, `WEBHOOK_PORT`, the
-  `WEBHOOK_TLS_*` paths, and the `DEFAULT_IMAGE_*` overrides (#725, #726, #730).
+  discarded and the built-in default applied with no log line at all. A genuinely unset variable
+  logs at `debug!`. An unreadable one now either warns and names the variable, or stops the
+  operator outright where a default would change a security or availability posture (see below).
+  Covers `WATCH_ALL_NAMESPACES`, `WATCH_NAMESPACE`, `POD_NAME`, `WEBHOOK_ENABLED`, `WEBHOOK_PORT`,
+  the `WEBHOOK_TLS_*` paths, and the `DEFAULT_IMAGE_*` overrides (#725, #726, #730, #732).
+- Refuse to start when a webhook or scoping variable is set to a value the operator can't use,
+  rather than quietly substituting a default. That's `WEBHOOK_PORT` (unparseable, or `0`),
+  `WEBHOOK_ENABLED` (anything outside `true`/`false`/`1`/`0`/`yes`/`no` — `on` and `y` used to
+  mean `false`), an empty `WEBHOOK_TLS_DIR`/`WEBHOOK_TLS_CERT`/`WEBHOOK_TLS_KEY`, and an
+  unreadable `WATCH_NAMESPACE`. The reason a fallback was wrong for these is that it *worked*: the
+  chart mounts a valid cert at the default path, so an unreadable `WEBHOOK_TLS_CERT` came up
+  healthy serving a certificate nobody picked, and an unreadable `WATCH_NAMESPACE` widened the
+  operator from one namespace to the whole cluster. `WATCH_ALL_NAMESPACES` and `POD_NAME` keep the
+  old lenient behavior on purpose — `false` is the narrower scope, so its default is already
+  fail-safe (#732, #733, #739).
+- Fix a webhook that can't start leaving the operator running and reporting itself healthy. A
+  missing cert file, an unparseable PEM, a cert/key mismatch, a denied read on the mounted secret,
+  or a port already in use all reduced to one `error!` line while `/readyz` kept returning 200 —
+  and with `failurePolicy: Fail`, every `ServarrApp` write in the cluster failed. It now takes the
+  operator down with it, same as the metrics server already did (#733).
+- Read the `WEBHOOK_TLS_*` paths as `OsString` instead of UTF-8 text, so a filesystem path that
+  isn't valid UTF-8 just works rather than being discarded (#733).
 - Fix an unusable `RUST_LOG` being discarded in silence — a malformed filter directive (or a
   non-UTF-8 value) dropped the operator to its default `servarr_operator=info,kube=info` filter
   with nothing to say so. It now warns and names the parse error. The Helm chart always sets
@@ -27,8 +53,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Reject `WEBHOOK_PORT=0` instead of binding an OS-assigned random port while the Service keeps
   routing to the configured one — with `failurePolicy: Fail` on the validating webhook, that
   combination failed every `ServarrApp` write in the cluster, and the only clue was a startup
-  line reading `0.0.0.0:0`. It now falls back to 9443 with a warning, matching how an
-  unparseable value was already handled (#731).
+  line reading `0.0.0.0:0`. Both `0` and an unparseable value now stop the operator (#731, #732).
+- Fix an unreadable `DEFAULT_IMAGE_<APP>_TAG` or `DEFAULT_IMAGE_<APP>_REPO` producing an image
+  nobody asked for. `DEFAULT_IMAGE_SONARR_REPO=myrepo/sonarr` plus a `_TAG` the operator couldn't
+  read gave you `myrepo/sonarr:<whatever tag the operator ships>` — a pairing that may not exist
+  in the registry, or may exist and be the wrong build. An unreadable half now drops that app's
+  whole override, so the matching built-in default applies instead of a mix. An *unset* tag is
+  unchanged: the chart renders `value: ""` when you override only `repository`, and the built-in
+  tag filling that in is the point (#38, #734).
+- Fix the image-override startup line printing the raw override rather than the image that will
+  actually be pulled — an override setting only `repository` logged an empty tag, so you couldn't
+  tell from the logs which image you were getting. It now logs the merged result (#734).
 - Fix any app's default image silently sticking on a `helm upgrade --reuse-values` upgrade —
   generalizes the 1.3.1 Seerr-only stale-image detection into a `StaleDefaultImage` Warning Event
   that fires for every app whose env-supplied default image no longer matches the running

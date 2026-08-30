@@ -36,7 +36,7 @@ spec:
               protocol: TCP
             {{- if .Values.webhook.enabled }}
             - name: webhook
-              containerPort: 9443
+              containerPort: {{ .Values.webhook.port }}
               protocol: TCP
             {{- end }}
           env:
@@ -45,6 +45,8 @@ spec:
             {{- if .Values.webhook.enabled }}
             - name: WEBHOOK_ENABLED
               value: "true"
+            - name: WEBHOOK_PORT
+              value: {{ .Values.webhook.port | quote }}
             {{- end }}
             # Namespace scoping — these env vars are internal to the operator
             # and must stay in sync with the RBAC resources in this chart.
