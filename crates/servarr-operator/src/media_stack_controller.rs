@@ -1042,6 +1042,7 @@ mod tests {
             },
             watch_namespace: None,
             app_api_base_override: None,
+            event_publish_tasks: tokio_util::task::TaskTracker::new(),
         })
     }
 

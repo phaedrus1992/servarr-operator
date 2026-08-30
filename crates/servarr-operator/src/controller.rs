@@ -159,7 +159,7 @@ pub async fn run(client: kube::Client, server_state: crate::server::ServerState)
                 .collect::<Vec<_>>()
         })
         .shutdown_on_signal()
-        .run(reconcile, error_policy, ctx)
+        .run(reconcile, error_policy, ctx.clone())
         .for_each(|res| async move {
             match res {
                 Ok(o) => info!(?o, "reconciled"),
@@ -167,6 +167,13 @@ pub async fn run(client: kube::Client, server_state: crate::server::ServerState)
             }
         })
         .await;
+
+    // Drain any ReconcileError Event publishes `error_policy` spawned but that this stream's
+    // own completion doesn't wait for (#752) -- the Controller has no visibility into a task
+    // spawned outside its own reconcile loop, so without this a publish still in flight when
+    // the process exits is dropped before it is ever polled.
+    ctx.event_publish_tasks.close();
+    ctx.event_publish_tasks.wait().await;
 
     Ok(())
 }
@@ -2766,7 +2773,11 @@ pub fn error_policy(app: Arc<ServarrApp>, error: &Error, ctx: Arc<Context>) -> A
     // The Event note is tenant-visible (readable via `kubectl get events` in the app's
     // namespace), so it must go through the stricter public_summary(), not the plain Display.
     let event_msg = TenantSafeMessage::new(error.public_summary());
-    tokio::spawn(async move {
+    // Tracked, not a bare detached spawn (#752): a detached task can be dropped mid-flight if
+    // the runtime shuts down before it is polled, which would also skip the failure-metric
+    // increment that lives inside `publish_event`. `ctx.event_publish_tasks` is drained on
+    // shutdown in `run()` so this publish gets to finish first.
+    ctx.event_publish_tasks.spawn(async move {
         publish_event(
             &recorder,
             &obj_ref,
@@ -6745,6 +6756,50 @@ mod tests {
         app.metadata.resource_version = Some("1".into());
         app.metadata.generation = Some(1);
         app
+    }
+
+    fn make_test_context(client: Client) -> Context {
+        Context {
+            client,
+            image_overrides: std::collections::HashMap::new(),
+            legacy_image_override_apps: std::collections::HashSet::new(),
+            reporter: kube::runtime::events::Reporter {
+                controller: "servarr-operator-test".into(),
+                instance: None,
+            },
+            watch_namespace: None,
+            app_api_base_override: None,
+            event_publish_tasks: tokio_util::task::TaskTracker::new(),
+        }
+    }
+
+    // ---- error_policy (#752): the ReconcileError Event publish must be tracked so shutdown
+    // can drain it instead of risking a silent drop ----
+
+    #[tokio::test]
+    async fn error_policy_tracks_its_event_publish_task_for_shutdown_drain() {
+        let mock_server = MockServer::start().await;
+        let client = build_mock_client(&mock_server.uri()).await;
+        let ctx = Arc::new(make_test_context(client));
+        assert_eq!(ctx.event_publish_tasks.len(), 0);
+
+        let app = Arc::new(make_test_app("my-sonarr", "test", AppType::Sonarr));
+        let error = Error::CleanupPending;
+        let _action = error_policy(app, &error, ctx.clone());
+
+        // A bare detached `tokio::spawn` (the #752 bug) would leave the tracker empty here --
+        // the task would run outside it entirely, invisible to any shutdown drain. Checked
+        // before yielding to the runtime (no `.await` yet on this task), so the spawned task
+        // has not had a chance to run and be removed from the tracker yet.
+        assert_eq!(
+            ctx.event_publish_tasks.len(),
+            1,
+            "error_policy must register its Event publish with the tracker, not spawn it detached"
+        );
+
+        // Let the tracked task run to completion before the test ends.
+        ctx.event_publish_tasks.close();
+        ctx.event_publish_tasks.wait().await;
     }
 
     // ---- update_status tests ----
