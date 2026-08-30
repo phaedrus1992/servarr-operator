@@ -76,7 +76,7 @@ pub enum EnvError {
 
 impl EnvError {
     /// Builds an [`EnvError::Unusable`]. State in `reason` what the caller expected.
-    pub fn unusable(key: &str, reason: &'static str) -> Self {
+    pub(crate) fn unusable(key: &str, reason: &'static str) -> Self {
         Self::Unusable {
             key: key.to_string(),
             reason,
@@ -92,7 +92,7 @@ impl EnvError {
 ///
 /// The log lines name the variable and give the length of a bad value. They never contain the
 /// value itself, so this helper stays safe to use for a variable that carries a credential.
-pub fn var(key: &str) -> Option<String> {
+pub(crate) fn var(key: &str) -> Option<String> {
     match var_strict(key) {
         Ok(value) => value,
         Err(error) => {
@@ -113,7 +113,7 @@ pub fn var(key: &str) -> Option<String> {
 /// # Errors
 ///
 /// Returns [`EnvError::NotUnicode`] when `key` is set to a value that is not valid UTF-8.
-pub fn var_strict(key: &str) -> Result<Option<String>, EnvError> {
+pub(crate) fn var_strict(key: &str) -> Result<Option<String>, EnvError> {
     match std::env::var(key) {
         Ok(value) => Ok(Some(value)),
         Err(VarError::NotPresent) => {
@@ -174,7 +174,7 @@ pub fn var_bool_strict(key: &str, default: bool) -> Result<bool, EnvError> {
 /// # Errors
 ///
 /// Returns [`EnvError::Unusable`] when `key` is set to an empty value.
-pub fn var_path(key: &str) -> Result<Option<PathBuf>, EnvError> {
+pub(crate) fn var_path(key: &str) -> Result<Option<PathBuf>, EnvError> {
     match std::env::var_os(key) {
         None => {
             debug!(env_var = key, "env var is not set, using the default");
@@ -195,7 +195,7 @@ pub fn var_path(key: &str) -> Result<Option<PathBuf>, EnvError> {
 ///
 /// The log line gives the length of the value, not the value itself, for the reason given on
 /// [`var`]. Use [`var_bool_strict`] where the default is not a safe guess.
-pub fn var_bool(key: &str, default: bool) -> bool {
+pub(crate) fn var_bool(key: &str, default: bool) -> bool {
     match var_bool_strict(key, default) {
         Ok(value) => value,
         Err(error) => {
