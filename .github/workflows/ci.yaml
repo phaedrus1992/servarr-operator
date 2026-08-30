@@ -188,11 +188,11 @@ jobs:
   smoke-test:
     needs: [fmt, actionlint, zizmor, pre-commit-config-lint]
     runs-on: ubuntu-latest
-    # Covers: docker build (cargo-chef compiles inside the container, so this
-    # is an uncached from-scratch build) + kind cluster start + 14
-    # media-stack deployments becoming ready (up to 360s alone, per
-    # smoke-test.sh) + a credential check. 25m gives headroom without
-    # letting a hung run block the required-checks queue indefinitely.
+    # Covers: docker build (compiles inside the container; no persisted
+    # BuildKit cache in CI, so this is an uncached from-scratch build) + kind
+    # cluster start + 14 media-stack deployments becoming ready (up to 360s
+    # alone, per smoke-test.sh) + a credential check. 25m gives headroom
+    # without letting a hung run block the required-checks queue indefinitely.
     timeout-minutes: 25
     steps:
       - name: Checkout
