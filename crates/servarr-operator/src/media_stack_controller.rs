@@ -49,18 +49,21 @@ pub fn print_crd() -> Result<()> {
     Ok(())
 }
 
-pub async fn run(client: kube::Client, server_state: crate::server::ServerState) -> Result<()> {
-    let ctx = Arc::new(Context::new(client.clone())?);
-
+/// # Shutdown
+///
+/// The caller must call [`Context::drain_event_publish_tasks`] on this same `ctx` after this
+/// function returns, and must not reuse `ctx` afterward -- this function does not drain
+/// `ctx.event_publish_tasks` itself (#755).
+pub async fn run(server_state: crate::server::ServerState, ctx: Arc<Context>) -> Result<()> {
     let (stacks, apps) = if let Some(ref ns) = ctx.watch_namespace {
         (
-            Api::<MediaStack>::namespaced(client.clone(), ns),
-            Api::<ServarrApp>::namespaced(client.clone(), ns),
+            Api::<MediaStack>::namespaced(ctx.client.clone(), ns),
+            Api::<ServarrApp>::namespaced(ctx.client.clone(), ns),
         )
     } else {
         (
-            Api::<MediaStack>::all(client.clone()),
-            Api::<ServarrApp>::all(client.clone()),
+            Api::<MediaStack>::all(ctx.client.clone()),
+            Api::<ServarrApp>::all(ctx.client.clone()),
         )
     };
 

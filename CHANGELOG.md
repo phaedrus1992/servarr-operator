@@ -145,6 +145,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Fix backup-retention pruning silently skipping when listing existing backups failed, letting
   old backups accumulate past retention with nothing to say pruning didn't run. It now warns and
   counts under `servarr_operator_backup_operations_total{operation="prune",result="error"}` (#753).
+- Fix #752's shutdown drain only running when `controller::run` happened to win the race in
+  `main.rs`'s `tokio::select!` against the webhook server, the metrics server, and
+  `media_stack_controller::run`. On a normal `SIGTERM` both controllers wind down around the same
+  time, so whichever future resolved first cancelled the others mid-poll — including a drain still
+  waiting on an in-flight `ReconcileError` Event publish. The drain now runs once, process-wide,
+  after the `select!` resolves regardless of which branch won, bounded by a 5s timeout so a hung
+  publish can't block shutdown past `terminationGracePeriodSeconds`. A publish abandoned at that
+  timeout now also counts under `servarr_operator_event_publish_failures_total{reason="ShutdownTimeout"}`
+  instead of only logging (#755).
 
 ### Changed
 
