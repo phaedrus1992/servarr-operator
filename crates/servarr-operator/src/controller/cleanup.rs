@@ -566,18 +566,18 @@ async fn publish_cleanup_normal(
     reason: &str,
     note: String,
 ) {
-    let _ = recorder
-        .publish(
-            &Event {
-                type_: EventType::Normal,
-                reason: reason.into(),
-                note: Some(note),
-                action: "Finalize".into(),
-                secondary: None,
-            },
-            obj_ref,
-        )
-        .await;
+    super::publish_event(
+        recorder,
+        obj_ref,
+        Event {
+            type_: EventType::Normal,
+            reason: reason.into(),
+            note: Some(note),
+            action: "Finalize".into(),
+            secondary: None,
+        },
+    )
+    .await;
 }
 
 /// Publish the Warning event (reason `CleanupFailed`) for a failed finalizer cleanup, shared
@@ -589,27 +589,21 @@ async fn publish_cleanup_failed(
     obj_ref: &k8s_openapi::api::core::v1::ObjectReference,
     msg: &TenantSafeMessage,
 ) {
-    if let Err(e) = recorder
-        .publish(
-            &Event {
-                type_: EventType::Warning,
-                reason: "CleanupFailed".into(),
-                note: Some(msg.as_ref().to_string()),
-                action: "Finalize".into(),
-                secondary: None,
-            },
-            obj_ref,
-        )
-        .await
-    {
-        // A failure to publish means the tenant never learns cleanup failed; log it rather
-        // than swallowing it silently. The full error is operator-log-only (never tenant-facing).
-        warn!(
-            error = %e,
-            object = %obj_ref.name.as_deref().unwrap_or("<unknown>"),
-            "failed to publish CleanupFailed event"
-        );
-    }
+    // A failure to publish means the tenant never learns cleanup failed. publish_event warns
+    // and counts the failure metric, so the loss is visible in the operator log and in
+    // metrics rather than swallowed. (#708)
+    super::publish_event(
+        recorder,
+        obj_ref,
+        Event {
+            type_: EventType::Warning,
+            reason: "CleanupFailed".into(),
+            note: Some(msg.as_ref().to_string()),
+            action: "Finalize".into(),
+            secondary: None,
+        },
+    )
+    .await;
 }
 
 /// Remove one registered server (Sonarr or Radarr) matching `app_hostname:port` from Seerr.
@@ -734,4 +728,82 @@ pub(super) async fn cleanup_seerr_registration_body(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wiremock::MockServer;
+
+    fn make_recorder(client: &Client) -> Recorder {
+        Recorder::new(
+            client.clone(),
+            kube::runtime::events::Reporter {
+                controller: "servarr-operator".into(),
+                instance: None,
+            },
+        )
+    }
+
+    fn make_obj_ref() -> k8s_openapi::api::core::v1::ObjectReference {
+        k8s_openapi::api::core::v1::ObjectReference {
+            kind: Some("ServarrApp".into()),
+            name: Some("my-app".into()),
+            namespace: Some("test".into()),
+            uid: Some("app-uid-1".into()),
+            ..Default::default()
+        }
+    }
+
+    // ---- #708: both cleanup publish sites route through the shared publish_event helper,
+    // so an Events-API failure counts the same metric the controller.rs sites already count.
+
+    #[tokio::test]
+    async fn publish_cleanup_normal_increments_failure_metric_on_publish_failure() {
+        // No Mock is mounted for the events endpoint, so wiremock answers 404 and the
+        // publish fails.
+        let mock_server = MockServer::start().await;
+        let client = crate::testutils::build_mock_client(&mock_server.uri()).await;
+        let recorder = make_recorder(&client);
+
+        let before = crate::metrics::EVENT_PUBLISH_FAILURES_TOTAL
+            .with_label_values(&["CleanupNormalMetricTest"])
+            .get();
+
+        publish_cleanup_normal(
+            &recorder,
+            &make_obj_ref(),
+            "CleanupNormalMetricTest",
+            "test note".to_string(),
+        )
+        .await;
+
+        let after = crate::metrics::EVENT_PUBLISH_FAILURES_TOTAL
+            .with_label_values(&["CleanupNormalMetricTest"])
+            .get();
+        assert_eq!(after, before + 1);
+    }
+
+    #[tokio::test]
+    async fn publish_cleanup_failed_increments_failure_metric_on_publish_failure() {
+        let mock_server = MockServer::start().await;
+        let client = crate::testutils::build_mock_client(&mock_server.uri()).await;
+        let recorder = make_recorder(&client);
+
+        let before = crate::metrics::EVENT_PUBLISH_FAILURES_TOTAL
+            .with_label_values(&["CleanupFailed"])
+            .get();
+
+        publish_cleanup_failed(
+            &recorder,
+            &make_obj_ref(),
+            &TenantSafeMessage::new("cleanup went wrong"),
+        )
+        .await;
+
+        let after = crate::metrics::EVENT_PUBLISH_FAILURES_TOTAL
+            .with_label_values(&["CleanupFailed"])
+            .get();
+        assert_eq!(after, before + 1);
+    }
 }
