@@ -87,11 +87,12 @@ pub fn print_crd() -> Result<()> {
     Ok(())
 }
 
-pub async fn run(
-    client: kube::Client,
-    server_state: crate::server::ServerState,
-    ctx: Arc<Context>,
-) -> Result<()> {
+/// # Shutdown
+///
+/// The caller must call [`Context::drain_event_publish_tasks`] on this same `ctx` after this
+/// function returns, and must not reuse `ctx` afterward -- this function no longer self-drains
+/// (#755).
+pub async fn run(server_state: crate::server::ServerState, ctx: Arc<Context>) -> Result<()> {
     // Validate that every AppType has a complete entry in image-defaults.toml.
     // Fail fast at startup rather than panicking inside the reconcile hot path.
     servarr_crds::AppDefaults::validate_all()
@@ -100,19 +101,19 @@ pub async fn run(
     let (apps, deployments, services, config_maps, secrets) =
         if let Some(ref ns) = ctx.watch_namespace {
             (
-                Api::<ServarrApp>::namespaced(client.clone(), ns),
-                Api::<Deployment>::namespaced(client.clone(), ns),
-                Api::<Service>::namespaced(client.clone(), ns),
-                Api::<ConfigMap>::namespaced(client.clone(), ns),
-                Api::<Secret>::namespaced(client.clone(), ns),
+                Api::<ServarrApp>::namespaced(ctx.client.clone(), ns),
+                Api::<Deployment>::namespaced(ctx.client.clone(), ns),
+                Api::<Service>::namespaced(ctx.client.clone(), ns),
+                Api::<ConfigMap>::namespaced(ctx.client.clone(), ns),
+                Api::<Secret>::namespaced(ctx.client.clone(), ns),
             )
         } else {
             (
-                Api::<ServarrApp>::all(client.clone()),
-                Api::<Deployment>::all(client.clone()),
-                Api::<Service>::all(client.clone()),
-                Api::<ConfigMap>::all(client.clone()),
-                Api::<Secret>::all(client.clone()),
+                Api::<ServarrApp>::all(ctx.client.clone()),
+                Api::<Deployment>::all(ctx.client.clone()),
+                Api::<Service>::all(ctx.client.clone()),
+                Api::<ConfigMap>::all(ctx.client.clone()),
+                Api::<Secret>::all(ctx.client.clone()),
             )
         };
 
@@ -124,9 +125,9 @@ pub async fn run(
     // Background task: keep the store up-to-date by watching ServarrApps.
     // This runs independently of the Controller's own internal watcher.
     let apps_for_reflector = if let Some(ref ns) = ctx.watch_namespace {
-        Api::<ServarrApp>::namespaced(client.clone(), ns)
+        Api::<ServarrApp>::namespaced(ctx.client.clone(), ns)
     } else {
-        Api::<ServarrApp>::all(client.clone())
+        Api::<ServarrApp>::all(ctx.client.clone())
     };
     tokio::spawn(async move {
         reflector::reflector(

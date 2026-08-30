@@ -352,10 +352,13 @@ mod tests {
         let after = crate::metrics::EVENT_PUBLISH_FAILURES_TOTAL
             .with_label_values(&["ShutdownTimeout"])
             .get();
-        assert_eq!(
-            after,
-            before + 1,
-            "an abandoned publish must increment the same counter an in-band publish failure does"
+        // `>` rather than `==`: this label is the same hardcoded string
+        // drain_event_publish_tasks_gives_up_after_timeout also triggers, and both tests may
+        // run concurrently against the one process-wide counter.
+        assert!(
+            after > before,
+            "an abandoned publish must increment the same counter an in-band publish failure \
+             does: before={before}, after={after}"
         );
     }
 

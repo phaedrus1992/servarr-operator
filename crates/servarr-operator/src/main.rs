@@ -143,10 +143,10 @@ async fn main() -> Result<()> {
             error!("metrics server exited: {res:?}");
             res
         }
-        res = controller::run(client.clone(), state, controller_ctx) => {
+        res = controller::run(state, controller_ctx) => {
             res
         }
-        res = media_stack_controller::run(client, state2, media_stack_ctx) => {
+        res = media_stack_controller::run(state2, media_stack_ctx) => {
             res
         }
     };
