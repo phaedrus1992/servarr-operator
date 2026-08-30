@@ -87,12 +87,28 @@ pub mod condition_types {
 
 impl Condition {
     /// Create a True condition.
-    pub fn ok(condition_type: &str, reason: &str, message: &str, now: &str) -> Self {
+    ///
+    /// `message` must be a [`TenantSafeMessage`] (or convert into one), the same as
+    /// [`Condition::fail`] (#709). A success message is tenant-visible too, so it carries the
+    /// same compiler-enforced guarantee: a raw `&str` cannot satisfy
+    /// `impl Into<TenantSafeMessage>`.
+    ///
+    /// ```compile_fail
+    /// use servarr_crds::Condition;
+    /// // A raw &str must not silently satisfy `impl Into<TenantSafeMessage>`:
+    /// let _ = Condition::ok("Ready", "Succeeded", "raw untrusted string", "now");
+    /// ```
+    pub fn ok(
+        condition_type: &str,
+        reason: &str,
+        message: impl Into<TenantSafeMessage>,
+        now: &str,
+    ) -> Self {
         Self {
             condition_type: condition_type.to_string(),
             status: "True".to_string(),
             reason: reason.to_string(),
-            message: message.to_string(),
+            message: message.into().to_string(),
             last_transition_time: now.to_string(),
         }
     }
@@ -128,6 +144,19 @@ impl Condition {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ok_accepts_a_tenant_safe_message_and_preserves_its_text() {
+        let condition = Condition::ok(
+            "Ready",
+            "SyncSucceeded",
+            TenantSafeMessage::new("curated success text"),
+            "2026-01-01T00:00:00Z",
+        );
+        assert_eq!(condition.message, "curated success text");
+        assert_eq!(condition.status, "True");
+        assert_eq!(condition.reason, "SyncSucceeded");
+    }
 
     #[test]
     fn fail_accepts_a_tenant_safe_message_and_preserves_its_text() {

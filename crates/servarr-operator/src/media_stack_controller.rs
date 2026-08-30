@@ -386,13 +386,18 @@ pub async fn reconcile(stack: Arc<MediaStack>, ctx: Arc<Context>) -> Result<Acti
         tier_blocked_since,
     };
 
-    status.set_condition(Condition::ok("Valid", "Valid", "Spec is valid", &now));
+    status.set_condition(Condition::ok(
+        "Valid",
+        "Valid",
+        TenantSafeMessage::new("Spec is valid"),
+        &now,
+    ));
 
     if stuck_orphans.is_empty() {
         status.set_condition(Condition::ok(
             "OrphanCleanupHealthy",
             "NoStuckOrphans",
-            "no orphaned children awaiting PVC detach",
+            TenantSafeMessage::new("no orphaned children awaiting PVC detach"),
             &now,
         ));
     } else {
@@ -443,7 +448,7 @@ pub async fn reconcile(stack: Arc<MediaStack>, ctx: Arc<Context>) -> Result<Acti
             status.set_condition(Condition::ok(
                 "Ready",
                 "AllAppsReady",
-                &format!("{ready_count}/{total_apps} apps ready"),
+                TenantSafeMessage::new(format!("{ready_count}/{total_apps} apps ready")),
                 &now,
             ));
         }

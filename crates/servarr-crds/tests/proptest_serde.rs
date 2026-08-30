@@ -1,4 +1,5 @@
 use proptest::prelude::*;
+use servarr_api::TenantSafeMessage;
 use servarr_crds::*;
 
 // Bounded ISO 8601 timestamp components keep generated values semantically
@@ -23,7 +24,12 @@ fn arb_condition() -> impl Strategy<Value = Condition> {
         arb_timestamp(),
     )
         .prop_map(|(cond_type, reason, message, timestamp)| {
-            Condition::ok(&cond_type, &reason, &message, &timestamp)
+            Condition::ok(
+                &cond_type,
+                &reason,
+                TenantSafeMessage::new(message),
+                &timestamp,
+            )
         })
 }
 
@@ -127,7 +133,12 @@ proptest! {
 
     #[test]
     fn prop_condition_handles_unicode(unicode_str in r"(\PC|\p{L}|\p{N}|\s){0,100}") {
-        let cond = Condition::ok("Test", "Reason", &unicode_str, "2025-01-01T00:00:00Z");
+        let cond = Condition::ok(
+            "Test",
+            "Reason",
+            TenantSafeMessage::new(unicode_str.clone()),
+            "2025-01-01T00:00:00Z",
+        );
         let json = serde_json::to_string(&cond).expect("serialization failed");
         let deserialized: Condition = serde_json::from_str(&json).expect("deserialization failed");
 

@@ -368,7 +368,7 @@ pub async fn reconcile(app: Arc<ServarrApp>, ctx: Arc<Context>) -> Result<Action
             ConditionSpec {
                 condition_type: condition_types::RESTORE_READY,
                 ok_reason: "RestoreComplete",
-                ok_message: &format!("Restored from backup {restore_id}"),
+                ok_message: TenantSafeMessage::new(format!("Restored from backup {restore_id}")),
                 fail_reason: "RestoreFailed",
                 fail_log: "restore-from-backup failed",
             },
@@ -858,7 +858,9 @@ pub async fn reconcile(app: Arc<ServarrApp>, ctx: Arc<Context>) -> Result<Action
             ConditionSpec {
                 condition_type: condition_types::PROWLARR_SYNC_READY,
                 ok_reason: "SyncComplete",
-                ok_message: "Sonarr, Radarr, and Lidarr synced from Prowlarr",
+                ok_message: TenantSafeMessage::new(
+                    "Sonarr, Radarr, and Lidarr synced from Prowlarr",
+                ),
                 fail_reason: "SyncFailed",
                 fail_log: "Prowlarr sync failed",
             },
@@ -890,7 +892,7 @@ pub async fn reconcile(app: Arc<ServarrApp>, ctx: Arc<Context>) -> Result<Action
             ConditionSpec {
                 condition_type: condition_types::SEERR_SYNC_READY,
                 ok_reason: "SyncComplete",
-                ok_message: "Sonarr and Radarr servers synced into Seerr",
+                ok_message: TenantSafeMessage::new("Sonarr and Radarr servers synced into Seerr"),
                 fail_reason: "SyncFailed",
                 fail_log: "Seerr sync failed",
             },
@@ -920,7 +922,7 @@ pub async fn reconcile(app: Arc<ServarrApp>, ctx: Arc<Context>) -> Result<Action
             ConditionSpec {
                 condition_type: condition_types::BAZARR_SYNC_READY,
                 ok_reason: "SyncComplete",
-                ok_message: "Sonarr and Radarr configured in Bazarr",
+                ok_message: TenantSafeMessage::new("Sonarr and Radarr configured in Bazarr"),
                 fail_reason: "SyncFailed",
                 fail_log: "Bazarr sync failed",
             },
@@ -950,7 +952,9 @@ pub async fn reconcile(app: Arc<ServarrApp>, ctx: Arc<Context>) -> Result<Action
             ConditionSpec {
                 condition_type: condition_types::SUBGEN_SYNC_READY,
                 ok_reason: "SyncComplete",
-                ok_message: "Jellyfin env vars injected into Subgen Deployment",
+                ok_message: TenantSafeMessage::new(
+                    "Jellyfin env vars injected into Subgen Deployment",
+                ),
                 fail_reason: "SyncFailed",
                 fail_log: "Subgen Jellyfin sync failed",
             },
@@ -980,7 +984,9 @@ pub async fn reconcile(app: Arc<ServarrApp>, ctx: Arc<Context>) -> Result<Action
             ConditionSpec {
                 condition_type: condition_types::MAINTAINERR_SYNC_READY,
                 ok_reason: "SyncComplete",
-                ok_message: "Sonarr, Radarr, Seerr, Tautulli, and Plex synced into Maintainerr",
+                ok_message: TenantSafeMessage::new(
+                    "Sonarr, Radarr, Seerr, Tautulli, and Plex synced into Maintainerr",
+                ),
                 fail_reason: "SyncFailed",
                 fail_log: "Maintainerr sync failed",
             },
@@ -1469,7 +1475,7 @@ pub(crate) async fn sync_admin_credentials(
         Ok(()) => Condition::ok(
             condition_types::ADMIN_CREDENTIALS_CONFIGURED,
             "Configured",
-            "Admin credentials applied successfully",
+            TenantSafeMessage::new("Admin credentials applied successfully"),
             &now,
         ),
         Err(ref msg) => {
@@ -1886,7 +1892,7 @@ async fn check_api_health(
         Ok(true) => Condition::ok(
             condition_types::APP_HEALTHY,
             "Healthy",
-            "API responded healthy",
+            TenantSafeMessage::new("API responded healthy"),
             &now,
         ),
         Ok(false) => Condition::fail(
@@ -1960,7 +1966,7 @@ async fn check_update_available(
         Some(update) => Condition::ok(
             condition_types::UPDATE_AVAILABLE,
             "UpdateAvailable",
-            &format!("Version {} is available", update.version),
+            TenantSafeMessage::new(format!("Version {} is available", update.version)),
             now,
         ),
         None => Condition::fail(
@@ -2179,7 +2185,7 @@ async fn check_download_client_health(
         return Some(Condition::ok(
             condition_types::DOWNLOAD_DATA_HEALTHY,
             "NoStaleData",
-            "No torrents reporting missing data",
+            TenantSafeMessage::new("No torrents reporting missing data"),
             &now,
         ));
     }
@@ -2395,7 +2401,7 @@ fn build_download_health_condition(
         return Condition::ok(
             condition_types::DOWNLOAD_DATA_HEALTHY,
             "DataRecovered",
-            &format!("{stale_count} torrent(s) recovered after verify"),
+            TenantSafeMessage::new(format!("{stale_count} torrent(s) recovered after verify")),
             now,
         );
     }
@@ -2440,7 +2446,10 @@ struct StatusConditions {
 struct ConditionSpec<'a> {
     condition_type: &'a str,
     ok_reason: &'a str,
-    ok_message: &'a str,
+    /// Owned [`TenantSafeMessage`], not a `&str`, so each construction site must make its own
+    /// explicit sanitizer call (#709). A `&str` field would turn [`result_to_condition`] into a
+    /// single unreviewable escape hatch for every caller.
+    ok_message: TenantSafeMessage,
     fail_reason: &'a str,
     fail_log: &'a str,
 }
@@ -2520,7 +2529,7 @@ async fn update_status(
         status.set_condition(Condition::ok(
             condition_types::DEPLOYMENT_READY,
             "ReplicasAvailable",
-            &format!("{ready_replicas} replica(s) ready"),
+            TenantSafeMessage::new(format!("{ready_replicas} replica(s) ready")),
             &now,
         ));
     } else {
@@ -2536,7 +2545,7 @@ async fn update_status(
     status.set_condition(Condition::ok(
         condition_types::SERVICE_READY,
         "Applied",
-        "Service applied",
+        TenantSafeMessage::new("Service applied"),
         &now,
     ));
 
@@ -2553,7 +2562,7 @@ async fn update_status(
         Condition::ok(
             condition_types::READY,
             "DeploymentReady",
-            &format!("{ready_replicas} replica(s) ready"),
+            TenantSafeMessage::new(format!("{ready_replicas} replica(s) ready")),
             &now,
         )
     } else {
@@ -2570,7 +2579,7 @@ async fn update_status(
         status.set_condition(Condition::ok(
             condition_types::DEGRADED,
             "DeploymentNotReady",
-            &format!("{ready_replicas} replica(s) ready"),
+            TenantSafeMessage::new(format!("{ready_replicas} replica(s) ready")),
             &now,
         ));
     } else {
@@ -4415,7 +4424,7 @@ mod tests {
         let spec = ConditionSpec {
             condition_type: "Restore",
             ok_reason: "Succeeded",
-            ok_message: "restore succeeded",
+            ok_message: TenantSafeMessage::new("restore succeeded"),
             fail_reason: "Failed",
             fail_log: "restore failed",
         };
@@ -9144,7 +9153,7 @@ mod tests {
         let spec = ConditionSpec {
             condition_type: "AppHealthy",
             ok_reason: "AllGood",
-            ok_message: "everything is fine",
+            ok_message: TenantSafeMessage::new("everything is fine"),
             fail_reason: "SomethingBroke",
             fail_log: "reconcile failed",
         };
