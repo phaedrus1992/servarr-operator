@@ -116,6 +116,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Fix the operator logging that it failed to publish an event without saying which app it was for.
   None of these log lines carried the object name, so on a cluster-wide operator the line named a
   reason and nothing else (#744).
+- Fix an `events.k8s.io` hiccup failing a reconcile that had already succeeded. The terminal
+  `ReconcileSuccess` event was the one event this operator published without going through the
+  shared helper, and a failed publish returned an error — so an otherwise-complete reconcile took
+  the error-backoff requeue path and repeated real work for the sake of one informational write.
+  Three signals disagreed about the same reconcile, too: the success counter had already recorded
+  a success, the reconcile reported a failure, and the publish-failure metric stayed at zero
+  because that site never incremented it. The publish is now advisory like every other event —
+  it warns, names the app, and counts the failure under
+  `servarr_operator_event_publish_failures_total{reason="ReconcileSuccess"}`. If you alert on
+  reconcile errors, Events-API blips will stop showing up there; watch that metric instead (#746).
+- Fix a long event note costing you the whole event. `events.k8s.io/v1` rejects a note over 1024
+  bytes, so the publish failed outright rather than delivering a shortened message. Individual
+  call sites capped their own input, which left every new site to remember the limit on its own.
+  The cap now lives in the one function every note passes through, and it cuts on a character
+  boundary so a multibyte character can't be split (#747).
 
 ### Changed
 
@@ -150,6 +165,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   also run at CRD admission time via the validating webhook, instead of only at reconcile — a
   colliding spec is rejected at `kubectl apply` time instead of only failing on the next
   reconcile (#486).
+- Kubernetes Event notes now require the same sanitized message type status Conditions already
+  did, closing the gap #668 closed for Conditions. Event notes are tenant-visible through
+  `kubectl get events` and took a plain string, so nothing stopped a future code change from
+  interpolating a raw API-server error or an upstream response body into one. No existing event
+  note changes as a result (#747).
 
 ## [1.3.1] - 2026-08-27
 

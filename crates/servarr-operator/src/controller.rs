@@ -170,15 +170,62 @@ pub async fn run(client: kube::Client, server_state: crate::server::ServerState)
     Ok(())
 }
 
+/// The tenant-visible content of one Kubernetes Event.
+///
+/// `note` is a [`TenantSafeMessage`], not a `String`. A raw error `Display` or an API response
+/// body therefore cannot become the note of a published Event. This is the same guard that
+/// [`Condition::ok`] applies to status Conditions. Events are the other tenant-visible surface
+/// this operator writes, so both surfaces now use one message type. (#747)
+///
+/// [`publish_event`] builds the `kube` [`Event`] from this struct. No call site builds that
+/// struct itself, so no call site can pass a raw `String` note.
+///
+/// `reason` and `action` are `&'static str`. Both are stable operator-authored identifiers.
+/// `reason` is also a metric label, so a runtime value would be unbounded cardinality.
+struct TenantEvent {
+    type_: EventType,
+    reason: &'static str,
+    note: TenantSafeMessage,
+    action: &'static str,
+}
+
+/// The largest `note` the `events.k8s.io/v1` API accepts, in bytes.
+///
+/// The API server measures this field in bytes, not characters. Several notes here contain an
+/// em dash, which is 3 bytes, so a character count would let an oversized note through.
+const MAX_EVENT_NOTE_BYTES: usize = 1024;
+
+/// Cut `note` to the length the Events API accepts.
+///
+/// An oversized note makes the API server reject the publish, so the tenant loses the whole
+/// event rather than the tail of one message. Some call sites cap their own input, but a cap
+/// repeated at each call site drifts as sites are added. Every note passes through
+/// [`publish_event`], so the guard belongs here instead. (#747)
+///
+/// The cut lands on a character boundary. A byte-count cut through a multi-byte character
+/// would panic.
+fn clamp_event_note(note: &str) -> String {
+    const ELLIPSIS: &str = "...";
+    if note.len() <= MAX_EVENT_NOTE_BYTES {
+        return note.to_string();
+    }
+    let mut end = MAX_EVENT_NOTE_BYTES - ELLIPSIS.len();
+    while end > 0 && !note.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}{ELLIPSIS}", &note[..end])
+}
+
 /// Publish `event` and warn (never panic or silently drop) if the publish itself fails --
 /// RBAC restriction, API server unavailable, namespace being torn down. The underlying
 /// reconcile/operation error is expected to already be logged by the caller; this only
 /// covers the Event mechanism itself going dark, and counts the failure so persistent
 /// `events.k8s.io` breakage is visible in metrics, not just scattered log lines. (#646)
 ///
-/// This is the single publish path for every advisory Event in this file -- only the
-/// terminal `ReconcileSuccess` event stays load-bearing (`.map_err(...)?`), since failing
-/// it fails the whole reconcile by design.
+/// This is the single publish path for every Event in this file. Every Event is advisory. A
+/// failed publish never fails the reconcile, because no Event this operator writes carries
+/// state that the reconcile itself depends on. The warn line and the failure metric are how a
+/// lost Event stays visible. (#746)
 ///
 /// The warning names the object. No reconcile function here carries a `#[instrument]` span, so
 /// without that field the log line does not say which app lost its Event. The metric stays
@@ -187,16 +234,29 @@ pub async fn run(client: kube::Client, server_state: crate::server::ServerState)
 async fn publish_event(
     recorder: &Recorder,
     obj_ref: &k8s_openapi::api::core::v1::ObjectReference,
-    event: Event,
+    event: TenantEvent,
 ) {
-    if let Err(e) = recorder.publish(&event, obj_ref).await {
+    let TenantEvent {
+        type_,
+        reason,
+        note,
+        action,
+    } = event;
+    let kube_event = Event {
+        type_,
+        reason: reason.to_string(),
+        note: Some(clamp_event_note(note.as_ref())),
+        action: action.to_string(),
+        secondary: None,
+    };
+    if let Err(e) = recorder.publish(&kube_event, obj_ref).await {
         warn!(
             error = %kube_err_summary(&e),
-            reason = %event.reason,
+            reason = %reason,
             object = %obj_ref.name.as_deref().unwrap_or("<unknown>"),
             "failed to publish event"
         );
-        increment_event_publish_failure(&event.reason);
+        increment_event_publish_failure(reason);
     }
 }
 
@@ -211,19 +271,48 @@ async fn publish_deprecated_image_override(
     publish_event(
         recorder,
         obj_ref,
-        Event {
+        TenantEvent {
             type_: EventType::Warning,
-            reason: "DeprecatedImageOverride".into(),
-            note: Some(format!(
+            reason: "DeprecatedImageOverride",
+            note: TenantSafeMessage::new(format!(
                 "image resolved via deprecated DEFAULT_IMAGE_OVERSEERR_* env var \
                  fallback — rename defaultImages.overseerr to defaultImages.{app_type} \
                  in your Helm values"
             )),
-            action: "BuildDeployment".into(),
-            secondary: None,
+            action: "BuildDeployment",
         },
     )
     .await
+}
+
+/// Publish the terminal `ReconcileSuccess` Event at the end of a successful reconcile.
+///
+/// Advisory, like every other Event this operator writes. A failed publish does not fail the
+/// reconcile. Every resource is already reconciled when this runs, and
+/// `increment_reconcile_total(.., "success")` already recorded the success. To return an error
+/// here would make three signals disagree about one reconcile: the success counter would say
+/// success, the reconcile result would say failure, and the publish-failure metric would stay
+/// at zero. It would also send an otherwise-complete reconcile down the error-backoff requeue
+/// path, which repeats real work because one informational write failed.
+///
+/// The loss is not silent. `publish_event` warns with the object name and increments
+/// `servarr_operator_event_publish_failures_total` under the `ReconcileSuccess` label. (#746)
+async fn publish_reconcile_success(
+    recorder: &Recorder,
+    obj_ref: &k8s_openapi::api::core::v1::ObjectReference,
+    duration: f64,
+) {
+    publish_event(
+        recorder,
+        obj_ref,
+        TenantEvent {
+            type_: EventType::Normal,
+            reason: "ReconcileSuccess",
+            note: TenantSafeMessage::new(format!("All resources reconciled in {duration:.2}s")),
+            action: "Reconcile",
+        },
+    )
+    .await;
 }
 
 pub async fn reconcile(app: Arc<ServarrApp>, ctx: Arc<Context>) -> Result<Action, Error> {
@@ -445,10 +534,10 @@ pub async fn reconcile(app: Arc<ServarrApp>, ctx: Arc<Context>) -> Result<Action
             publish_event(
                 &recorder,
                 &obj_ref,
-                Event {
+                TenantEvent {
                     type_: EventType::Warning,
-                    reason: "StaleDefaultImage".into(),
-                    note: Some(format!(
+                    reason: "StaleDefaultImage",
+                    note: TenantSafeMessage::new(format!(
                         "image resolved via defaultImages.{app_type} Helm value \
                          ({effective_repo}:{effective_tag}) which differs from this \
                          operator version's built-in default ({builtin_repo}:{builtin_tag}) \
@@ -460,8 +549,7 @@ pub async fn reconcile(app: Arc<ServarrApp>, ctx: Arc<Context>) -> Result<Action
                         builtin_repo = builtin.image.repository,
                         builtin_tag = builtin.image.tag,
                     )),
-                    action: "BuildDeployment".into(),
-                    secondary: None,
+                    action: "BuildDeployment",
                 },
             )
             .await;
@@ -479,16 +567,14 @@ pub async fn reconcile(app: Arc<ServarrApp>, ctx: Arc<Context>) -> Result<Action
         publish_event(
             &recorder,
             &obj_ref,
-            Event {
+            TenantEvent {
                 type_: EventType::Warning,
-                reason: "DeprecatedTransmissionAuth".into(),
-                note: Some(
+                reason: "DeprecatedTransmissionAuth",
+                note: TenantSafeMessage::new(
                     "appConfig.transmission.auth is deprecated since v1.3 and ignored while \
-                     spec.adminCredentials is set — remove appConfig.transmission.auth"
-                        .into(),
+                     spec.adminCredentials is set — remove appConfig.transmission.auth",
                 ),
-                action: "BuildDeployment".into(),
-                secondary: None,
+                action: "BuildDeployment",
             },
         )
         .await;
@@ -581,12 +667,13 @@ pub async fn reconcile(app: Arc<ServarrApp>, ctx: Arc<Context>) -> Result<Action
             publish_event(
                 &recorder,
                 &obj_ref,
-                Event {
+                TenantEvent {
                     type_: EventType::Warning,
-                    reason: "DriftDetected".into(),
-                    note: Some("Deployment pod template differs from desired state".into()),
-                    action: "DriftCheck".into(),
-                    secondary: None,
+                    reason: "DriftDetected",
+                    note: TenantSafeMessage::new(
+                        "Deployment pod template differs from desired state",
+                    ),
+                    action: "DriftCheck",
                 },
             )
             .await;
@@ -1060,19 +1147,7 @@ pub async fn reconcile(app: Arc<ServarrApp>, ctx: Arc<Context>) -> Result<Action
         }
     }
 
-    recorder
-        .publish(
-            &Event {
-                type_: EventType::Normal,
-                reason: "ReconcileSuccess".into(),
-                note: Some(format!("All resources reconciled in {duration:.2}s")),
-                action: "Reconcile".into(),
-                secondary: None,
-            },
-            &obj_ref,
-        )
-        .await
-        .map_err(Error::Kube)?;
+    publish_reconcile_success(&recorder, &obj_ref, duration).await;
 
     // Use a short requeue interval when admin credential sync is still pending so
     // the operator retries quickly once the app finishes starting up.
@@ -2380,12 +2455,11 @@ async fn report_stale_torrents(
     publish_event(
         recorder,
         obj_ref,
-        Event {
+        TenantEvent {
             type_: EventType::Warning,
-            reason: "DownloadDataMissing".into(),
-            note: Some(note),
-            action: "DownloadClientHealthCheck".into(),
-            secondary: None,
+            reason: "DownloadDataMissing",
+            note: TenantSafeMessage::new(note),
+            action: "DownloadClientHealthCheck",
         },
     )
     .await;
@@ -2671,17 +2745,16 @@ pub fn error_policy(app: Arc<ServarrApp>, error: &Error, ctx: Arc<Context>) -> A
     let obj_ref = app.object_ref(&());
     // The Event note is tenant-visible (readable via `kubectl get events` in the app's
     // namespace), so it must go through the stricter public_summary(), not the plain Display.
-    let event_msg = error.public_summary();
+    let event_msg = TenantSafeMessage::new(error.public_summary());
     tokio::spawn(async move {
         publish_event(
             &recorder,
             &obj_ref,
-            Event {
+            TenantEvent {
                 type_: EventType::Warning,
-                reason: "ReconcileError".into(),
-                note: Some(event_msg),
-                action: "Reconcile".into(),
-                secondary: None,
+                reason: "ReconcileError",
+                note: event_msg,
+                action: "Reconcile",
             },
         )
         .await;
@@ -2756,14 +2829,13 @@ async fn maybe_run_backup(
             publish_event(
                 recorder,
                 obj_ref,
-                Event {
+                TenantEvent {
                     type_: EventType::Warning,
-                    reason: "InvalidBackupSchedule".into(),
-                    note: Some(format!(
+                    reason: "InvalidBackupSchedule",
+                    note: TenantSafeMessage::new(format!(
                         "Invalid backup schedule '{schedule_display}': not a valid cron expression"
                     )),
-                    action: "Backup".into(),
-                    secondary: None,
+                    action: "Backup",
                 },
             )
             .await;
@@ -2839,14 +2911,13 @@ async fn maybe_run_backup(
         publish_event(
             recorder,
             obj_ref,
-            Event {
+            TenantEvent {
                 type_: EventType::Warning,
-                reason: "CorruptedBackupTime".into(),
-                note: Some(
-                    "Failed to parse last_backup_time; backup triggered due to unparseable timestamp".into(),
+                reason: "CorruptedBackupTime",
+                note: TenantSafeMessage::new(
+                    "Failed to parse last_backup_time; backup triggered due to unparseable timestamp",
                 ),
-                action: "Backup".into(),
-                secondary: None,
+                action: "Backup",
             },
         )
         .await;
@@ -2855,12 +2926,11 @@ async fn maybe_run_backup(
     publish_event(
         recorder,
         obj_ref,
-        Event {
+        TenantEvent {
             type_: EventType::Normal,
-            reason: "BackupStarted".into(),
-            note: Some("Scheduled backup started".into()),
-            action: "Backup".into(),
-            secondary: None,
+            reason: "BackupStarted",
+            note: TenantSafeMessage::new("Scheduled backup started"),
+            action: "Backup",
         },
     )
     .await;
@@ -2873,12 +2943,14 @@ async fn maybe_run_backup(
             publish_event(
                 recorder,
                 obj_ref,
-                Event {
+                TenantEvent {
                     type_: EventType::Normal,
-                    reason: "BackupCompleted".into(),
-                    note: Some(format!("Backup {} created successfully", backup.id)),
-                    action: "Backup".into(),
-                    secondary: None,
+                    reason: "BackupCompleted",
+                    note: TenantSafeMessage::new(format!(
+                        "Backup {} created successfully",
+                        backup.id
+                    )),
+                    action: "Backup",
                 },
             )
             .await;
@@ -2917,12 +2989,11 @@ async fn maybe_run_backup(
             publish_event(
                 recorder,
                 obj_ref,
-                Event {
+                TenantEvent {
                     type_: EventType::Warning,
-                    reason: "BackupFailed".into(),
-                    note: Some(format!("Backup failed: {summary}")),
-                    action: "Backup".into(),
-                    secondary: None,
+                    reason: "BackupFailed",
+                    note: TenantSafeMessage::new(format!("Backup failed: {summary}")),
+                    action: "Backup",
                 },
             )
             .await;
@@ -2982,12 +3053,13 @@ async fn maybe_restore_backup(
     publish_event(
         recorder,
         obj_ref,
-        Event {
+        TenantEvent {
             type_: EventType::Normal,
-            reason: "RestoreStarted".into(),
-            note: Some(format!("Scaling down for restore from backup {backup_id}")),
-            action: "Restore".into(),
-            secondary: None,
+            reason: "RestoreStarted",
+            note: TenantSafeMessage::new(format!(
+                "Scaling down for restore from backup {backup_id}"
+            )),
+            action: "Restore",
         },
     )
     .await;
@@ -3144,12 +3216,13 @@ async fn try_restore(
             publish_event(
                 recorder,
                 obj_ref,
-                Event {
+                TenantEvent {
                     type_: EventType::Normal,
-                    reason: "RestoreComplete".into(),
-                    note: Some(format!("Successfully restored from backup {backup_id}")),
-                    action: "Restore".into(),
-                    secondary: None,
+                    reason: "RestoreComplete",
+                    note: TenantSafeMessage::new(format!(
+                        "Successfully restored from backup {backup_id}"
+                    )),
+                    action: "Restore",
                 },
             )
             .await;
@@ -3162,14 +3235,13 @@ async fn try_restore(
             publish_event(
                 recorder,
                 obj_ref,
-                Event {
+                TenantEvent {
                     type_: EventType::Warning,
-                    reason: "RestoreFailed".into(),
-                    note: Some(format!(
+                    reason: "RestoreFailed",
+                    note: TenantSafeMessage::new(format!(
                         "Failed to restore from backup {backup_id}: {summary}"
                     )),
-                    action: "Restore".into(),
-                    secondary: None,
+                    action: "Restore",
                 },
             )
             .await;
@@ -3430,12 +3502,11 @@ async fn sync_prowlarr_apps(
     publish_event(
         recorder,
         obj_ref,
-        Event {
+        TenantEvent {
             type_: EventType::Normal,
-            reason: "ProwlarrSyncComplete".into(),
-            note: Some(format!("Synced {} apps to Prowlarr", discovered.len())),
-            action: "ProwlarrSync".into(),
-            secondary: None,
+            reason: "ProwlarrSyncComplete",
+            note: TenantSafeMessage::new(format!("Synced {} apps to Prowlarr", discovered.len())),
+            action: "ProwlarrSync",
         },
     )
     .await;
@@ -3700,14 +3771,13 @@ async fn sync_seerr_servers(
     publish_event(
         recorder,
         obj_ref,
-        Event {
+        TenantEvent {
             type_: EventType::Normal,
-            reason: "SeerrSyncComplete".into(),
-            note: Some(format!(
+            reason: "SeerrSyncComplete",
+            note: TenantSafeMessage::new(format!(
                 "Synced {sonarr_count} Sonarr + {radarr_count} Radarr servers to Seerr"
             )),
-            action: "SeerrSync".into(),
-            secondary: None,
+            action: "SeerrSync",
         },
     )
     .await;
@@ -6462,12 +6532,11 @@ mod tests {
         publish_event(
             &recorder,
             &obj_ref,
-            Event {
+            TenantEvent {
                 type_: EventType::Warning,
-                reason: "Test".into(),
-                note: Some("test note".into()),
-                action: "Test".into(),
-                secondary: None,
+                reason: "Test",
+                note: TenantSafeMessage::new("test note"),
+                action: "Test",
             },
         )
         .await;
@@ -6493,12 +6562,11 @@ mod tests {
         publish_event(
             &recorder,
             &obj_ref,
-            Event {
+            TenantEvent {
                 type_: EventType::Warning,
-                reason: "MetricTestReason".into(),
-                note: Some("test note".into()),
-                action: "Test".into(),
-                secondary: None,
+                reason: "MetricTestReason",
+                note: TenantSafeMessage::new("test note"),
+                action: "Test",
             },
         )
         .await;
@@ -6507,6 +6575,112 @@ mod tests {
             .with_label_values(&["MetricTestReason"])
             .get();
         assert_eq!(after, before + 1);
+    }
+
+    // The terminal ReconcileSuccess Event is advisory (#746). Two guarantees, asserted in one
+    // test because both need the shared `ReconcileSuccess` counter label -- a second test on
+    // the same label would race this one and make the +1 delta unprovable.
+    //
+    // 1. A failed publish does not fail the reconcile. `publish_reconcile_success` returns
+    //    `()`, so it cannot propagate an error to the caller, and the call must not panic.
+    // 2. The failure is still counted, which is what makes guarantee 1 safe and not silent.
+    //
+    // No Mock is mounted for the events endpoint, so wiremock answers 404 and the publish
+    // fails.
+    #[tokio::test]
+    async fn publish_reconcile_success_is_advisory_but_counts_the_failure() {
+        let mock_server = MockServer::start().await;
+        let client = crate::testutils::build_mock_client(&mock_server.uri()).await;
+        let recorder = make_recorder(&client);
+        let obj_ref = k8s_openapi::api::core::v1::ObjectReference {
+            kind: Some("ServarrApp".into()),
+            name: Some("my-app".into()),
+            namespace: Some("test".into()),
+            uid: Some("app-uid-1".into()),
+            ..Default::default()
+        };
+
+        let before = crate::metrics::EVENT_PUBLISH_FAILURES_TOTAL
+            .with_label_values(&["ReconcileSuccess"])
+            .get();
+
+        publish_reconcile_success(&recorder, &obj_ref, 1.5).await;
+
+        let after = crate::metrics::EVENT_PUBLISH_FAILURES_TOTAL
+            .with_label_values(&["ReconcileSuccess"])
+            .get();
+        assert_eq!(
+            after,
+            before + 1,
+            "a failed ReconcileSuccess publish must be counted, not swallowed"
+        );
+    }
+
+    #[test]
+    fn clamp_event_note_keeps_a_note_within_the_limit_unchanged() {
+        let note = "All resources reconciled in 1.50s";
+        assert_eq!(clamp_event_note(note), note);
+    }
+
+    #[test]
+    fn clamp_event_note_cuts_an_oversized_note() {
+        let note = "a".repeat(MAX_EVENT_NOTE_BYTES + 500);
+        let clamped = clamp_event_note(&note);
+        assert!(clamped.len() <= MAX_EVENT_NOTE_BYTES);
+        assert!(clamped.ends_with("..."));
+    }
+
+    // The cut is measured in bytes, so a note padded with multi-byte characters is where a
+    // naive slice would panic on a character boundary. An em dash is 3 bytes and appears in
+    // several real notes in this file.
+    #[test]
+    fn clamp_event_note_cuts_on_a_character_boundary() {
+        let note = "—".repeat(MAX_EVENT_NOTE_BYTES);
+        let clamped = clamp_event_note(&note);
+        assert!(clamped.len() <= MAX_EVENT_NOTE_BYTES);
+        assert!(clamped.ends_with("..."));
+    }
+
+    use proptest::prelude::*;
+
+    // Draw from the full `char` range, up to a length that reaches well past the byte limit.
+    // A plain ".*" strategy almost never produces a string over 1024 bytes, so it exercises
+    // only the pass-through arm and proves nothing about the cut.
+    fn any_note() -> impl Strategy<Value = String> {
+        proptest::collection::vec(any::<char>(), 0..3000)
+            .prop_map(|chars| chars.into_iter().collect())
+    }
+
+    // A note guaranteed to fit. 200 characters reach 800 bytes at the 4-byte maximum per
+    // character, so every draw is under the limit. Filtering `any_note()` down to this range
+    // instead would reject almost every draw and abort the run.
+    fn note_within_limit() -> impl Strategy<Value = String> {
+        proptest::collection::vec(any::<char>(), 0..200)
+            .prop_map(|chars| chars.into_iter().collect())
+    }
+
+    proptest! {
+        // No note this operator can build may exceed the Events API limit, whatever the
+        // input. An oversized note makes the API server reject the publish, so the tenant
+        // loses the whole event. A cut through a multi-byte character panics, so this also
+        // covers the character-boundary case.
+        #[test]
+        fn clamp_event_note_never_exceeds_the_api_limit(note in any_note()) {
+            let clamped = clamp_event_note(&note);
+            prop_assert!(
+                clamped.len() <= MAX_EVENT_NOTE_BYTES,
+                "clamped note is {} bytes, over the {MAX_EVENT_NOTE_BYTES}-byte limit",
+                clamped.len()
+            );
+        }
+
+        // A note that already fits must pass through byte-for-byte. Truncating a note that
+        // did not need it would drop detail the tenant needs.
+        #[test]
+        fn clamp_event_note_is_lossless_within_the_limit(note in note_within_limit()) {
+            prop_assert!(note.len() <= MAX_EVENT_NOTE_BYTES, "strategy must stay under the limit");
+            prop_assert_eq!(clamp_event_note(&note), note);
+        }
     }
 
     // ---- Helper: build a minimal ServarrApp for testing ----
