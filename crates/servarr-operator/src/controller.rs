@@ -179,13 +179,23 @@ pub async fn run(client: kube::Client, server_state: crate::server::ServerState)
 /// This is the single publish path for every advisory Event in this file -- only the
 /// terminal `ReconcileSuccess` event stays load-bearing (`.map_err(...)?`), since failing
 /// it fails the whole reconcile by design.
+///
+/// The warning names the object. No reconcile function here carries a `#[instrument]` span, so
+/// without that field the log line does not say which app lost its Event. The metric stays
+/// labelled by `reason` alone -- an object label would grow one time series per app, which is
+/// unbounded cardinality. (#744)
 async fn publish_event(
     recorder: &Recorder,
     obj_ref: &k8s_openapi::api::core::v1::ObjectReference,
     event: Event,
 ) {
     if let Err(e) = recorder.publish(&event, obj_ref).await {
-        warn!(error = %kube_err_summary(&e), reason = %event.reason, "failed to publish event");
+        warn!(
+            error = %kube_err_summary(&e),
+            reason = %event.reason,
+            object = %obj_ref.name.as_deref().unwrap_or("<unknown>"),
+            "failed to publish event"
+        );
         increment_event_publish_failure(&event.reason);
     }
 }
