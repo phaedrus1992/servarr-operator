@@ -96,6 +96,40 @@ pub struct UpdateInfo {
     pub latest: bool,
 }
 
+/// Longest version string that can reach a tenant-visible status Condition. A real *arr
+/// version is like `4.0.15.2941`, so this cap is far above any legitimate value. Kubernetes
+/// rejects a Condition message above 32768 bytes, which would fail the status patch and make
+/// the app reconcile in a loop, so the cap is an availability control as well as a
+/// disclosure control.
+const MAX_VERSION_LEN: usize = 32;
+
+/// Reduce a version string from an app's update API to text that is safe for a tenant-visible
+/// status Condition.
+///
+/// [`UpdateInfo::version`] comes from the `/api/v3/update` response body. That is external
+/// input: it has no length bound and no character restriction, so it must not reach a
+/// Condition message unchanged. This keeps only the characters a version number uses.
+///
+/// Returns `None` when the value is longer than [`MAX_VERSION_LEN`], or when no usable
+/// character is left. The caller must then report the update without naming a version.
+///
+/// The output is sanitizer output, so a caller may pass it to
+/// [`TenantSafeMessage::new`](crate::TenantSafeMessage::new).
+pub fn version_public_summary(raw: &str) -> Option<String> {
+    if raw.len() > MAX_VERSION_LEN {
+        return None;
+    }
+    let cleaned: String = raw
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '+' | '_'))
+        .collect();
+    if cleaned.is_empty() {
+        None
+    } else {
+        Some(cleaned)
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Backup {
@@ -586,6 +620,59 @@ impl HealthCheck for ServarrClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ---- version_public_summary (#744): update.version is an API response body, so it
+    // must be bounded and stripped before it can reach a tenant-visible Condition.
+
+    #[test]
+    fn version_summary_keeps_a_real_arr_version_unchanged() {
+        assert_eq!(
+            version_public_summary("4.0.15.2941"),
+            Some("4.0.15.2941".to_string())
+        );
+    }
+
+    #[test]
+    fn version_summary_keeps_prerelease_punctuation() {
+        assert_eq!(
+            version_public_summary("1.2.3-beta+build_7"),
+            Some("1.2.3-beta+build_7".to_string())
+        );
+    }
+
+    #[test]
+    fn version_summary_strips_characters_a_version_never_uses() {
+        assert_eq!(
+            version_public_summary("1.0 <script>alert()</script>"),
+            Some("1.0scriptalertscript".to_string())
+        );
+    }
+
+    #[test]
+    fn version_summary_strips_newlines_that_would_forge_extra_status_text() {
+        assert_eq!(
+            version_public_summary("1.0\nFAKE: cluster compromised"),
+            Some("1.0FAKEclustercompromised".to_string())
+        );
+    }
+
+    #[test]
+    fn version_summary_rejects_an_oversized_value() {
+        let long = "9".repeat(MAX_VERSION_LEN + 1);
+        assert_eq!(version_public_summary(&long), None);
+    }
+
+    #[test]
+    fn version_summary_accepts_a_value_exactly_at_the_cap() {
+        let at_cap = "9".repeat(MAX_VERSION_LEN);
+        assert_eq!(version_public_summary(&at_cap), Some(at_cap));
+    }
+
+    #[test]
+    fn version_summary_rejects_a_value_with_no_usable_character() {
+        assert_eq!(version_public_summary("!!! ???"), None);
+        assert_eq!(version_public_summary(""), None);
+    }
 
     #[test]
     fn oo_str_none() {

@@ -1966,7 +1966,17 @@ async fn check_update_available(
         Some(update) => Condition::ok(
             condition_types::UPDATE_AVAILABLE,
             "UpdateAvailable",
-            TenantSafeMessage::new(format!("Version {} is available", update.version)),
+            // `update.version` is a field of the app's /api/v3/update response body, so it is
+            // external input, not operator text and not tenant-owned. It reaches this
+            // tenant-visible Condition only as sanitizer output -- category (c) of the
+            // TenantSafeMessage::new contract. An oversized or unusable value drops the
+            // version number rather than the whole condition. (#744)
+            TenantSafeMessage::new(
+                match servarr_api::servarr_v3::version_public_summary(&update.version) {
+                    Some(version) => format!("Version {version} is available"),
+                    None => "A new version is available".to_string(),
+                },
+            ),
             now,
         ),
         None => Condition::fail(
