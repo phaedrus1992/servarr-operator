@@ -1209,7 +1209,7 @@ async fn patch_admin_credentials_checksum(
 /// This function handles the remaining apps via their respective APIs.
 ///
 /// This is idempotent and safe to call on every reconcile cycle.
-pub(crate) async fn sync_admin_credentials(
+async fn sync_admin_credentials(
     client: &Client,
     app: &ServarrApp,
     base_url_override: Option<&str>,
@@ -2671,7 +2671,7 @@ pub(crate) fn normalize_backup_schedule(expr: &str) -> String {
     }
 }
 
-pub(crate) async fn maybe_run_backup(
+async fn maybe_run_backup(
     client: &Client,
     app: &ServarrApp,
     recorder: &Recorder,
@@ -2915,7 +2915,7 @@ pub(crate) async fn maybe_run_backup(
 /// restore API failure, or annotation removal failure (annotation removal failure in
 /// particular is returned as an error so the caller can surface it as a status condition,
 /// which prevents the silent re-trigger loop caused by the annotation remaining).
-pub(crate) async fn maybe_restore_backup(
+async fn maybe_restore_backup(
     client: &Client,
     app: &ServarrApp,
     restore_id: &str,
@@ -3053,7 +3053,7 @@ pub(crate) async fn maybe_restore_backup(
 ///
 /// Separated from `maybe_restore_backup` so the outer function can unconditionally
 /// attempt scale-up regardless of whether this returns `Ok` or `Err`.
-pub(crate) async fn try_restore(
+async fn try_restore(
     client: &Client,
     app: &ServarrApp,
     backup_id: i64,
@@ -3237,7 +3237,7 @@ async fn discover_namespace_apps(
 }
 
 /// Sync discovered namespace apps into Prowlarr as registered applications.
-pub(crate) async fn sync_prowlarr_apps(
+async fn sync_prowlarr_apps(
     client: &Client,
     prowlarr: &ServarrApp,
     target_ns: &str,
@@ -3428,7 +3428,7 @@ async fn prowlarr_sync_exists(client: &Client, namespace: &str) -> bool {
 }
 
 /// Sync discovered Sonarr/Radarr apps into Seerr as registered servers.
-pub(crate) async fn sync_seerr_servers(
+async fn sync_seerr_servers(
     client: &Client,
     seerr: &ServarrApp,
     target_ns: &str,
@@ -3686,7 +3686,7 @@ pub(crate) async fn sync_seerr_servers(
 /// Sync Bazarr's Sonarr/Radarr integration via POST /api/system/settings.
 ///
 /// Called on every reconcile when `bazarr_sync.enabled` is true.
-pub(crate) async fn sync_bazarr_apps(
+async fn sync_bazarr_apps(
     client: &Client,
     bazarr: &ServarrApp,
     target_ns: &str,
@@ -3818,7 +3818,7 @@ pub(crate) async fn sync_bazarr_apps(
 /// `Err` if any registration failed so the `MaintainerrSyncReady` status condition
 /// reflects the partial failure. The caller converts this into a condition rather
 /// than propagating it, so a sync failure never blocks the rest of reconciliation.
-pub(crate) async fn sync_maintainerr_servers(
+async fn sync_maintainerr_servers(
     client: &Client,
     maintainerr: &ServarrApp,
     target_ns: &str,
@@ -4107,7 +4107,7 @@ pub(crate) async fn sync_maintainerr_servers(
 /// Patch Jellyfin env vars onto the Subgen Deployment.
 ///
 /// Called on every reconcile when `subgen_sync.enabled` is true.
-pub(crate) async fn sync_subgen_jellyfin(
+async fn sync_subgen_jellyfin(
     client: &Client,
     subgen: &ServarrApp,
     target_ns: &str,

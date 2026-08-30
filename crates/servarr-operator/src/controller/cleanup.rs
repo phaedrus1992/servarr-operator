@@ -401,6 +401,11 @@ pub(crate) async fn cleanup_seerr_registration(
 
 /// Uniform view of the Seerr registered-server settings the cleanup path needs, so the
 /// Sonarr/Radarr arms share one implementation.
+///
+/// Stays `pub(super)` against `hawk::unnecessary_restricted_visibility`, which reports it as
+/// private-capable (#728). It bounds `SeerrAppKind::Server`, and that trait is `pub(super)`, so
+/// making this one private raises rustc's `private_bounds` warning instead. The two visibilities
+/// must match.
 pub(super) trait SeerrServerSettings {
     fn hostname(&self) -> &str;
     fn port(&self) -> f64;

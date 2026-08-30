@@ -128,6 +128,13 @@ jobs:
 
       - name: Rust cache
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          # `cargo hawk check` builds into its own target dir, not the default `target/`
+          # (see the --target-dir flag on the run step below). Name that dir here so
+          # rust-cache saves it and prunes it the same way it prunes a normal target dir.
+          # Without this line the job caches the registry only, and recompiles the whole
+          # dependency graph on every run. (#728)
+          workspaces: . -> target/hawk
 
       - name: Install rustc-dev components
         # cargo-hawk hooks compiler internals (rustc_interface, rustc_lexer, ...),
@@ -146,12 +153,17 @@ jobs:
       - name: Run cargo-hawk
         # servarr_api and servarr_crds are excluded: their pub surface is a genuine
         # cross-crate boundary consumed by sibling workspace crates, not dead code.
-        # #568/#569's findings are triaged; controller::Error::{log_summary,public_summary}
-        # and media_stack_controller::Error::log_summary stay pub on purpose (their Error
-        # enums are externally constructible, and these are the only sanitized renderers
-        # for them — narrowing them would leave the leaky Display impl as the sole external
-        # accessor). Non-blocking (no -D) since those 3 findings are permanent by design.
-        run: cargo hawk check --manifest-path Cargo.toml --exclude-crate servarr_api --exclude-crate servarr_crds -W hawk::unnecessary_public -W hawk::unnecessary_restricted_visibility
+        #
+        # --target-dir keeps the instrumented build in a reusable directory. cargo-hawk
+        # otherwise builds into a temporary directory that is discarded when the run ends,
+        # so nothing survives for the cache step above to save. (#728)
+        #
+        # unnecessary_public is -D: the backlog is clear, so any new finding is a real
+        # regression and must block. unnecessary_restricted_visibility stays -W because one
+        # finding is permanent by design -- SeerrServerSettings must keep the same visibility
+        # as the SeerrAppKind::Server associated type it bounds, or rustc's private_bounds
+        # warning fires instead. See the comment on that trait in controller/cleanup.rs.
+        run: cargo hawk check --manifest-path Cargo.toml --target-dir target/hawk --exclude-crate servarr_api --exclude-crate servarr_crds -D hawk::unnecessary_public -W hawk::unnecessary_restricted_visibility
 
   deny:
     needs: [fmt, actionlint, zizmor, pre-commit-config-lint]
