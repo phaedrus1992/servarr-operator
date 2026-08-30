@@ -45,17 +45,12 @@ giving you an escape hatch when you need it.
 | Flag | Effect |
 |------|--------|
 | `[full-build]` | Build the arm64 Linux binary in addition to the default amd64 build |
-| `[smoke]` | Run the full integration smoke test against a live kind cluster |
 | `[snapshot]` | Publish a snapshot container image and Helm chart from the branch |
 
 **Examples:**
 
 ```
-fix: correct Sonarr auth env var name [smoke]
-```
-
-```
-feat: add arm64 support [full-build][smoke]
+feat: add arm64 support [full-build]
 ```
 
 ```
@@ -71,7 +66,7 @@ chore: update dependencies [snapshot]
 | amd64 Linux build | always | always |
 | arm64 Linux build | always | `[full-build]` only |
 | CRD drift check | always | always |
-| smoke test | always | `[smoke]` only |
+| smoke test | always | always |
 | snapshot publish | always | `[snapshot]` only |
 
 Flags can be combined freely. `workflow_dispatch` runs treat all flags as enabled.
@@ -122,35 +117,16 @@ The variable names are `LLVM_COV` and `LLVM_PROFDATA`. Setting `PATH` does not w
 
 ## Running the Smoke Test Locally
 
-The smoke test requires Docker and `kubectl`:
+The smoke test requires Docker, `kubectl`, and `helm`. It runs against any reachable cluster
+(Docker Desktop, `kind`, `k3d`, Rancher Desktop) and builds the operator image via the repo's own
+`Dockerfile`, so it always produces a binary matching the container's OS/arch regardless of your
+host machine:
 
 ```bash
-# Start a kind cluster
 kind create cluster
-
-# Build a local image
-cargo build --release --target x86_64-unknown-linux-musl --bin servarr-operator
-docker build -t servarr-operator:dev -f- target/x86_64-unknown-linux-musl/release/ <<'EOF'
-FROM gcr.io/distroless/static-debian12:nonroot
-COPY servarr-operator /servarr-operator
-USER nonroot:nonroot
-ENTRYPOINT ["/servarr-operator"]
-EOF
-
-kind load docker-image servarr-operator:dev
-
-# Install CRDs and operator
-helm template smoke-crds charts/servarr-crds/ --set webhook.enabled=false | kubectl apply -f -
-helm dependency build charts/servarr-operator/
-helm template smoke charts/servarr-operator/ \
-  --set image.repository=servarr-operator \
-  --set image.tag=dev \
-  --set image.pullPolicy=Never \
-  --set webhook.enabled=false \
-  --set watchAllNamespaces=true \
-  | kubectl apply -f -
-
-kubectl rollout status deployment/servarr-operator --timeout=120s
-kubectl apply -f .github/smoke-test/manifests/
-bash .github/smoke-test/smoke-test.sh
+scripts/smoke-test-local.sh
 ```
+
+This is the same script CI runs (`smoke-test` job in `.github/workflows/ci.yaml`) and the local
+pre-push hook invokes. Pass `--namespace NAME` for a fixed namespace, or `--keep` to leave the
+namespace up for debugging instead of deleting it on exit.
