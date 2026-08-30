@@ -100,7 +100,7 @@ fn load_image_overrides() -> (HashMap<String, ImageSpec>, HashSet<String>) {
         let repo_key = format!("DEFAULT_IMAGE_{}_REPO", name.to_uppercase());
         let tag_key = format!("DEFAULT_IMAGE_{}_TAG", name.to_uppercase());
 
-        let Some(repo) = crate::env::var(&repo_key) else {
+        let Some(repo) = read_override_repo(&repo_key, name) else {
             continue;
         };
         let Some(tag) = read_override_tag(&tag_key, name) else {
@@ -123,7 +123,7 @@ fn load_image_overrides() -> (HashMap<String, ImageSpec>, HashSet<String>) {
     // whether the operator still recognizes that key) — and that override would silently stop
     // applying after upgrade, falling back to the new default image with no warning.
     if !overrides.contains_key("seerr")
-        && let Some(repo) = crate::env::var("DEFAULT_IMAGE_OVERSEERR_REPO")
+        && let Some(repo) = read_override_repo("DEFAULT_IMAGE_OVERSEERR_REPO", "seerr")
         && let Some(tag) = read_override_tag("DEFAULT_IMAGE_OVERSEERR_TAG", "seerr")
     {
         let spec = ImageSpec {
@@ -158,14 +158,41 @@ fn read_override_tag(tag_key: &str, name: &str) -> Option<String> {
     match crate::env::var_strict(tag_key) {
         Ok(tag) => Some(tag.unwrap_or_default()),
         Err(error) => {
-            warn!(
-                %name, %error,
-                "dropping this app's image override, because pairing its repository with the \
-                 operator's default tag would name an image nobody requested"
-            );
+            warn_dropped_override(name, &error);
             None
         }
     }
+}
+
+/// Reads one `DEFAULT_IMAGE_<APP>_REPO`, returning `None` when there is no override to apply.
+///
+/// An *unset* repository means the user asked for no override on this app, so there is nothing to
+/// report. An *empty* one is kept, for the same reason an empty tag is: the chart renders
+/// `value: ""` when a user overrides only the other half.
+///
+/// A *present but unreadable* repository drops the override, for the reason given on
+/// [`read_override_tag`].
+fn read_override_repo(repo_key: &str, name: &str) -> Option<String> {
+    match crate::env::var_strict(repo_key) {
+        Ok(repo) => repo,
+        Err(error) => {
+            warn_dropped_override(name, &error);
+            None
+        }
+    }
+}
+
+/// Reports that an app's whole image override was dropped, and what the operator will pull now.
+///
+/// [`crate::env::var`]'s own warning says "using the default", which is too narrow here. The
+/// operator is not defaulting one variable. It is discarding the app's whole override — including
+/// a readable sibling variable the user did set — and will pull its own compiled image instead.
+fn warn_dropped_override(name: &str, error: &crate::env::EnvError) {
+    warn!(
+        %name, %error,
+        "dropping this app's whole image override; the operator will pull its own compiled \
+         default image, not the requested one"
+    );
 }
 
 /// Formats the image an override will actually produce, after the compiled defaults fill in the
@@ -176,9 +203,13 @@ fn read_override_tag(tag_key: &str, name: &str) -> Option<String> {
 fn effective_image(app: &AppType, spec: &ImageSpec) -> String {
     let merged = match AppDefaults::try_for_app(app) {
         Ok(defaults) => spec.clone().merge_with(&defaults.image),
-        // `AppDefaults::validate_all` reports a broken `image-defaults.toml` at startup. Report
-        // the override as given rather than invent a merge that cannot be computed.
-        Err(_) => spec.clone(),
+        // `AppDefaults::validate_all` reports a broken `image-defaults.toml` at startup, so this
+        // process is already on its way down. Say the merge was skipped, so a reader does not
+        // take the unmerged empty half for a real one.
+        Err(error) => {
+            warn!(%error, "cannot merge the compiled defaults; reporting the override as given");
+            spec.clone()
+        }
     };
     format!("{}:{}", merged.repository, merged.tag)
 }
@@ -242,6 +273,22 @@ mod tests {
                 assert!(
                     !overrides.contains_key("sonarr"),
                     "an unreadable tag must not yield a hybrid repo/tag pairing"
+                );
+            });
+        });
+    }
+
+    /// The repository half gets the same treatment as the tag half. Keeping a readable tag
+    /// beside the operator's own repository would name an image nobody requested.
+    #[test]
+    #[cfg(unix)]
+    fn load_image_overrides_drops_the_whole_override_on_an_unreadable_repo() {
+        temp_env::with_var("DEFAULT_IMAGE_SONARR_TAG", Some("4.0"), || {
+            temp_env::with_var("DEFAULT_IMAGE_SONARR_REPO", Some(invalid_utf8()), || {
+                let (overrides, _legacy) = load_image_overrides();
+                assert!(
+                    !overrides.contains_key("sonarr"),
+                    "an unreadable repository must not keep the readable tag beside a default repo"
                 );
             });
         });
