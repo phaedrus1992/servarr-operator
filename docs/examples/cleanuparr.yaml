@@ -1,0 +1,14 @@
+# Cleanuparr — removes stalled/blocked/malicious downloads and triggers
+# re-searches. With cleanuparrSync enabled, the operator discovers Sonarr and
+# Radarr in the namespace and registers them via Cleanuparr's JSON API. Unlike
+# Bazarr, the operator does not manage Cleanuparr's API key — create the
+# apiKeySecret yourself with the key Cleanuparr generated on first boot.
+apiVersion: servarr.dev/v1alpha1
+kind: ServarrApp
+metadata:
+  name: cleanuparr
+spec:
+  app: Cleanuparr
+  apiKeySecret: cleanuparr-api-key
+  cleanuparrSync:
+    enabled: true

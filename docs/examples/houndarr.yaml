@@ -1,0 +1,14 @@
+# Houndarr — rate-limited missing/cutoff/upgrade searches against
+# Sonarr/Radarr/Lidarr/Readarr. Houndarr has no JSON registration API, so
+# houndarrSync logs in as adminCredentialsSecret's username/password and
+# drives its session/CSRF-protected settings form on every reconcile — a
+# stopgap until Houndarr gains a proper JSON API upstream.
+apiVersion: servarr.dev/v1alpha1
+kind: ServarrApp
+metadata:
+  name: houndarr
+spec:
+  app: Houndarr
+  houndarrSync:
+    enabled: true
+    adminCredentialsSecret: houndarr-admin
