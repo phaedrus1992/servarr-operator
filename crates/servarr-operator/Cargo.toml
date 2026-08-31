@@ -29,6 +29,12 @@ pre-release-replacements = [
   { file = "../../charts/servarr-operator/Chart.yaml", search = "^appVersion: .*$", replace = "appVersion: \"{{version}}\"", exactly = 1 },
 ]
 
+[features]
+# Exposes Context::for_test and its with_* builder methods, which skip Context::new's
+# WATCH_NAMESPACE validation. Enabled only for this crate's own test builds via the
+# self-referencing dev-dependency below -- never part of a production build (#757).
+test-util = []
+
 [dependencies]
 kube.workspace = true
 k8s-openapi.workspace = true
@@ -59,6 +65,7 @@ hex = "=0.4.3"
 md5 = "=0.8.1"
 
 [dev-dependencies]
+servarr-operator = { path = ".", features = ["test-util"] }
 wiremock.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }
 http = "=1.5.0"

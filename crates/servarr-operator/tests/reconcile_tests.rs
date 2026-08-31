@@ -9,7 +9,6 @@ use kube::config::{
     NamedCluster, NamedContext,
 };
 use kube::runtime::controller::Action;
-use kube::runtime::events::Reporter;
 use serde_json::json;
 use servarr_crds::{
     AppDefaults, AppType, MediaStack, MediaStackSpec, NfsServerSpec, ServarrApp, ServarrAppSpec,
@@ -71,18 +70,7 @@ async fn mock_client(server_uri: &str) -> kube::Client {
 }
 
 fn test_context(client: kube::Client) -> Arc<Context> {
-    Arc::new(Context {
-        client,
-        image_overrides: HashMap::new(),
-        legacy_image_override_apps: std::collections::HashSet::new(),
-        reporter: Reporter {
-            controller: "test-controller".into(),
-            instance: None,
-        },
-        watch_namespace: Some("test".into()),
-        app_api_base_override: None,
-        event_publish_tasks: tokio_util::task::TaskTracker::new(),
-    })
+    Arc::new(Context::for_test(client))
 }
 
 /// A context whose "seerr" image override is flagged as coming from the deprecated
@@ -102,18 +90,11 @@ fn test_context_with_legacy_seerr_override(client: kube::Client) -> Arc<Context>
     let mut legacy_image_override_apps = std::collections::HashSet::new();
     legacy_image_override_apps.insert("seerr".to_string());
 
-    Arc::new(Context {
-        client,
-        image_overrides,
-        legacy_image_override_apps,
-        reporter: Reporter {
-            controller: "test-controller".into(),
-            instance: None,
-        },
-        watch_namespace: Some("test".into()),
-        app_api_base_override: None,
-        event_publish_tasks: tokio_util::task::TaskTracker::new(),
-    })
+    Arc::new(
+        Context::for_test(client)
+            .with_image_overrides(image_overrides)
+            .with_legacy_image_override_apps(legacy_image_override_apps),
+    )
 }
 
 /// A context whose "sonarr" image override is present but differs from this operator
@@ -130,18 +111,7 @@ fn test_context_with_stale_sonarr_override(client: kube::Client) -> Arc<Context>
             pull_policy: "IfNotPresent".into(),
         },
     );
-    Arc::new(Context {
-        client,
-        image_overrides,
-        legacy_image_override_apps: std::collections::HashSet::new(),
-        reporter: Reporter {
-            controller: "test-controller".into(),
-            instance: None,
-        },
-        watch_namespace: Some("test".into()),
-        app_api_base_override: None,
-        event_publish_tasks: tokio_util::task::TaskTracker::new(),
-    })
+    Arc::new(Context::for_test(client).with_image_overrides(image_overrides))
 }
 
 /// A context whose "sonarr" image override exactly matches this operator binary's
@@ -161,18 +131,7 @@ fn test_context_with_current_sonarr_override(client: kube::Client) -> Arc<Contex
             pull_policy: "IfNotPresent".into(),
         },
     );
-    Arc::new(Context {
-        client,
-        image_overrides,
-        legacy_image_override_apps: std::collections::HashSet::new(),
-        reporter: Reporter {
-            controller: "test-controller".into(),
-            instance: None,
-        },
-        watch_namespace: Some("test".into()),
-        app_api_base_override: None,
-        event_publish_tasks: tokio_util::task::TaskTracker::new(),
-    })
+    Arc::new(Context::for_test(client).with_image_overrides(image_overrides))
 }
 
 /// A context whose "sonarr" image override sets only `repository` (as `DEFAULT_IMAGE_SONARR_REPO`
@@ -194,18 +153,7 @@ fn test_context_with_partial_repo_only_sonarr_override(client: kube::Client) -> 
             pull_policy: "IfNotPresent".into(),
         },
     );
-    Arc::new(Context {
-        client,
-        image_overrides,
-        legacy_image_override_apps: std::collections::HashSet::new(),
-        reporter: Reporter {
-            controller: "test-controller".into(),
-            instance: None,
-        },
-        watch_namespace: Some("test".into()),
-        app_api_base_override: None,
-        event_publish_tasks: tokio_util::task::TaskTracker::new(),
-    })
+    Arc::new(Context::for_test(client).with_image_overrides(image_overrides))
 }
 
 // ---------------------------------------------------------------------------
