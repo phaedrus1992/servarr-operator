@@ -155,6 +155,10 @@ pub struct StackApp {
     #[serde(default)]
     pub maintainerr_sync: Option<MaintainerrSyncSpec>,
     #[serde(default)]
+    pub cleanuparr_sync: Option<CleanuparrSyncSpec>,
+    #[serde(default)]
+    pub houndarr_sync: Option<HoundarrSyncSpec>,
+    #[serde(default)]
     pub admin_credentials: Option<AdminCredentialsSpec>,
 
     /// When true, creates both a standard and a 4K instance of this app.
@@ -336,6 +340,8 @@ impl StackApp {
             bazarr_sync: self.bazarr_sync.clone(),
             subgen_sync: self.subgen_sync.clone(),
             maintainerr_sync: self.maintainerr_sync.clone(),
+            cleanuparr_sync: self.cleanuparr_sync.clone(),
+            houndarr_sync: self.houndarr_sync.clone(),
             admin_credentials: self.admin_credentials.clone().or(d.admin_credentials),
         }
     }

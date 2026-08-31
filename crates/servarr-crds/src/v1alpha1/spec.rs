@@ -125,6 +125,14 @@ pub struct ServarrAppSpec {
     #[serde(default)]
     pub maintainerr_sync: Option<MaintainerrSyncSpec>,
 
+    /// Cleanuparr cross-app synchronization. Only applies to Cleanuparr-type apps.
+    #[serde(default)]
+    pub cleanuparr_sync: Option<CleanuparrSyncSpec>,
+
+    /// Houndarr cross-app synchronization. Only applies to Houndarr-type apps.
+    #[serde(default)]
+    pub houndarr_sync: Option<HoundarrSyncSpec>,
+
     /// Admin credentials for this app. References a user-created Kubernetes Secret
     /// with `username` and `password` keys. The operator reads but never owns this secret.
     ///

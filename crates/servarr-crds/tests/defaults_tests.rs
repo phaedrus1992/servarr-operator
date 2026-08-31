@@ -1199,3 +1199,24 @@ fn houndarr_defaults_probe_port_8877() {
     let defaults = AppDefaults::try_for_app(&AppType::Houndarr).unwrap();
     assert_eq!(defaults.service.ports.first().map(|p| p.port), Some(8877));
 }
+
+// ---------------------------------------------------------------------------
+// CleanuparrSyncSpec, HoundarrSyncSpec (#605, #606)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn cleanuparr_sync_spec_defaults() {
+    let spec: CleanuparrSyncSpec = serde_json::from_str(r#"{"enabled":true}"#).unwrap();
+    assert!(spec.enabled);
+    assert!(spec.namespace_scope.is_none());
+}
+
+#[test]
+fn houndarr_sync_spec_requires_admin_credentials_secret() {
+    let spec: HoundarrSyncSpec =
+        serde_json::from_str(r#"{"enabled":true,"adminCredentialsSecret":"houndarr-admin"}"#)
+            .unwrap();
+    assert!(spec.enabled);
+    assert_eq!(spec.admin_credentials_secret, "houndarr-admin");
+    assert!(spec.namespace_scope.is_none());
+}
