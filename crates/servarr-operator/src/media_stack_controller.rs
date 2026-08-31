@@ -1096,7 +1096,10 @@ mod tests {
         let after = crate::metrics::MANAGED_STACKS_LIST_FAILURES_TOTAL
             .with_label_values(&[] as &[&str])
             .get();
-        assert_eq!(after, before + 1);
+        // `>` rather than `==`: metrics.rs's own increment_managed_stacks_list_failure test
+        // hits this same label combo on the same process-wide counter and may run
+        // concurrently (#773).
+        assert!(after > before, "before={before}, after={after}");
     }
 
     // ---- error_policy ----
