@@ -154,6 +154,9 @@ pub enum AppType {
     SshBastion,
     Bazarr,
     Subgen,
+    Unpackerr,
+    Cleanuparr,
+    Houndarr,
 }
 
 /// Legacy serde aliases accepted by `AppType`'s `Deserialize` impl (e.g.
@@ -213,6 +216,9 @@ impl AppType {
         Self::SshBastion,
         Self::Bazarr,
         Self::Subgen,
+        Self::Unpackerr,
+        Self::Cleanuparr,
+        Self::Houndarr,
     ];
 
     pub fn as_str(&self) -> &'static str {
@@ -232,6 +238,9 @@ impl AppType {
             Self::SshBastion => "ssh-bastion",
             Self::Bazarr => "bazarr",
             Self::Subgen => "subgen",
+            Self::Unpackerr => "unpackerr",
+            Self::Cleanuparr => "cleanuparr",
+            Self::Houndarr => "houndarr",
         }
     }
 
@@ -252,6 +261,9 @@ impl AppType {
             | Self::Prowlarr
             | Self::Jackett
             | Self::Bazarr
+            | Self::Unpackerr
+            | Self::Cleanuparr
+            | Self::Houndarr
             // #10: Subgen depends on Jellyfin (subgenSync requires a Jellyfin CR) so it must
             // start after Jellyfin is ready, not at the same time (tier 0).
             | Self::Subgen => 3,
