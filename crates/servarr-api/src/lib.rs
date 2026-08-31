@@ -1,4 +1,5 @@
 pub mod bazarr;
+pub mod cleanuparr;
 mod client;
 pub mod cross_app_sync;
 pub mod health;
@@ -17,6 +18,7 @@ mod test_support;
 pub mod transmission;
 
 pub use bazarr::BazarrClient;
+pub use cleanuparr::CleanuparrClient;
 pub use client::{ApiError, HttpClient};
 pub use cross_app_sync::{CrossAppSync, RegisteredArrInstance};
 pub use health::HealthCheck;
