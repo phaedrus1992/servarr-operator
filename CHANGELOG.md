@@ -11,6 +11,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Add Unpackerr, Cleanuparr, and Houndarr as companion apps. Unpackerr extracts archives for
+  Sonarr/Radarr/Lidarr/Readarr after download; it has no live API, so an init container seeds
+  `/config/unpackerr.conf` once, at pod creation, from `spec.appConfig.unpackerr`. Cleanuparr
+  removes stalled/blocked/malicious downloads and triggers re-searches; set `cleanuparrSync.enabled`
+  to auto-register discovered Sonarr/Radarr instances via its JSON API (reuses `apiKeySecret`, same
+  as Maintainerr). Houndarr runs rate-limited missing/cutoff/upgrade searches; it has no
+  registration API of its own, so `houndarrSync` logs in with `adminCredentialsSecret` and drives
+  its settings form directly — a stopgap until Houndarr gains a proper API (#775). Cleanuparr and
+  Houndarr share the same idempotent list-then-register sync logic Maintainerr already used for
+  Sonarr/Radarr, now extracted into one shared code path. New `CleanuparrSyncReady` and
+  `HoundarrSyncReady` status conditions report each sync's health (#604, #605, #606).
 - Add a `webhook.port` Helm value (default `9443`). The Service hardcoded `targetPort: 9443` and
   the Deployment hardcoded `containerPort: 9443`, so `WEBHOOK_PORT` was never actually usable —
   setting it moved the operator's listener and left the API server dialing a port nothing was on.

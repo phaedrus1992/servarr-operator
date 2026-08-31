@@ -209,6 +209,11 @@ pub fn build(
 
     let mut pod_spec = PodSpec {
         automount_service_account_token: Some(false),
+        // #606: Kubernetes auto-injects a `<SERVICE_NAME>_PORT` env var (legacy
+        // Docker-links compatibility) as `tcp://<clusterIP>:<port>` for every Service
+        // in the namespace. Houndarr's own container reads `HOUNDARR_PORT` for its
+        // `--port` CLI flag, so its own Service name collided with and corrupted it.
+        enable_service_links: Some(false),
         security_context: Some(pod_security),
         containers,
         volumes: Some(volumes),
@@ -574,6 +579,19 @@ fn build_volumes(app: &ServarrApp, persistence: &PersistenceSpec) -> Vec<Volume>
             name: "bazarr-api-key".into(),
             secret: Some(SecretVolumeSource {
                 secret_name: Some(common::child_name(app, "api-key")),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+    }
+
+    // Unpackerr init script ConfigMap volume
+    if matches!(app.spec.app, AppType::Unpackerr) {
+        volumes.push(Volume {
+            name: "unpackerr-init-scripts".into(),
+            config_map: Some(ConfigMapVolumeSource {
+                name: common::child_name(app, "init"),
+                default_mode: Some(0o755),
                 ..Default::default()
             }),
             ..Default::default()
@@ -1256,6 +1274,95 @@ fn build_init_containers(
             }]),
             security_context: Some(init_sec),
             volume_mounts: Some(bazarr_init_mounts),
+            ..Default::default()
+        });
+    }
+
+    // Unpackerr configure init container: seeds /config/unpackerr.conf once from
+    // spec.appConfig's UnpackerrConfig (#604). Each configured *arr instance's
+    // API key is injected as its own env var, named to match the placeholder
+    // build_unpackerr_init() templated into the script.
+    if matches!(app.spec.app, AppType::Unpackerr) {
+        let init_sec = SecurityContext {
+            run_as_user: Some(uid),
+            run_as_group: Some(gid),
+            ..security_context.clone()
+        };
+        let unpackerr_config = match &app.spec.app_config {
+            Some(AppConfig::Unpackerr(c)) => c.clone(),
+            _ => servarr_crds::UnpackerrConfig::default(),
+        };
+        // url is passed via its own plain env var, not baked into the script as
+        // literal text -- build_unpackerr_init()'s heredoc is unquoted (so the
+        // api_key env var can expand), and a CRD-controlled string embedded
+        // directly into that body would be re-evaluated by the shell for
+        // `$(...)`/backtick command substitution (#776).
+        let mut env = Vec::new();
+        for (instance, api_key_env_var, url_env_var) in [
+            (
+                &unpackerr_config.sonarr,
+                "UNPACKERR_SONARR_0_APIKEY",
+                "UNPACKERR_SONARR_0_URL",
+            ),
+            (
+                &unpackerr_config.radarr,
+                "UNPACKERR_RADARR_0_APIKEY",
+                "UNPACKERR_RADARR_0_URL",
+            ),
+            (
+                &unpackerr_config.lidarr,
+                "UNPACKERR_LIDARR_0_APIKEY",
+                "UNPACKERR_LIDARR_0_URL",
+            ),
+            (
+                &unpackerr_config.readarr,
+                "UNPACKERR_READARR_0_APIKEY",
+                "UNPACKERR_READARR_0_URL",
+            ),
+        ] {
+            if let Some(instance) = instance {
+                env.push(EnvVar {
+                    name: api_key_env_var.to_string(),
+                    value_from: Some(EnvVarSource {
+                        secret_key_ref: Some(SecretKeySelector {
+                            name: instance.api_key_secret.clone(),
+                            key: "api-key".into(),
+                            optional: Some(false),
+                        }),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                });
+                env.push(EnvVar {
+                    name: url_env_var.to_string(),
+                    // Escape `$(` per Kubernetes' own convention so a CRD-supplied
+                    // url can't trigger the kubelet's own $(OTHER_VAR) env-var
+                    // substitution and leak a sibling env var's value (e.g. the
+                    // api_key one above) into this plain, non-secret value.
+                    value: Some(instance.url.replace("$(", "$$(")),
+                    ..Default::default()
+                });
+            }
+        }
+        init.push(Container {
+            name: "unpackerr-init".into(),
+            image: Some(image.to_string()),
+            command: Some(vec!["/bin/sh".into(), "/scripts/unpackerr-init.sh".into()]),
+            env: Some(env),
+            security_context: Some(init_sec),
+            volume_mounts: Some(vec![
+                VolumeMount {
+                    name: "config".into(),
+                    mount_path: "/config".into(),
+                    ..Default::default()
+                },
+                VolumeMount {
+                    name: "unpackerr-init-scripts".into(),
+                    mount_path: "/scripts".into(),
+                    read_only: Some(true),
+                    ..Default::default()
+                },
+            ]),
             ..Default::default()
         });
     }

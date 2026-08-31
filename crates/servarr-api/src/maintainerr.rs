@@ -2,6 +2,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 use crate::client::ApiError;
+use crate::cross_app_sync::{CrossAppSync, RegisteredArrInstance};
 
 /// Client for the Maintainerr auto-configuration API.
 ///
@@ -303,6 +304,48 @@ impl MaintainerrClient {
     }
 }
 
+impl CrossAppSync for MaintainerrClient {
+    /// # Errors
+    ///
+    /// Returns `ApiError::OperationFailed` for a `kind` other than `"sonarr"` or
+    /// `"radarr"` — Maintainerr's registration API covers only those two.
+    async fn list_registered(&self, kind: &str) -> Result<Vec<String>, ApiError> {
+        let servers = match kind {
+            "sonarr" => self.list_sonarr().await?,
+            "radarr" => self.list_radarr().await?,
+            other => {
+                return Err(ApiError::OperationFailed {
+                    message: format!("Maintainerr does not support *arr kind: {other}"),
+                });
+            }
+        };
+        Ok(servers.into_iter().map(|s| s.name).collect())
+    }
+
+    /// # Errors
+    ///
+    /// Returns `ApiError::OperationFailed` for a `kind` other than `"sonarr"` or
+    /// `"radarr"` — Maintainerr's registration API covers only those two.
+    async fn register(&self, kind: &str, instance: &RegisteredArrInstance) -> Result<(), ApiError> {
+        match kind {
+            "sonarr" => {
+                self.add_sonarr(&instance.name, &instance.base_url, &instance.api_key)
+                    .await?;
+            }
+            "radarr" => {
+                self.add_radarr(&instance.name, &instance.base_url, &instance.api_key)
+                    .await?;
+            }
+            other => {
+                return Err(ApiError::OperationFailed {
+                    message: format!("Maintainerr does not support *arr kind: {other}"),
+                });
+            }
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -428,6 +471,125 @@ mod tests {
         match result {
             Err(ApiError::InvalidApiKey) => {}
             other => panic!("expected InvalidApiKey, got: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn cross_app_sync_list_registered_delegates_to_list_sonarr() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/settings/sonarr"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                {"id": 1, "serverName": "Sonarr1", "url": "http://sonarr:8989"}
+            ])))
+            .mount(&server)
+            .await;
+
+        let client = MaintainerrClient::new(&server.uri(), "test-key").expect("should construct");
+        let names = CrossAppSync::list_registered(&client, "sonarr")
+            .await
+            .expect("should list");
+
+        assert_eq!(names, vec!["Sonarr1".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn cross_app_sync_list_registered_delegates_to_list_radarr() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/settings/radarr"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                {"id": 1, "serverName": "Radarr1", "url": "http://radarr:7878"}
+            ])))
+            .mount(&server)
+            .await;
+
+        let client = MaintainerrClient::new(&server.uri(), "test-key").expect("should construct");
+        let names = CrossAppSync::list_registered(&client, "radarr")
+            .await
+            .expect("should list");
+
+        assert_eq!(names, vec!["Radarr1".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn cross_app_sync_list_registered_rejects_unsupported_kind() {
+        let server = MockServer::start().await;
+        let client = MaintainerrClient::new(&server.uri(), "test-key").expect("should construct");
+        let err = CrossAppSync::list_registered(&client, "lidarr")
+            .await
+            .unwrap_err();
+        match err {
+            ApiError::OperationFailed { message } => {
+                assert!(message.contains("lidarr"), "got: {message}");
+            }
+            other => panic!("expected OperationFailed, got: {other}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn cross_app_sync_register_delegates_to_add_sonarr() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/settings/sonarr"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": 1, "serverName": "Sonarr1", "url": "http://sonarr:8989"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = MaintainerrClient::new(&server.uri(), "test-key").expect("should construct");
+        let instance = RegisteredArrInstance {
+            name: "Sonarr1".to_string(),
+            base_url: "http://sonarr:8989".to_string(),
+            api_key: "sonarr-key".to_string(),
+        };
+        CrossAppSync::register(&client, "sonarr", &instance)
+            .await
+            .expect("should register");
+    }
+
+    #[tokio::test]
+    async fn cross_app_sync_register_delegates_to_add_radarr() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/settings/radarr"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": 1, "serverName": "Radarr1", "url": "http://radarr:7878"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = MaintainerrClient::new(&server.uri(), "test-key").expect("should construct");
+        let instance = RegisteredArrInstance {
+            name: "Radarr1".to_string(),
+            base_url: "http://radarr:7878".to_string(),
+            api_key: "radarr-key".to_string(),
+        };
+        CrossAppSync::register(&client, "radarr", &instance)
+            .await
+            .expect("should register");
+    }
+
+    #[tokio::test]
+    async fn cross_app_sync_register_rejects_unsupported_kind() {
+        let server = MockServer::start().await;
+        let client = MaintainerrClient::new(&server.uri(), "test-key").expect("should construct");
+        let instance = RegisteredArrInstance {
+            name: "Lidarr1".to_string(),
+            base_url: "http://lidarr:8686".to_string(),
+            api_key: "lidarr-key".to_string(),
+        };
+        let err = CrossAppSync::register(&client, "lidarr", &instance)
+            .await
+            .unwrap_err();
+        match err {
+            ApiError::OperationFailed { message } => {
+                assert!(message.contains("lidarr"), "got: {message}");
+            }
+            other => panic!("expected OperationFailed, got: {other}"),
         }
     }
 

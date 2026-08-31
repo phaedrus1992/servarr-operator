@@ -125,6 +125,14 @@ pub struct ServarrAppSpec {
     #[serde(default)]
     pub maintainerr_sync: Option<MaintainerrSyncSpec>,
 
+    /// Cleanuparr cross-app synchronization. Only applies to Cleanuparr-type apps.
+    #[serde(default)]
+    pub cleanuparr_sync: Option<CleanuparrSyncSpec>,
+
+    /// Houndarr cross-app synchronization. Only applies to Houndarr-type apps.
+    #[serde(default)]
+    pub houndarr_sync: Option<HoundarrSyncSpec>,
+
     /// Admin credentials for this app. References a user-created Kubernetes Secret
     /// with `username` and `password` keys. The operator reads but never owns this secret.
     ///
@@ -154,6 +162,9 @@ pub enum AppType {
     SshBastion,
     Bazarr,
     Subgen,
+    Unpackerr,
+    Cleanuparr,
+    Houndarr,
 }
 
 /// Legacy serde aliases accepted by `AppType`'s `Deserialize` impl (e.g.
@@ -213,6 +224,9 @@ impl AppType {
         Self::SshBastion,
         Self::Bazarr,
         Self::Subgen,
+        Self::Unpackerr,
+        Self::Cleanuparr,
+        Self::Houndarr,
     ];
 
     pub fn as_str(&self) -> &'static str {
@@ -232,6 +246,9 @@ impl AppType {
             Self::SshBastion => "ssh-bastion",
             Self::Bazarr => "bazarr",
             Self::Subgen => "subgen",
+            Self::Unpackerr => "unpackerr",
+            Self::Cleanuparr => "cleanuparr",
+            Self::Houndarr => "houndarr",
         }
     }
 
@@ -252,6 +269,9 @@ impl AppType {
             | Self::Prowlarr
             | Self::Jackett
             | Self::Bazarr
+            | Self::Unpackerr
+            | Self::Cleanuparr
+            | Self::Houndarr
             // #10: Subgen depends on Jellyfin (subgenSync requires a Jellyfin CR) so it must
             // start after Jellyfin is ready, not at the same time (tier 0).
             | Self::Subgen => 3,

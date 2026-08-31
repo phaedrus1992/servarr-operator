@@ -290,5 +290,8 @@ fn arb_app_type() -> impl Strategy<Value = AppType> {
         Just(AppType::SshBastion),
         Just(AppType::Bazarr),
         Just(AppType::Subgen),
+        Just(AppType::Unpackerr),
+        Just(AppType::Cleanuparr),
+        Just(AppType::Houndarr),
     ]
 }

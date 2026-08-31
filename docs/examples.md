@@ -42,6 +42,9 @@ in a MediaStack).
 | Jackett | [`jackett.yaml`](examples/jackett.yaml) | |
 | Bazarr | [`bazarr.yaml`](examples/bazarr.yaml) | Subtitle management, Sonarr/Radarr sync |
 | Subgen | [`subgen.yaml`](examples/subgen.yaml) | Whisper AI subtitles, Jellyfin sync |
+| Unpackerr | [`unpackerr.yaml`](examples/unpackerr.yaml) | Archive extraction, static per-instance config |
+| Cleanuparr | [`cleanuparr.yaml`](examples/cleanuparr.yaml) | Stalled-download cleanup, Sonarr/Radarr sync |
+| Houndarr | [`houndarr.yaml`](examples/houndarr.yaml) | Rate-limited searches, session-based sync |
 
 ## Backup Configuration
 
