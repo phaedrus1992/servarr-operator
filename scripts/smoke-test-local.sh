@@ -85,6 +85,18 @@ detect_cluster_type() {
 CLUSTER_TYPE=$(detect_cluster_type)
 echo "  Cluster type: ${CLUSTER_TYPE}"
 
+# This script creates and deletes namespaces. It must never do that on a cluster it
+# cannot identify as a local one — that cluster could be shared or production.
+case "$CLUSTER_TYPE" in
+kind | k3d | docker-desktop | rancher-desktop) ;;
+*)
+  echo "ERROR: Unrecognized cluster type for context '$(kubectl config current-context)'."
+  echo "  This script supports local clusters only: kind, k3d, docker-desktop, rancher-desktop."
+  echo "  It will not create or delete namespaces on an unrecognized cluster."
+  exit 1
+  ;;
+esac
+
 # ---------------------------------------------------------------------------
 # Build Docker image
 # ---------------------------------------------------------------------------
@@ -112,9 +124,9 @@ k3d)
   CLUSTER_NAME=$(kubectl config current-context | sed 's/^k3d-//')
   k3d image import "${IMAGE_NAME}:${IMAGE_TAG}" --cluster "$CLUSTER_NAME"
   ;;
-docker-desktop | rancher-desktop | unknown)
+docker-desktop | rancher-desktop)
   # Docker Desktop and Rancher Desktop share the daemon with the cluster —
-  # the image is already visible. For unknown types, assume the same.
+  # the image is already visible.
   echo "  Assuming image is visible to cluster via shared container daemon."
   ;;
 esac
@@ -122,15 +134,23 @@ esac
 # ---------------------------------------------------------------------------
 # Create namespace and register cleanup
 # ---------------------------------------------------------------------------
+# Saved before this script ever touches the developer's kubectl context, so cleanup can
+# restore it even if a later step fails partway through setup.
+PRIOR_NAMESPACE="$(kubectl config view --minify --output 'jsonpath={..namespace}' 2>/dev/null || true)"
+
 cleanup() {
   if [[ "$KEEP_NS" == "true" ]]; then
     echo ""
     echo "Namespace '${NAMESPACE}' retained for debugging (--keep was set)."
-    return
+  else
+    echo ""
+    echo "Cleaning up namespace '${NAMESPACE}'..."
+    kubectl delete namespace "$NAMESPACE" --ignore-not-found --timeout=60s || true
   fi
-  echo ""
-  echo "Cleaning up namespace '${NAMESPACE}'..."
-  kubectl delete namespace "$NAMESPACE" --ignore-not-found --timeout=60s || true
+  # Always restore the developer's own namespace, kept or not — otherwise their default
+  # kubectl context is left pointing at this script's namespace instead of their own.
+  echo "Restoring kubectl namespace to '${PRIOR_NAMESPACE:-default}'..."
+  kubectl config set-context --current --namespace="$PRIOR_NAMESPACE" || true
 }
 trap cleanup EXIT
 
