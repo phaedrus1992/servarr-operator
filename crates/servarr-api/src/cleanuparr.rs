@@ -19,7 +19,6 @@ const SUPPORTED_KINDS: &[&str] = &["sonarr", "radarr", "lidarr", "readarr", "whi
 #[derive(Clone, Debug)]
 pub struct CleanuparrClient {
     base_url: String,
-    api_key: String,
     client: reqwest::Client,
 }
 
@@ -56,12 +55,21 @@ impl CleanuparrClient {
     pub fn new(base_url: &str, api_key: &str) -> Result<Self, ApiError> {
         let mut value =
             reqwest::header::HeaderValue::from_str(api_key).map_err(|_| ApiError::InvalidApiKey)?;
+        // Prevents the key from appearing in reqwest::Client's Debug output (which prints
+        // default_headers unconditionally) if this client is ever logged.
         value.set_sensitive(true);
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(reqwest::header::HeaderName::from_static("x-api-key"), value);
 
         Ok(Self {
             base_url: base_url.trim_end_matches('/').to_string(),
-            api_key: api_key.to_string(),
             client: reqwest::Client::builder()
+                .default_headers(headers)
+                // No legitimate reason for Cleanuparr to redirect these calls; following one
+                // would replay the X-Api-Key header cross-host (reqwest only strips
+                // Authorization/Cookie/Proxy-Authorization on a cross-host redirect, not
+                // custom headers).
+                .redirect(reqwest::redirect::Policy::none())
                 .timeout(std::time::Duration::from_secs(30))
                 .build()
                 .map_err(ApiError::Request)?,
@@ -90,14 +98,16 @@ impl CrossAppSync for CleanuparrClient {
         let resp = self
             .client
             .get(&url)
-            .header("X-Api-Key", &self.api_key)
             .send()
             .await
             .map_err(ApiError::Request)?;
 
         if !resp.status().is_success() {
             let status = resp.status().as_u16();
-            let body = resp.text().await.unwrap_or_default();
+            let body = resp.text().await.unwrap_or_else(|e| {
+                tracing::debug!(error = %e, "failed to read Cleanuparr error response body");
+                String::new()
+            });
             return Err(ApiError::ApiResponse { status, body });
         }
 
@@ -121,7 +131,6 @@ impl CrossAppSync for CleanuparrClient {
         let resp = self
             .client
             .post(&url)
-            .header("X-Api-Key", &self.api_key)
             .json(&body)
             .send()
             .await
@@ -131,7 +140,10 @@ impl CrossAppSync for CleanuparrClient {
             Ok(())
         } else {
             let status = resp.status().as_u16();
-            let body = resp.text().await.unwrap_or_default();
+            let body = resp.text().await.unwrap_or_else(|e| {
+                tracing::debug!(error = %e, "failed to read Cleanuparr error response body");
+                String::new()
+            });
             Err(ApiError::ApiResponse { status, body })
         }
     }
@@ -155,6 +167,17 @@ mod tests {
         let client =
             CleanuparrClient::new("http://localhost:11011/", "test-key").expect("should construct");
         assert_eq!(client.base_url, "http://localhost:11011");
+    }
+
+    #[test]
+    fn cleanuparr_client_debug_does_not_leak_api_key() {
+        let client = CleanuparrClient::new("http://localhost:11011", "super-secret-key")
+            .expect("should construct");
+        let debug_output = format!("{client:?}");
+        assert!(
+            !debug_output.contains("super-secret-key"),
+            "api key leaked into Debug output: {debug_output}"
+        );
     }
 
     #[test]

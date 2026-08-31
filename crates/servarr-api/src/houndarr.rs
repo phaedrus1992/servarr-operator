@@ -32,12 +32,26 @@ const CSRF_COOKIE_NAME: &str = "houndarr_csrf";
 const SUPPORTED_KINDS: &[&str] = &["sonarr", "radarr", "lidarr", "readarr"];
 
 /// Client for Houndarr's session/CSRF-authenticated instance-registration UI.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct HoundarrClient {
     base_url: String,
     client: reqwest::Client,
     cookie_header: String,
     csrf_token: String,
+}
+
+impl std::fmt::Debug for HoundarrClient {
+    /// Redacts `cookie_header` and `csrf_token` — both carry an authenticated
+    /// Houndarr admin session and must never appear in logs (e.g. via
+    /// `tracing::debug!(?client, ...)`).
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HoundarrClient")
+            .field("base_url", &self.base_url)
+            .field("client", &self.client)
+            .field("cookie_header", &"<redacted>")
+            .field("csrf_token", &"<redacted>")
+            .finish()
+    }
 }
 
 #[derive(Deserialize)]
@@ -104,7 +118,10 @@ impl HoundarrClient {
         }
         if !status.is_redirection() {
             let status = status.as_u16();
-            let body = resp.text().await.unwrap_or_default();
+            let body = resp.text().await.unwrap_or_else(|e| {
+                tracing::debug!(error = %e, "failed to read Houndarr error response body");
+                String::new()
+            });
             return Err(ApiError::ApiResponse { status, body });
         }
 
@@ -112,7 +129,14 @@ impl HoundarrClient {
             .headers()
             .get_all(reqwest::header::SET_COOKIE)
             .iter()
-            .filter_map(|v| v.to_str().ok())
+            .filter_map(|v| {
+                v.to_str().ok().or_else(|| {
+                    tracing::debug!(
+                        "Houndarr Set-Cookie header was not valid UTF-8/ASCII, skipping"
+                    );
+                    None
+                })
+            })
             .collect();
         let session = extract_cookie_value(&set_cookie, SESSION_COOKIE_NAME).ok_or_else(|| {
             ApiError::OperationFailed {
@@ -161,7 +185,10 @@ impl CrossAppSync for HoundarrClient {
 
         if !resp.status().is_success() {
             let status = resp.status().as_u16();
-            let body = resp.text().await.unwrap_or_default();
+            let body = resp.text().await.unwrap_or_else(|e| {
+                tracing::debug!(error = %e, "failed to read Houndarr error response body");
+                String::new()
+            });
             return Err(ApiError::ApiResponse { status, body });
         }
 
@@ -196,11 +223,31 @@ impl CrossAppSync for HoundarrClient {
             .map_err(ApiError::Request)?;
 
         let status = resp.status();
-        if status.is_success() || status.is_redirection() {
+        if status.is_redirection() {
+            // A redirect back to /login means the session expired or the CSRF token
+            // rotated mid-sync -- that must not be conflated with the documented
+            // "303 = created" success case, since the client built with
+            // redirect::Policy::none() never follows it to find out otherwise.
+            let redirects_to_login = resp
+                .headers()
+                .get(reqwest::header::LOCATION)
+                .and_then(|v| v.to_str().ok())
+                .is_some_and(|location| location.contains("/login"));
+            if redirects_to_login {
+                return Err(ApiError::OperationFailed {
+                    message: "Houndarr redirected to /login; session expired or CSRF token rotated mid-sync".to_string(),
+                });
+            }
+            return Ok(());
+        }
+        if status.is_success() {
             Ok(())
         } else {
             let status = status.as_u16();
-            let body = resp.text().await.unwrap_or_default();
+            let body = resp.text().await.unwrap_or_else(|e| {
+                tracing::debug!(error = %e, "failed to read Houndarr error response body");
+                String::new()
+            });
             Err(ApiError::ApiResponse { status, body })
         }
     }
@@ -209,7 +256,42 @@ impl CrossAppSync for HoundarrClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
     use wiremock::matchers::{body_string_contains, header, method, path};
+
+    proptest! {
+        // extract_cookie_value must recover the exact value for the named cookie
+        // regardless of trailing attributes (Path, SameSite, HttpOnly, ...) or
+        // other unrelated Set-Cookie headers present in the same response.
+        #[test]
+        fn extract_cookie_value_recovers_arbitrary_values(
+            name in "[a-z_]{1,20}",
+            value in "[a-zA-Z0-9._~-]{0,40}",
+            attrs in "[a-zA-Z=/; ]{0,30}",
+            other_name in "[a-z_]{1,20}",
+            other_value in "[a-zA-Z0-9._~-]{0,20}",
+        ) {
+            prop_assume!(name != other_name);
+            let target = format!("{name}={value}; {attrs}");
+            let other = format!("{other_name}={other_value}");
+            let headers = [other.as_str(), target.as_str()];
+
+            let extracted = extract_cookie_value(&headers, &name);
+            prop_assert_eq!(extracted, Some(value));
+        }
+
+        // A cookie name that never appears must yield None, not a panic or a
+        // false match against an unrelated cookie's value.
+        #[test]
+        fn extract_cookie_value_returns_none_when_absent(
+            headers in prop::collection::vec("[a-z_]{1,20}=[a-zA-Z0-9._~-]{0,20}", 0..5),
+            missing_name in "[a-z_]{1,20}",
+        ) {
+            prop_assume!(headers.iter().all(|h| !h.starts_with(&format!("{missing_name}="))));
+            let refs: Vec<&str> = headers.iter().map(String::as_str).collect();
+            prop_assert_eq!(extract_cookie_value(&refs, &missing_name), None);
+        }
+    }
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     async fn mount_successful_login(server: &MockServer) {
@@ -229,6 +311,26 @@ mod tests {
             )
             .mount(server)
             .await;
+    }
+
+    #[tokio::test]
+    async fn new_debug_output_does_not_leak_session_or_csrf() {
+        let server = MockServer::start().await;
+        mount_successful_login(&server).await;
+
+        let client = HoundarrClient::new(&server.uri(), "admin", "hunter2")
+            .await
+            .expect("should log in");
+        let debug_output = format!("{client:?}");
+
+        assert!(
+            !debug_output.contains("sess-token"),
+            "session cookie leaked into Debug output: {debug_output}"
+        );
+        assert!(
+            !debug_output.contains("csrf-token"),
+            "CSRF token leaked into Debug output: {debug_output}"
+        );
     }
 
     #[tokio::test]
@@ -406,6 +508,36 @@ mod tests {
             .register("radarr", &instance)
             .await
             .expect("should register");
+    }
+
+    #[tokio::test]
+    async fn register_redirect_to_login_is_not_treated_as_success() {
+        // A 303 to /login means the session expired mid-sync (or the CSRF token
+        // rotated) -- it must not be conflated with the documented "303 = created"
+        // success case.
+        let server = MockServer::start().await;
+        mount_successful_login(&server).await;
+        Mock::given(method("POST"))
+            .and(path("/settings/instances"))
+            .respond_with(ResponseTemplate::new(303).insert_header("Location", "/login"))
+            .mount(&server)
+            .await;
+
+        let client = HoundarrClient::new(&server.uri(), "admin", "hunter2")
+            .await
+            .unwrap();
+        let instance = RegisteredArrInstance {
+            name: "Radarr1".to_string(),
+            base_url: "http://radarr:7878".to_string(),
+            api_key: "radarr-key".to_string(),
+        };
+        let err = client.register("radarr", &instance).await.unwrap_err();
+        match err {
+            ApiError::OperationFailed { message } => {
+                assert!(message.contains("session"), "got: {message}");
+            }
+            other => panic!("expected OperationFailed, got: {other}"),
+        }
     }
 
     #[tokio::test]
