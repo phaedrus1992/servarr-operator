@@ -190,7 +190,7 @@ jobs:
     runs-on: ubuntu-latest
     # Covers: docker build (compiles inside the container; no persisted
     # BuildKit cache in CI, so this is an uncached from-scratch build) + kind
-    # cluster start + 14 media-stack deployments becoming ready (up to 360s
+    # cluster start + 17 media-stack deployments becoming ready (up to 360s
     # alone, per smoke-test.sh) + a credential check. 25m gives headroom
     # without letting a hung run block the required-checks queue indefinitely.
     timeout-minutes: 25
@@ -218,9 +218,9 @@ jobs:
       # script is manual-stage only, not part of the pre-push hook (#767) —
       # this job is a required check on main, but release/N.x branches have
       # no branch protection yet (#770), so treat it as advisory there until
-      # that's fixed. This checks that the 14 media-stack app deployments
-      # (bazarr, jackett, jellyfin, lidarr, ... — see APP_PORTS in
-      # smoke-test.sh) reach Ready and that Jellyfin's admin credentials
+      # that's fixed. This checks that the 17 media-stack app deployments
+      # (bazarr, cleanuparr, houndarr, jackett, jellyfin, lidarr, ... — see
+      # APP_PORTS in smoke-test.sh) reach Ready and that Jellyfin's admin credentials
       # authenticate; it is not a full end-to-end functional test of every
       # app's own behavior.
       - name: Run smoke test

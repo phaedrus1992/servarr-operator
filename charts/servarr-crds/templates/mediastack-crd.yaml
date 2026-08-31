@@ -104,6 +104,9 @@ spec:
                       - SshBastion
                       - Bazarr
                       - Subgen
+                      - Unpackerr
+                      - Cleanuparr
+                      - Houndarr
                       - Overseerr
                       type: string
                     appConfig:
@@ -121,6 +124,8 @@ spec:
                         - seerr
                       - required:
                         - lidarr
+                      - required:
+                        - unpackerr
                       properties:
                         lidarr:
                           description: Configuration for the Lidarr application.
@@ -402,6 +407,90 @@ spec:
                               type: object
                               x-kubernetes-preserve-unknown-fields: true
                           type: object
+                        unpackerr:
+                          description: 'Unpackerr configuration: one optional instance per supported *arr kind.'
+                          properties:
+                            lidarr:
+                              description: |-
+                                One *arr instance for Unpackerr's static `/config/unpackerr.conf` (#604).
+
+                                Unpackerr has no live API of its own, so its *arr connections are seeded
+                                once by an init container from these CRD spec fields rather than
+                                auto-discovered on every reconcile (contrast `CleanuparrSyncSpec`,
+                                `HoundarrSyncSpec`).
+                              nullable: true
+                              properties:
+                                apiKeySecret:
+                                  description: 'Secret containing this instance''s API key (key: `api-key`).'
+                                  type: string
+                                url:
+                                  description: Base URL of the *arr instance, e.g. `http://sonarr.media.svc:8989`.
+                                  type: string
+                              required:
+                              - apiKeySecret
+                              - url
+                              type: object
+                            radarr:
+                              description: |-
+                                One *arr instance for Unpackerr's static `/config/unpackerr.conf` (#604).
+
+                                Unpackerr has no live API of its own, so its *arr connections are seeded
+                                once by an init container from these CRD spec fields rather than
+                                auto-discovered on every reconcile (contrast `CleanuparrSyncSpec`,
+                                `HoundarrSyncSpec`).
+                              nullable: true
+                              properties:
+                                apiKeySecret:
+                                  description: 'Secret containing this instance''s API key (key: `api-key`).'
+                                  type: string
+                                url:
+                                  description: Base URL of the *arr instance, e.g. `http://sonarr.media.svc:8989`.
+                                  type: string
+                              required:
+                              - apiKeySecret
+                              - url
+                              type: object
+                            readarr:
+                              description: |-
+                                One *arr instance for Unpackerr's static `/config/unpackerr.conf` (#604).
+
+                                Unpackerr has no live API of its own, so its *arr connections are seeded
+                                once by an init container from these CRD spec fields rather than
+                                auto-discovered on every reconcile (contrast `CleanuparrSyncSpec`,
+                                `HoundarrSyncSpec`).
+                              nullable: true
+                              properties:
+                                apiKeySecret:
+                                  description: 'Secret containing this instance''s API key (key: `api-key`).'
+                                  type: string
+                                url:
+                                  description: Base URL of the *arr instance, e.g. `http://sonarr.media.svc:8989`.
+                                  type: string
+                              required:
+                              - apiKeySecret
+                              - url
+                              type: object
+                            sonarr:
+                              description: |-
+                                One *arr instance for Unpackerr's static `/config/unpackerr.conf` (#604).
+
+                                Unpackerr has no live API of its own, so its *arr connections are seeded
+                                once by an init container from these CRD spec fields rather than
+                                auto-discovered on every reconcile (contrast `CleanuparrSyncSpec`,
+                                `HoundarrSyncSpec`).
+                              nullable: true
+                              properties:
+                                apiKeySecret:
+                                  description: 'Secret containing this instance''s API key (key: `api-key`).'
+                                  type: string
+                                url:
+                                  description: Base URL of the *arr instance, e.g. `http://sonarr.media.svc:8989`.
+                                  type: string
+                              required:
+                              - apiKeySecret
+                              - url
+                              type: object
+                          type: object
                       type: object
                     backup:
                       description: Backup configuration for the app.
@@ -441,6 +530,26 @@ spec:
                           type: boolean
                         namespaceScope:
                           description: Namespace to discover companion apps in. Defaults to Bazarr's own namespace.
+                          nullable: true
+                          type: string
+                      type: object
+                    cleanuparrSync:
+                      description: |-
+                        Sync spec for Cleanuparr → Sonarr/Radarr/Lidarr/Readarr integration.
+
+                        When enabled on a Cleanuparr-type ServarrApp, the operator discovers *arr
+                        instances in the target namespace and registers them in Cleanuparr via its
+                        JSON `ArrConfigController` API. Reuses the generic `spec.apiKeySecret` +
+                        `ensure_api_key_secret` mechanism already used by Maintainerr — no
+                        Cleanuparr-specific credential field is needed.
+                      nullable: true
+                      properties:
+                        enabled:
+                          default: false
+                          description: Enable Cleanuparr cross-app sync.
+                          type: boolean
+                        namespaceScope:
+                          description: Namespace to discover companion apps in. Defaults to Cleanuparr's own namespace.
                           nullable: true
                           type: string
                       type: object
@@ -545,6 +654,35 @@ spec:
                           format: int32
                           nullable: true
                           type: integer
+                      type: object
+                    houndarrSync:
+                      description: |-
+                        Sync spec for Houndarr → Sonarr/Radarr/Lidarr/Readarr integration.
+
+                        Houndarr has no JSON registration API — the operator logs in as
+                        `admin_credentials_secret`'s username/password and drives its
+                        session/CSRF-protected settings form instead (see `HoundarrClient`).
+                        Required, not optional like the other sync specs' `namespace_scope`: the
+                        client cannot function without a login.
+                      nullable: true
+                      properties:
+                        adminCredentialsSecret:
+                          description: |-
+                            Secret holding Houndarr's own admin login (keys: `username`, `password`),
+                            needed for the session-cookie login `HoundarrClient` performs. Same
+                            Secret shape as the existing admin-credentials pattern
+                            (`docs/admin-credentials.md`).
+                          type: string
+                        enabled:
+                          default: false
+                          description: Enable Houndarr cross-app sync.
+                          type: boolean
+                        namespaceScope:
+                          description: Namespace to discover companion apps in. Defaults to Houndarr's own namespace.
+                          nullable: true
+                          type: string
+                      required:
+                      - adminCredentialsSecret
                       type: object
                     image:
                       nullable: true

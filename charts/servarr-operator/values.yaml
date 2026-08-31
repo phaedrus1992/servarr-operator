@@ -112,6 +112,15 @@ defaultImages:
   subgen:
     repository: mccloud/subgen
     tag: "2026.07.3"
+  unpackerr:
+    repository: ghcr.io/unpackerr/unpackerr
+    tag: "0.16.1"
+  cleanuparr:
+    repository: ghcr.io/cleanuparr/cleanuparr
+    tag: "2.10.5"
+  houndarr:
+    repository: ghcr.io/av1155/houndarr
+    tag: "v1.13.2"
   jellyfin:
     repository: linuxserver/jellyfin
     tag: "10.11.11"
