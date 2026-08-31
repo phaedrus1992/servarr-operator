@@ -7,11 +7,11 @@ use crate::metrics::increment_event_publish_failure;
 use std::collections::{HashMap, HashSet};
 use tracing::{info, warn};
 
-///
-/// Every field is `pub(crate)`: the namespace-scope decision in [`watch_namespace`] must be
-/// reachable only through the validated [`Context::new`] constructor, never by assembling a
-/// struct literal that skips validation (#757). Code outside this crate that needs a `Context`
-/// for tests should use the `test-util`-feature-gated builder below.
+/// Every field is `pub(crate)`, so code outside this crate cannot construct a struct literal that
+/// skips the `WATCH_NAMESPACE` validation [`Context::new`] performs (#757). This does not cover
+/// in-crate `#[cfg(test)]` code, which can still see `pub(crate)` fields directly and build a
+/// `Context` by struct literal -- that is same-crate test code with direct field access either
+/// way, not a validation bypass reachable from outside.
 pub struct Context {
     pub(crate) client: Client,
     /// Image overrides loaded from DEFAULT_IMAGE_<APP>_REPO / DEFAULT_IMAGE_<APP>_TAG env vars.
@@ -128,20 +128,6 @@ impl Context {
             app_api_base_override: None,
             event_publish_tasks: tokio_util::task::TaskTracker::new(),
         }
-    }
-
-    #[cfg(feature = "test-util")]
-    #[must_use]
-    pub fn with_watch_namespace(mut self, watch_namespace: Option<String>) -> Self {
-        self.watch_namespace = watch_namespace;
-        self
-    }
-
-    #[cfg(feature = "test-util")]
-    #[must_use]
-    pub fn with_app_api_base_override(mut self, app_api_base_override: Option<String>) -> Self {
-        self.app_api_base_override = app_api_base_override;
-        self
     }
 
     #[cfg(feature = "test-util")]

@@ -31,8 +31,10 @@ pre-release-replacements = [
 
 [features]
 # Exposes Context::for_test and its with_* builder methods, which skip Context::new's
-# WATCH_NAMESPACE validation. Enabled only for this crate's own test builds via the
-# self-referencing dev-dependency below -- never part of a production build (#757).
+# WATCH_NAMESPACE validation. Enabled only by this crate's own dev-dependency below, so no
+# build command in this repo enables it in a shipped binary (#757) -- but nothing enforces
+# that: an explicit --features test-util or --all-features on a release build would still
+# compile it in.
 test-util = []
 
 [dependencies]
