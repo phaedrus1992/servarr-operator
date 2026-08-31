@@ -4275,7 +4275,7 @@ fn test_build_api_key_with_secret_name_returns_secret() {
 /// Every `AppType` variant — kept in sync with `AppDefaults::validate_all`'s
 /// own list. Scenarios built from this cover the "ordinary app reserves
 /// nothing" direction too, not just the four app types with reserved mounts.
-const ALL_APP_TYPES: [AppType; 15] = [
+const ALL_APP_TYPES: [AppType; 18] = [
     AppType::Sonarr,
     AppType::Radarr,
     AppType::Lidarr,
@@ -4291,6 +4291,9 @@ const ALL_APP_TYPES: [AppType; 15] = [
     AppType::SshBastion,
     AppType::Bazarr,
     AppType::Subgen,
+    AppType::Unpackerr,
+    AppType::Cleanuparr,
+    AppType::Houndarr,
 ];
 
 /// The exact per-user mount paths `build_volume_mounts` injects for `app`'s

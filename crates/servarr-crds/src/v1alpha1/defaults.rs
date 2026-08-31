@@ -379,6 +379,9 @@ pub fn operator_reserved_volume_names(spec: &super::ServarrAppSpec) -> Vec<&'sta
         reserved.push("bazarr-init-scripts");
         reserved.push("bazarr-api-key");
     }
+    if matches!(spec.app, super::AppType::Unpackerr) {
+        reserved.push("unpackerr-init-scripts");
+    }
     if let Some(super::AppConfig::Sabnzbd(sc)) = &spec.app_config {
         if sc.tar_unpack {
             reserved.push("tar-unpack-scripts");

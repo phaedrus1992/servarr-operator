@@ -580,6 +580,19 @@ fn build_volumes(app: &ServarrApp, persistence: &PersistenceSpec) -> Vec<Volume>
         });
     }
 
+    // Unpackerr init script ConfigMap volume
+    if matches!(app.spec.app, AppType::Unpackerr) {
+        volumes.push(Volume {
+            name: "unpackerr-init-scripts".into(),
+            config_map: Some(ConfigMapVolumeSource {
+                name: common::child_name(app, "init"),
+                default_mode: Some(0o755),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+    }
+
     // SABnzbd tar-unpack scripts ConfigMap
     if let Some(AppConfig::Sabnzbd(ref sc)) = app.spec.app_config
         && sc.tar_unpack
@@ -1256,6 +1269,65 @@ fn build_init_containers(
             }]),
             security_context: Some(init_sec),
             volume_mounts: Some(bazarr_init_mounts),
+            ..Default::default()
+        });
+    }
+
+    // Unpackerr configure init container: seeds /config/unpackerr.conf once from
+    // spec.appConfig's UnpackerrConfig (#604). Each configured *arr instance's
+    // API key is injected as its own env var, named to match the placeholder
+    // build_unpackerr_init() templated into the script.
+    if matches!(app.spec.app, AppType::Unpackerr) {
+        let init_sec = SecurityContext {
+            run_as_user: Some(uid),
+            run_as_group: Some(gid),
+            ..security_context.clone()
+        };
+        let unpackerr_config = match &app.spec.app_config {
+            Some(AppConfig::Unpackerr(c)) => c.clone(),
+            _ => servarr_crds::UnpackerrConfig::default(),
+        };
+        let mut env = Vec::new();
+        for (instance, env_var) in [
+            (&unpackerr_config.sonarr, "UNPACKERR_SONARR_0_APIKEY"),
+            (&unpackerr_config.radarr, "UNPACKERR_RADARR_0_APIKEY"),
+            (&unpackerr_config.lidarr, "UNPACKERR_LIDARR_0_APIKEY"),
+            (&unpackerr_config.readarr, "UNPACKERR_READARR_0_APIKEY"),
+        ] {
+            if let Some(instance) = instance {
+                env.push(EnvVar {
+                    name: env_var.to_string(),
+                    value_from: Some(EnvVarSource {
+                        secret_key_ref: Some(SecretKeySelector {
+                            name: instance.api_key_secret.clone(),
+                            key: "api-key".into(),
+                            optional: Some(false),
+                        }),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                });
+            }
+        }
+        init.push(Container {
+            name: "unpackerr-init".into(),
+            image: Some(image.to_string()),
+            command: Some(vec!["/bin/sh".into(), "/scripts/unpackerr-init.sh".into()]),
+            env: Some(env),
+            security_context: Some(init_sec),
+            volume_mounts: Some(vec![
+                VolumeMount {
+                    name: "config".into(),
+                    mount_path: "/config".into(),
+                    ..Default::default()
+                },
+                VolumeMount {
+                    name: "unpackerr-init-scripts".into(),
+                    mount_path: "/scripts".into(),
+                    read_only: Some(true),
+                    ..Default::default()
+                },
+            ]),
             ..Default::default()
         });
     }

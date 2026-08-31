@@ -609,6 +609,75 @@ echo "bazarr-init: wrote $CONFIG"
     })
 }
 
+/// Build the ConfigMap containing the Unpackerr init script.
+///
+/// Unpackerr has no live API — the operator seeds `/config/unpackerr.conf` once
+/// from `spec.appConfig`'s `UnpackerrConfig` (per-instance URL, API key via env
+/// var from `apiKeySecret`), then leaves it alone (idempotent: a second run is a
+/// no-op if the file exists). `webserver.metrics` is always forced on so port
+/// 5656 (`image-defaults.toml`) is probeable — Unpackerr's webserver only
+/// listens when metrics are enabled.
+pub fn build_unpackerr_init(app: &ServarrApp) -> Option<ConfigMap> {
+    if !matches!(app.spec.app, AppType::Unpackerr) {
+        return None;
+    }
+
+    let name = common::child_name(app, "init");
+    let ns = common::app_namespace(app);
+
+    let unpackerr_config = match &app.spec.app_config {
+        Some(AppConfig::Unpackerr(c)) => c.clone(),
+        _ => servarr_crds::UnpackerrConfig::default(),
+    };
+
+    let mut blocks = String::new();
+    for (kind, instance, env_var) in [
+        ("sonarr", &unpackerr_config.sonarr, "UNPACKERR_SONARR_0_APIKEY"),
+        ("radarr", &unpackerr_config.radarr, "UNPACKERR_RADARR_0_APIKEY"),
+        ("lidarr", &unpackerr_config.lidarr, "UNPACKERR_LIDARR_0_APIKEY"),
+        ("readarr", &unpackerr_config.readarr, "UNPACKERR_READARR_0_APIKEY"),
+    ] {
+        if let Some(instance) = instance {
+            blocks.push_str(&format!(
+                "cat >> \"$CONFIG\" << UNPACKERR_INSTANCE_EOF\n[[{kind}]]\n  url = \"{url}\"\n  api_key = \"${{{env_var}}}\"\nUNPACKERR_INSTANCE_EOF\n",
+                url = instance.url,
+            ));
+        }
+    }
+
+    let script = format!(
+        r#"#!/bin/sh
+set -eu
+CONFIG=/config/unpackerr.conf
+if [ -f "$CONFIG" ]; then
+  echo "unpackerr-init: config already exists, skipping"
+  exit 0
+fi
+mkdir -p "$(dirname "$CONFIG")"
+cat > "$CONFIG" << UNPACKERR_EOF
+[webserver]
+  metrics = true
+UNPACKERR_EOF
+{blocks}echo "unpackerr-init: wrote $CONFIG"
+"#
+    );
+
+    Some(ConfigMap {
+        metadata: ObjectMeta {
+            name: Some(name),
+            namespace: Some(ns),
+            labels: Some(common::labels(app)),
+            owner_references: Some(vec![common::owner_reference(app)]),
+            ..Default::default()
+        },
+        data: Some(BTreeMap::from([(
+            "unpackerr-init.sh".to_string(),
+            script,
+        )])),
+        ..Default::default()
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -631,6 +700,75 @@ mod tests {
             },
             status: None,
         }
+    }
+
+    fn minimal_unpackerr_app() -> ServarrApp {
+        ServarrApp {
+            metadata: ObjectMeta {
+                name: Some("unpackerr".into()),
+                namespace: Some("media".into()),
+                uid: Some("uid-unpackerr".into()),
+                ..Default::default()
+            },
+            spec: servarr_crds::ServarrAppSpec {
+                app: AppType::Unpackerr,
+                ..Default::default()
+            },
+            status: None,
+        }
+    }
+
+    #[test]
+    fn unpackerr_init_always_enables_webserver_metrics() {
+        let app = minimal_unpackerr_app();
+        let cm = build_unpackerr_init(&app).expect("should generate configmap");
+        let script = cm
+            .data
+            .as_ref()
+            .and_then(|d| d.get("unpackerr-init.sh"))
+            .expect("script key present");
+        assert!(
+            script.contains("metrics = true"),
+            "Unpackerr's webserver.metrics must always be forced on so port 5656 is \
+             probeable, got: {script}"
+        );
+    }
+
+    #[test]
+    fn unpackerr_init_renders_no_instance_blocks_when_unconfigured() {
+        let app = minimal_unpackerr_app();
+        let cm = build_unpackerr_init(&app).expect("should generate configmap");
+        let script = cm.data.as_ref().unwrap().get("unpackerr-init.sh").unwrap();
+        assert!(!script.contains("[[sonarr]]"));
+        assert!(!script.contains("[[radarr]]"));
+    }
+
+    #[test]
+    fn unpackerr_init_renders_configured_instance_blocks() {
+        let mut app = minimal_unpackerr_app();
+        app.spec.app_config = Some(AppConfig::Unpackerr(servarr_crds::UnpackerrConfig {
+            sonarr: Some(servarr_crds::UnpackerrArrInstance {
+                url: "http://sonarr.media.svc:8989".into(),
+                api_key_secret: "sonarr-api-key".into(),
+            }),
+            radarr: None,
+            lidarr: None,
+            readarr: None,
+        }));
+        let cm = build_unpackerr_init(&app).expect("should generate configmap");
+        let script = cm.data.as_ref().unwrap().get("unpackerr-init.sh").unwrap();
+        assert!(script.contains("[[sonarr]]"), "got: {script}");
+        assert!(
+            script.contains("http://sonarr.media.svc:8989"),
+            "got: {script}"
+        );
+        assert!(!script.contains("[[radarr]]"));
+    }
+
+    #[test]
+    fn unpackerr_init_returns_none_for_other_app_types() {
+        let app = minimal_ssh_bastion_app();
+        assert!(build_unpackerr_init(&app).is_none());
     }
 
     #[test]

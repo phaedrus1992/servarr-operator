@@ -682,6 +682,9 @@ fn app_type_serde_roundtrip_all_variants() {
         AppType::SshBastion,
         AppType::Bazarr,
         AppType::Subgen,
+        AppType::Unpackerr,
+        AppType::Cleanuparr,
+        AppType::Houndarr,
     ];
     for app in &all {
         let json = serde_json::to_string(app).expect("serialize");
