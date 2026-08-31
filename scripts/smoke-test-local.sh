@@ -47,6 +47,16 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# A typo in --namespace must never target a namespace this script cannot safely delete.
+case "$NAMESPACE" in
+default | kube-system | kube-public | kube-node-lease)
+  echo "ERROR: --namespace '$NAMESPACE' is a reserved Kubernetes namespace." >&2
+  echo "  This script creates and deletes its own namespace. It refuses to run against" >&2
+  echo "  a namespace that must never be deleted." >&2
+  exit 1
+  ;;
+esac
+
 # ---------------------------------------------------------------------------
 # Preflight: cluster must be reachable
 # ---------------------------------------------------------------------------
@@ -64,21 +74,15 @@ echo "  Cluster OK: $(kubectl config current-context)"
 detect_cluster_type() {
   local ctx
   ctx=$(kubectl config current-context 2>/dev/null || echo "")
+  # Match the context name only. A binary-presence fallback (kind/k3d installed
+  # and has some cluster, regardless of which one is current) would let this
+  # script run against a cluster its own context name never claimed to be local.
   case "$ctx" in
   kind-*) echo "kind" ;;
   k3d-*) echo "k3d" ;;
   rancher-desktop) echo "rancher-desktop" ;;
   docker-desktop) echo "docker-desktop" ;;
-  *)
-    # Fallback: check if kind/k3d binaries exist and have matching clusters
-    if command -v kind &>/dev/null && kind get clusters 2>/dev/null | grep -q .; then
-      echo "kind"
-    elif command -v k3d &>/dev/null && k3d cluster list 2>/dev/null | grep -q .; then
-      echo "k3d"
-    else
-      echo "unknown"
-    fi
-    ;;
+  *) echo "unknown" ;;
   esac
 }
 
@@ -135,8 +139,13 @@ esac
 # Create namespace and register cleanup
 # ---------------------------------------------------------------------------
 # Saved before this script ever touches the developer's kubectl context, so cleanup can
-# restore it even if a later step fails partway through setup.
-PRIOR_NAMESPACE="$(kubectl config view --minify --output 'jsonpath={..namespace}' 2>/dev/null || true)"
+# restore it even if a later step fails partway through setup. --minify leaves exactly
+# one context, so the exact field path is safe — {..namespace} would also match a
+# namespace key nested anywhere else in the config (e.g. under extensions).
+if ! PRIOR_NAMESPACE="$(kubectl config view --minify --output 'jsonpath={.contexts[0].context.namespace}')"; then
+  echo "WARNING: could not read the current kubectl namespace. Will restore to 'default' on exit." >&2
+  PRIOR_NAMESPACE=""
+fi
 
 cleanup() {
   if [[ "$KEEP_NS" == "true" ]]; then
@@ -145,12 +154,18 @@ cleanup() {
   else
     echo ""
     echo "Cleaning up namespace '${NAMESPACE}'..."
-    kubectl delete namespace "$NAMESPACE" --ignore-not-found --timeout=60s || true
+    if ! kubectl delete namespace "$NAMESPACE" --ignore-not-found --timeout=60s; then
+      echo "WARNING: failed to delete namespace '${NAMESPACE}'. Delete it by hand:" >&2
+      echo "  kubectl delete namespace ${NAMESPACE}" >&2
+    fi
   fi
   # Always restore the developer's own namespace, kept or not — otherwise their default
   # kubectl context is left pointing at this script's namespace instead of their own.
   echo "Restoring kubectl namespace to '${PRIOR_NAMESPACE:-default}'..."
-  kubectl config set-context --current --namespace="$PRIOR_NAMESPACE" || true
+  if ! kubectl config set-context --current --namespace="$PRIOR_NAMESPACE" >/dev/null; then
+    echo "WARNING: failed to restore the kubectl namespace. Restore it by hand:" >&2
+    echo "  kubectl config set-context --current --namespace=${PRIOR_NAMESPACE:-default}" >&2
+  fi
 }
 trap cleanup EXIT
 

@@ -70,14 +70,19 @@ exit 0
 INNER
   chmod +x "$root/bin/helm"
 
-  # detect_cluster_type()'s fallback shells out to a real kind/k3d if either is on PATH,
-  # which on a dev machine with a real local cluster returns a real answer instead of the
-  # "unknown" this fixture wants. Shadow both: "get"/"cluster" (the list-clusters calls)
-  # report no clusters; everything else (the image-load calls) succeeds like a real tool.
+  # Shadow the real kind/k3d that may exist on a dev machine, since the script's guard
+  # must never depend on whether a real local cluster happens to exist — only on the
+  # current context's name. FAKE_KIND_CLUSTERS/FAKE_K3D_CLUSTERS let a test case prove
+  # that: set non-empty to simulate a real cluster registered, and confirm the guard
+  # still refuses an unrecognized context. Non-"get"/"cluster" calls (the image-load
+  # step) always succeed like a real tool.
   cat >"$root/bin/kind" <<'INNER'
 #!/usr/bin/env bash
 echo "kind $*" >>"$FAKE_CALL_LOG"
-[[ "$1" == "get" ]] && exit 1
+if [[ "$1" == "get" ]]; then
+  [[ -n "${FAKE_KIND_CLUSTERS:-}" ]] && { echo "$FAKE_KIND_CLUSTERS"; exit 0; }
+  exit 1
+fi
 exit 0
 INNER
   chmod +x "$root/bin/kind"
@@ -85,7 +90,10 @@ INNER
   cat >"$root/bin/k3d" <<'INNER'
 #!/usr/bin/env bash
 echo "k3d $*" >>"$FAKE_CALL_LOG"
-[[ "$1" == "cluster" ]] && exit 1
+if [[ "$1" == "cluster" ]]; then
+  [[ -n "${FAKE_K3D_CLUSTERS:-}" ]] && { echo "$FAKE_K3D_CLUSTERS"; exit 0; }
+  exit 1
+fi
 exit 0
 INNER
   chmod +x "$root/bin/k3d"
@@ -106,6 +114,7 @@ run_script() {
 
   RESULT_EXIT=0
   FAKE_CALL_LOG="$call_log" FAKE_CONTEXT="$context" FAKE_PRIOR_NAMESPACE="$prior" \
+    FAKE_KIND_CLUSTERS="${FAKE_KIND_CLUSTERS:-}" FAKE_K3D_CLUSTERS="${FAKE_K3D_CLUSTERS:-}" \
     PATH="$root/bin:$PATH" \
     bash "$root/scripts/smoke-test-local.sh" "$@" >"$WORK_DIR/out.log" 2>&1 || RESULT_EXIT=$?
   RESULT_CALLS="$(cat "$call_log")"
@@ -158,6 +167,29 @@ assert_no_match "an unrecognized cluster type never runs the docker build" \
   "^docker build" "$RESULT_CALLS"
 assert_no_match "an unrecognized cluster type never creates a namespace" \
   "^kubectl create namespace" "$RESULT_CALLS"
+
+# The guard must key off the current context's name, not off whether a real kind/k3d
+# cluster happens to exist on the host — otherwise a dev machine with an unrelated local
+# cluster registered would wave through a context pointed at a different, unrecognized
+# (possibly shared or production) cluster.
+FAKE_KIND_CLUSTERS="unrelated-local-cluster"
+run_script "some-remote-cluster" ""
+FAKE_KIND_CLUSTERS=""
+assert_exit "an unrecognized context still refuses even when a real kind cluster exists" 1
+assert_no_match "a real kind cluster elsewhere never lets the docker build run" \
+  "^docker build" "$RESULT_CALLS"
+
+# ── Reserved namespace ──────────────────────────────────────────────────────────────────
+
+run_script "docker-desktop" "my-prod-ns" --namespace default
+assert_exit "--namespace default is refused" 1
+assert_match "--namespace default prints a refusal message" \
+  "reserved Kubernetes namespace" "$RESULT_OUTPUT"
+assert_no_match "--namespace default never runs the docker build" \
+  "^docker build" "$RESULT_CALLS"
+
+run_script "docker-desktop" "my-prod-ns" --namespace kube-system
+assert_exit "--namespace kube-system is refused" 1
 
 # ── Recognized cluster types proceed ────────────────────────────────────────────────────
 
