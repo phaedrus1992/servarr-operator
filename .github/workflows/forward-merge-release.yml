@@ -5,7 +5,7 @@ on:
     branches:
       - 'release/**'
 
-# Default to read-only; the job that needs write declares it explicitly.
+# Default to read-only; each job that needs write declares it explicitly.
 permissions:
   contents: read
 
@@ -14,14 +14,19 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  forward-merge:
+  # Does the merge, the build-gate check (#528), and nothing else. No push
+  # credentials of any kind — cargo build executes build.rs/proc-macros from
+  # the merged tree, and that must never run with a write-capable token in
+  # scope (#616). Successful merges are handed to forward-merge as git
+  # bundles; this job never touches origin.
+  verify-merge:
     runs-on: ubuntu-latest
-    # Intentionally no actor filter: CI-initiated pushes (auto-commit version
-    # bumps from the release workflow) must also trigger the forward-merge
-    # cascade so the release branch stays in sync with main.
     permissions:
-      contents: write
-      pull-requests: write
+      contents: read
+    outputs:
+      current: ${{ steps.cascade.outputs.current }}
+      verified_targets: ${{ steps.cascade.outputs.verified_targets }}
+      halted: ${{ steps.cascade.outputs.halted }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -56,21 +61,25 @@ jobs:
             echo "$DELIM"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Forward-merge cascade
+      - name: Verify cascade
+        id: cascade
         env:
           CURRENT: ${{ steps.detect.outputs.current }}
           BRANCHES: ${{ steps.detect.outputs.branches }}
-          GH_TOKEN: ${{ github.token }}
-          # A PAT with workflow scope allows pushing merge commits that touch
-          # .github/workflows/ — the built-in GITHUB_TOKEN cannot. Injected
-          # per push via `-c http.extraheader` (see push_head_to_target below)
-          # instead of `git remote set-url`, which would write it in
-          # cleartext into .git/config for the rest of the job — including
-          # the `cargo build` below, where a build.rs/proc-macro in the
-          # merged workspace could read and exfiltrate it.
-          FORWARD_MERGE_PAT: ${{ secrets.FORWARD_MERGE_PAT }}
         run: |
           set -euo pipefail
+
+          emit_outputs() {
+            local delim
+            delim="targets-$(uuidgen)"
+            {
+              echo "current=$CURRENT"
+              echo "halted=${HALTED:-}"
+              echo "verified_targets<<$delim"
+              printf '%s\n' "${VERIFIED[@]}"
+              echo "$delim"
+            } >> "$GITHUB_OUTPUT"
+          }
 
           # Build target list: every newer release branch (semver order) + main.
           TARGETS=()
@@ -84,19 +93,20 @@ jobs:
             fi
           done <<< "$BRANCHES"
 
+          VERIFIED=()
+          HALTED=""
+
           # Guard: the pushed branch must be a recognized versioned release line.
           # The trigger (release/**) is broader than the X.x regex, so a branch
           # like release/foo would otherwise fall through and merge into main.
           if [[ "$FOUND" -eq 0 ]]; then
             echo "::warning::$CURRENT is not a versioned release/X.x branch; skipping cascade"
+            emit_outputs
             exit 0
           fi
 
           TARGETS+=("main")
-
-          # Track whether the cascade halted early so the run fails visibly
-          # rather than silently leaving downstream targets unmerged.
-          HALTED=""
+          mkdir -p bundles
 
           # A real conflict needs human resolution — git merge --abort above
           # already discarded the attempted merge, so there is no valid
@@ -110,49 +120,12 @@ jobs:
             echo "::error::  # resolve conflicts, then: git push origin $tgt"
           }
 
-          # Both push helpers below capture stderr instead of discarding it,
-          # so a real git error (bad PAT, rate limit, stale
-          # --force-with-lease) is distinguishable from the
-          # branch-protection / workflow-permission case the caller falls
-          # back on — previously all failures looked identical to the
-          # caller.
-          #
-          # When FORWARD_MERGE_PAT is set, it's injected as a `-c
-          # http.extraheader` override scoped to this single git invocation
-          # rather than written to .git/config, so it never sits on disk for
-          # a later step (e.g. cargo build) to read.
-          push_head_to_target() {
-            local target="$1" err
-            local -a auth=()
-            if [[ -n "${FORWARD_MERGE_PAT:-}" ]]; then
-              auth=(-c "http.https://github.com/.extraheader=AUTHORIZATION: basic $(
-                printf 'x-access-token:%s' "$FORWARD_MERGE_PAT" | base64 -w0
-              )")
-            fi
-            err=$(git "${auth[@]}" push origin HEAD:"$target" 2>&1) && return 0
-            echo "::warning::push_head_to_target failed (HEAD -> $target): $err"
-            return 1
-          }
-
-          force_push_branch() {
-            local branch="$1" err
-            local -a auth=()
-            if [[ -n "${FORWARD_MERGE_PAT:-}" ]]; then
-              auth=(-c "http.https://github.com/.extraheader=AUTHORIZATION: basic $(
-                printf 'x-access-token:%s' "$FORWARD_MERGE_PAT" | base64 -w0
-              )")
-            fi
-            err=$(git "${auth[@]}" push origin "$branch" --force-with-lease 2>&1) && return 0
-            echo "::warning::force_push_branch failed ($branch): $err"
-            return 1
-          }
-
           # A merge with no textual conflict can still be semantically broken —
           # e.g. both sides independently changed a function signature on
           # different lines, so `git merge` combines them cleanly but the
           # result doesn't compile (#528). Building the merge result before
-          # push catches this; a build failure here is not a git conflict, so
-          # the instructions must say so explicitly.
+          # handing it off catches this; a build failure here is not a git
+          # conflict, so the instructions must say so explicitly.
           bail_on_build_failure() {
             local src="$1" tgt="$2"
             echo "::error::Build failed after merging $src into $tgt (not a git conflict — the merge itself is clean, but the combined code doesn't compile). Resolve manually:"
@@ -165,7 +138,7 @@ jobs:
           }
 
           for TARGET in "${TARGETS[@]}"; do
-            echo "::group::Forward-merge $CURRENT → $TARGET"
+            echo "::group::Verify $CURRENT → $TARGET"
             TARGET_SHA=$(git rev-parse "origin/$TARGET" 2>/dev/null || echo "")
             CURRENT_SHA=$(git rev-parse "origin/$CURRENT")
 
@@ -183,8 +156,6 @@ jobs:
             fi
             git checkout -q "origin/$TARGET"
 
-            MERGE_BRANCH="forward-merge/$CURRENT-to-$TARGET"
-
             if ! git merge --no-commit --no-ff "origin/$CURRENT" 2>/dev/null; then
               if ! git merge --abort; then
                 echo "::error::git merge --abort failed after conflict detection — workspace may be in an inconsistent state"
@@ -201,12 +172,14 @@ jobs:
             git checkout -q "origin/$TARGET"
             git merge --no-edit "origin/$CURRENT"
 
-            # Validate the merge result actually builds before pushing it
-            # anywhere. A clean textual merge is not proof the code compiles.
-            # --locked: this job has contents:write and a live GITHUB_TOKEN,
-            # so pin to the merge's own committed Cargo.lock rather than
+            # Validate the merge result actually builds before handing it off.
+            # A clean textual merge is not proof the code compiles.
+            # --locked: pin to the merge's own committed Cargo.lock rather than
             # letting cargo silently resolve newer, unreviewed dependency
-            # versions (and their build.rs/proc-macros) at merge time.
+            # versions (and their build.rs/proc-macros) at merge time. This
+            # job has no write token, so a compromised build here can't push
+            # anything — but keep --locked anyway: unreviewed dependency
+            # resolution shouldn't gate what forward-merge pushes either.
             # This checks only the default host target, not the release
             # build matrix's musl/macOS cross targets — acceptable today
             # since the workspace has no platform-cfg'd code path, but
@@ -219,18 +192,174 @@ jobs:
               break
             fi
 
+            MERGE_SHA=$(git rev-parse HEAD)
+            SAFE_TARGET=${TARGET//\//_}
+            mkdir -p "bundles/$SAFE_TARGET"
+            # Bundle everything reachable from the merge commit that target
+            # doesn't already have. forward-merge unbundles this and pushes
+            # $MERGE_SHA — it never re-runs the merge or the build.
+            git bundle create "bundles/$SAFE_TARGET/merge.bundle" "$TARGET_SHA..HEAD"
+            echo "$TARGET_SHA" > "bundles/$SAFE_TARGET/base.sha"
+            echo "$MERGE_SHA" > "bundles/$SAFE_TARGET/merge.sha"
+            echo "$TARGET" > "bundles/$SAFE_TARGET/target.txt"
+            VERIFIED+=("$TARGET")
+
+            echo "::endgroup::"
+          done
+
+          emit_outputs
+
+          if [[ -n "$HALTED" ]]; then
+            echo "Verify cascade halted ($HALTED); downstream targets not verified"
+            # Exit 0 even on halt: whatever verified successfully before the
+            # halt point still needs to reach forward-merge and get pushed,
+            # matching the pre-split behavior where earlier targets in the
+            # loop were pushed before a later target's failure stopped the
+            # cascade. forward-merge re-reports this halt (via the `halted`
+            # output) as its own failure once it's pushed what it can.
+            exit 0
+          fi
+
+          echo "Verify cascade completed"
+
+      - name: Upload merge bundles
+        if: steps.cascade.outputs.verified_targets != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: forward-merge-bundles
+          path: bundles/
+          retention-days: 1
+          if-no-files-found: error
+
+  # Pushes exactly what verify-merge verified — never re-merges, never builds,
+  # never executes anything from the merged tree. This is the only job with
+  # write credentials, so it's also the only job that must never run
+  # untrusted code (#616).
+  forward-merge:
+    needs: verify-merge
+    runs-on: ubuntu-latest
+    # Intentionally no actor filter: CI-initiated pushes (auto-commit version
+    # bumps from the release workflow) must also trigger the forward-merge
+    # cascade so the release branch stays in sync with main.
+    permissions:
+      contents: write
+      pull-requests: write
+    env:
+      CURRENT: ${{ needs.verify-merge.outputs.current }}
+      VERIFIED_TARGETS: ${{ needs.verify-merge.outputs.verified_targets }}
+      VERIFY_HALTED: ${{ needs.verify-merge.outputs.halted }}
+      GH_TOKEN: ${{ github.token }}
+      # A PAT with workflow scope allows pushing merge commits that touch
+      # .github/workflows/ — the built-in GITHUB_TOKEN cannot. Injected per
+      # push via `-c http.extraheader` (see push_sha_to_target below) instead
+      # of `git remote set-url`, which would write it in cleartext into
+      # .git/config for the rest of the job.
+      FORWARD_MERGE_PAT: ${{ secrets.FORWARD_MERGE_PAT }}
+    steps:
+      - name: Checkout
+        if: needs.verify-merge.outputs.verified_targets != ''
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Download merge bundles
+        if: needs.verify-merge.outputs.verified_targets != ''
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: forward-merge-bundles
+          path: bundles/
+
+      - name: Push verified merges
+        if: needs.verify-merge.outputs.verified_targets != ''
+        run: |
+          set -euo pipefail
+
+          # Both push helpers below capture stderr instead of discarding it,
+          # so a real git error (bad PAT, rate limit, stale
+          # --force-with-lease) is distinguishable from the
+          # branch-protection / workflow-permission case the caller falls
+          # back on — previously all failures looked identical to the
+          # caller.
+          #
+          # When FORWARD_MERGE_PAT is set, it's injected as a `-c
+          # http.extraheader` override scoped to this single git invocation
+          # rather than written to .git/config, so it never sits on disk.
+          push_sha_to_target() {
+            local sha="$1" target="$2" err
+            local -a auth=()
+            if [[ -n "${FORWARD_MERGE_PAT:-}" ]]; then
+              auth=(-c "http.https://github.com/.extraheader=AUTHORIZATION: basic $(
+                printf 'x-access-token:%s' "$FORWARD_MERGE_PAT" | base64 -w0
+              )")
+            fi
+            err=$(git "${auth[@]}" push origin "$sha":"$target" 2>&1) && return 0
+            echo "::warning::push_sha_to_target failed ($sha -> $target): $err"
+            return 1
+          }
+
+          force_push_branch() {
+            local branch="$1" err
+            local -a auth=()
+            if [[ -n "${FORWARD_MERGE_PAT:-}" ]]; then
+              auth=(-c "http.https://github.com/.extraheader=AUTHORIZATION: basic $(
+                printf 'x-access-token:%s' "$FORWARD_MERGE_PAT" | base64 -w0
+              )")
+            fi
+            err=$(git "${auth[@]}" push origin "$branch" --force-with-lease 2>&1) && return 0
+            echo "::warning::force_push_branch failed ($branch): $err"
+            return 1
+          }
+
+          bail_on_stale_target() {
+            local target="$1" expected="$2" actual="$3"
+            echo "::error::$target changed since verify-merge ran (expected $expected, now $actual) — the verified merge no longer applies. Re-run this workflow run"
+            echo "::error::(Actions tab -> this run -> Re-run all jobs) so verify-merge re-verifies against $target's current state."
+          }
+
+          HALTED=""
+
+          while IFS= read -r TARGET; do
+            [[ -z "$TARGET" ]] && continue
+            echo "::group::Push $CURRENT → $TARGET"
+
+            SAFE_TARGET=${TARGET//\//_}
+            BASE_SHA=$(cat "bundles/$SAFE_TARGET/base.sha")
+            MERGE_SHA=$(cat "bundles/$SAFE_TARGET/merge.sha")
+
+            if ! FETCH_ERR=$(git fetch origin "$TARGET" 2>&1); then
+              echo "::error::Cascade halted: failed to fetch $TARGET from origin: $FETCH_ERR"
+              echo "::endgroup::"
+              HALTED="fetch failure for $TARGET"
+              break
+            fi
+            CURRENT_TARGET_SHA=$(git rev-parse "origin/$TARGET")
+
+            # TOCTOU guard: if $TARGET moved since verify-merge built this
+            # bundle against $BASE_SHA, the verified merge no longer applies
+            # cleanly — pushing it could silently drop whatever landed on
+            # $TARGET in between. git's own non-fast-forward rejection would
+            # likely catch this too, but check explicitly for a clear error
+            # instead of relying on that as the only guard.
+            if [[ "$CURRENT_TARGET_SHA" != "$BASE_SHA" ]]; then
+              bail_on_stale_target "$TARGET" "$BASE_SHA" "$CURRENT_TARGET_SHA"
+              echo "::endgroup::"
+              HALTED="stale target $TARGET"
+              break
+            fi
+
+            git bundle unbundle "bundles/$SAFE_TARGET/merge.bundle" >/dev/null
+
             # Land the merge directly so the fix propagates automatically — main
             # is the final target and is forward-merged the same way as every
             # release branch, with no manual step. If a target is branch-protected
             # the push is rejected; fall back to opening a PR and halt so the
             # remaining (now un-merged) targets aren't silently skipped.
-            if push_head_to_target "$TARGET"; then
+            if push_sha_to_target "$MERGE_SHA" "$TARGET"; then
               echo "Pushed directly to $TARGET"
             else
-              # HEAD currently holds the merge commit built above; create the PR
-              # branch from it directly. Resetting to origin/$TARGET here would
-              # discard the merge and open a zero-diff PR.
-              git checkout -B "$MERGE_BRANCH"
+              MERGE_BRANCH="forward-merge/$CURRENT-to-$TARGET"
+              git checkout -B "$MERGE_BRANCH" "$MERGE_SHA"
 
               if force_push_branch "$MERGE_BRANCH"; then
                 # The default GITHUB_TOKEN cannot create pull requests
@@ -287,11 +416,25 @@ jobs:
             fi
 
             echo "::endgroup::"
-          done
+          done <<< "$VERIFIED_TARGETS"
 
+          # Re-report a verify-side halt (conflict/build failure on a target
+          # past the ones we just pushed) as this job's own failure, now that
+          # everything verify-merge did manage to verify has been pushed.
           if [[ -n "$HALTED" ]]; then
-            echo "Forward-merge cascade halted ($HALTED); downstream targets not merged"
+            echo "Push cascade halted ($HALTED)"
+            exit 1
+          fi
+          if [[ -n "$VERIFY_HALTED" ]]; then
+            echo "::error::Verify cascade halted ($VERIFY_HALTED); downstream targets not verified"
             exit 1
           fi
 
           echo "Forward-merge cascade completed"
+
+      - name: Report verify-side halt with nothing to push
+        if: needs.verify-merge.outputs.verified_targets == '' && needs.verify-merge.outputs.halted != ''
+        run: |
+          set -euo pipefail
+          echo "::error::Verify cascade halted (${VERIFY_HALTED}); nothing was verified, nothing pushed"
+          exit 1
