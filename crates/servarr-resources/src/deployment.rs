@@ -1287,16 +1287,37 @@ fn build_init_containers(
             Some(AppConfig::Unpackerr(c)) => c.clone(),
             _ => servarr_crds::UnpackerrConfig::default(),
         };
+        // url is passed via its own plain env var, not baked into the script as
+        // literal text -- build_unpackerr_init()'s heredoc is unquoted (so the
+        // api_key env var can expand), and a CRD-controlled string embedded
+        // directly into that body would be re-evaluated by the shell for
+        // `$(...)`/backtick command substitution (#776).
         let mut env = Vec::new();
-        for (instance, env_var) in [
-            (&unpackerr_config.sonarr, "UNPACKERR_SONARR_0_APIKEY"),
-            (&unpackerr_config.radarr, "UNPACKERR_RADARR_0_APIKEY"),
-            (&unpackerr_config.lidarr, "UNPACKERR_LIDARR_0_APIKEY"),
-            (&unpackerr_config.readarr, "UNPACKERR_READARR_0_APIKEY"),
+        for (instance, api_key_env_var, url_env_var) in [
+            (
+                &unpackerr_config.sonarr,
+                "UNPACKERR_SONARR_0_APIKEY",
+                "UNPACKERR_SONARR_0_URL",
+            ),
+            (
+                &unpackerr_config.radarr,
+                "UNPACKERR_RADARR_0_APIKEY",
+                "UNPACKERR_RADARR_0_URL",
+            ),
+            (
+                &unpackerr_config.lidarr,
+                "UNPACKERR_LIDARR_0_APIKEY",
+                "UNPACKERR_LIDARR_0_URL",
+            ),
+            (
+                &unpackerr_config.readarr,
+                "UNPACKERR_READARR_0_APIKEY",
+                "UNPACKERR_READARR_0_URL",
+            ),
         ] {
             if let Some(instance) = instance {
                 env.push(EnvVar {
-                    name: env_var.to_string(),
+                    name: api_key_env_var.to_string(),
                     value_from: Some(EnvVarSource {
                         secret_key_ref: Some(SecretKeySelector {
                             name: instance.api_key_secret.clone(),
@@ -1305,6 +1326,15 @@ fn build_init_containers(
                         }),
                         ..Default::default()
                     }),
+                    ..Default::default()
+                });
+                env.push(EnvVar {
+                    name: url_env_var.to_string(),
+                    // Escape `$(` per Kubernetes' own convention so a CRD-supplied
+                    // url can't trigger the kubelet's own $(OTHER_VAR) env-var
+                    // substitution and leak a sibling env var's value (e.g. the
+                    // api_key one above) into this plain, non-secret value.
+                    value: Some(instance.url.replace("$(", "$$(")),
                     ..Default::default()
                 });
             }
