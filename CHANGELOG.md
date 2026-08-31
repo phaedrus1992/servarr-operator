@@ -19,6 +19,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Fix `scripts/smoke-test-local.sh` leaving a developer's kubectl context pointed at a deleted
+  namespace after every run, instead of restoring the namespace it had before the script ran.
+  The script also now refuses to run at all against a cluster it can't identify as a local one
+  (`kind`/`k3d`/`docker-desktop`/`rancher-desktop`), rather than proceeding on an unrecognized
+  cluster that could be shared or production (#762).
 - Fix an app's startup probe giving up too early when many apps deploy at once. Deploying a full
   MediaStack briefly saturates a modest node's CPU while every container starts, which can stretch
   a slow-starting app's own startup work well past the previous 300s budget — kubelet then kills
