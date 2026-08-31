@@ -1141,13 +1141,23 @@ fn build_probe(config: &ProbeConfig, svc_spec: &ServiceSpec) -> Probe {
 }
 
 /// Build a startup probe from the liveness config with generous timeouts.
-/// This gives containers up to 300s to start before the liveness probe takes over.
+/// This gives containers up to 600s to start before the liveness probe takes over.
+///
+/// 600s, not the more common 300s: a real MediaStack deploys many apps at once, and a
+/// modest node (the operator's actual target — home servers, not a beefy cluster) sees
+/// heavy CPU contention for the first minute or so while every container pulls its image
+/// and starts. Measured directly: deploying all 14 apps at once on a kind node briefly
+/// saturated 4+ CPU cores (350-440% in `docker stats`), which stretched a slow-starting
+/// app's own network calls well past 300s in testing (#764) even though the same calls
+/// completed in well under a second in isolation, with no contention. 300s only budgets
+/// for one app's own worst-case startup, not for what "many apps at once" does to that
+/// budget.
 fn build_startup_probe(liveness_config: &ProbeConfig, svc_spec: &ServiceSpec) -> Probe {
     let mut probe = build_probe(liveness_config, svc_spec);
     probe.initial_delay_seconds = None; // K8s strips default 0, avoid drift
     probe.period_seconds = Some(10);
     probe.timeout_seconds = Some(5);
-    probe.failure_threshold = Some(30);
+    probe.failure_threshold = Some(60);
     probe
 }
 

@@ -185,6 +185,100 @@ jobs:
       - name: Run cargo deny
         run: cargo deny check
 
+  smoke-test:
+    needs: [fmt, actionlint, zizmor, pre-commit-config-lint]
+    runs-on: ubuntu-latest
+    # Covers: docker build (compiles inside the container; no persisted
+    # BuildKit cache in CI, so this is an uncached from-scratch build) + kind
+    # cluster start + 14 media-stack deployments becoming ready (up to 360s
+    # alone, per smoke-test.sh) + a credential check. 25m gives headroom
+    # without letting a hung run block the required-checks queue indefinitely.
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up kind cluster
+        uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc # v1.14.0
+        with:
+          # smoke-test-local.sh derives the cluster name to `kind load
+          # docker-image --name` from the kubectl context (strips a
+          # leading "kind-"), so the context must be kind-kind, not this
+          # action's own default context name kind-chart-testing.
+          cluster_name: kind
+
+      - name: Set up Helm
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+
+      # Reuses the same script a contributor runs locally via the pre-commit
+      # hook (scripts/smoke-test-local.sh), so CI and local runs exercise
+      # identical setup. This checks that the 14 media-stack app deployments
+      # (bazarr, jackett, jellyfin, lidarr, ... — see APP_PORTS in
+      # smoke-test.sh) reach Ready and that Jellyfin's admin credentials
+      # authenticate; it is not a full end-to-end functional test of every
+      # app's own behavior.
+      - name: Run smoke test
+        run: bash scripts/smoke-test-local.sh --namespace ci-smoke
+
+  semgrep:
+    needs: [fmt, actionlint, zizmor, pre-commit-config-lint]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+
+      - name: Install Semgrep
+        run: |
+          uv tool install 'semgrep==1.175.0'
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      # CodeQL has no Rust extractor, so Semgrep is the applicable SAST tool here.
+      # p/secrets is the standard secrets baseline; p/rust and p/github-actions
+      # scope the rest to this repo's actual languages (Rust source + this
+      # directory of workflow files) rather than pulling in unrelated rulesets.
+      #
+      # These three rulesets are fetched from the Semgrep registry at run time, not
+      # vendored — a push that passed yesterday can fail today with no code change here
+      # if a rule changes upstream, and the reverse (a rule silently withdrawn) loses
+      # coverage with no signal. Accepted tradeoff for now; vendoring them under version
+      # control would remove it at the cost of manually pulling in rule updates.
+      - name: Run Semgrep
+        run: |
+          semgrep --metrics=off --error \
+            --config p/secrets --config p/rust --config p/github-actions .
+
+  shear:
+    needs: [fmt, actionlint, zizmor, pre-commit-config-lint]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+
+      - name: Install cargo-shear
+        uses: taiki-e/install-action@6cd13508893c0e7eab5f273c2575d3859bd7229a # v2.86.6
+        with:
+          tool: cargo-shear
+
+      # --check-test-targets is required: dev-dependencies used only from
+      # crates/*/tests/ (proptest, HTTP mock crates) would otherwise be
+      # false-flagged as unused, since a source-only scan skips test targets.
+      - name: Run cargo shear
+        run: cargo shear --check-test-targets
+
   test:
     needs: [fmt, actionlint, zizmor, pre-commit-config-lint]
     runs-on: ubuntu-latest

@@ -19,6 +19,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Fix an app's startup probe giving up too early when many apps deploy at once. Deploying a full
+  MediaStack briefly saturates a modest node's CPU while every container starts, which can stretch
+  a slow-starting app's own startup work well past the previous 300s budget — kubelet then kills
+  and restarts the container before it gets a real chance. Raised the budget to 600s (#764).
 - Fix every environment-variable read in the operator treating "you never set this" and "you set
   this to something I can't read" as the same thing — a value that isn't valid UTF-8 was silently
   discarded and the built-in default applied with no log line at all. A genuinely unset variable
