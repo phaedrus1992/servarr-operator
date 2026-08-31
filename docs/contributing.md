@@ -127,6 +127,13 @@ kind create cluster
 scripts/smoke-test-local.sh
 ```
 
-This is the same script CI runs (`smoke-test` job in `.github/workflows/ci.yaml`) and the local
-pre-push hook invokes. Pass `--namespace NAME` for a fixed namespace, or `--keep` to leave the
-namespace up for debugging instead of deleting it on exit.
+This is the same script CI runs on every push (`smoke-test` job in `.github/workflows/ci.yaml`).
+It is not part of the pre-push hook — it needs Docker and a local cluster, and takes several
+minutes, so CI is the gate. Run it by hand before pushing with:
+
+```bash
+pre-commit run --hook-stage manual smoke-test
+```
+
+Pass `--namespace NAME` for a fixed namespace, or `--keep` to leave the namespace up for
+debugging instead of deleting it on exit.
