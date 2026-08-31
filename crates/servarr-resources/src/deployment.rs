@@ -209,6 +209,11 @@ pub fn build(
 
     let mut pod_spec = PodSpec {
         automount_service_account_token: Some(false),
+        // #606: Kubernetes auto-injects a `<SERVICE_NAME>_PORT` env var (legacy
+        // Docker-links compatibility) as `tcp://<clusterIP>:<port>` for every Service
+        // in the namespace. Houndarr's own container reads `HOUNDARR_PORT` for its
+        // `--port` CLI flag, so its own Service name collided with and corrupted it.
+        enable_service_links: Some(false),
         security_context: Some(pod_security),
         containers,
         volumes: Some(volumes),

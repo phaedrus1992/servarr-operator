@@ -4540,3 +4540,24 @@ fn test_operator_reserved_volume_names_matches_build_volumes() {
         );
     }
 }
+
+/// #606: Kubernetes auto-injects a `<SERVICE_NAME>_PORT` env var (Docker-links
+/// compatibility) into every pod in the same namespace, in the form
+/// `tcp://<clusterIP>:<port>`. Houndarr's own container reads `HOUNDARR_PORT` for its
+/// `--port` CLI flag, so a Service named "houndarr" corrupts its own port value. Disabling
+/// `enableServiceLinks` stops Kubernetes from injecting these for every app, not just
+/// Houndarr, closing the same landmine for any future app with a colliding env var name.
+#[test]
+fn test_deployment_disables_service_links_for_every_app_type() {
+    for app_type in ALL_APP_TYPES.iter() {
+        let app = make_app(app_type.clone());
+        let deploy = build_deployment(&app);
+        let pod_spec = deploy.spec.unwrap().template.spec.unwrap();
+        assert_eq!(
+            pod_spec.enable_service_links,
+            Some(false),
+            "{app_type:?}: enableServiceLinks must be false to avoid Kubernetes' auto-injected \
+             <SERVICE>_PORT env vars colliding with app-level env vars of the same name"
+        );
+    }
+}
