@@ -169,6 +169,8 @@ fn test_crd_serde_roundtrip_all_fields() {
         bazarr_sync: None,
         subgen_sync: None,
         maintainerr_sync: None,
+        cleanuparr_sync: None,
+        houndarr_sync: None,
         admin_credentials: None,
     };
 

@@ -101,6 +101,27 @@ security = "nonroot"
 downloads = false
 probe_path = "/status"
 
+[unpackerr]
+repository = "ghcr.io/unpackerr/unpackerr"
+tag = "0.16.1"
+port = 5656
+security = "nonroot"
+downloads = true
+
+[cleanuparr]
+repository = "ghcr.io/cleanuparr/cleanuparr"
+tag = "2.10.5"
+port = 11011
+security = "nonroot"
+downloads = true
+
+[houndarr]
+repository = "ghcr.io/av1155/houndarr"
+tag = "v1.13.2"
+port = 8877
+security = "nonroot"
+downloads = false
+
 [jellyfin]
 repository = "linuxserver/jellyfin"
 tag = "10.11.11"

@@ -1,0 +1,18 @@
+# Unpackerr — extracts archives for Sonarr/Radarr/Lidarr/Readarr after download.
+# Unpackerr has no live API, so the operator seeds /config/unpackerr.conf once,
+# at pod creation, from appConfig.Unpackerr — it does not update on later
+# reconciles. One optional instance per *arr kind.
+apiVersion: servarr.dev/v1alpha1
+kind: ServarrApp
+metadata:
+  name: unpackerr
+spec:
+  app: Unpackerr
+  appConfig:
+    unpackerr:
+      sonarr:
+        url: http://sonarr.media.svc:8989
+        apiKeySecret: sonarr-api-key
+      radarr:
+        url: http://radarr.media.svc:7878
+        apiKeySecret: radarr-api-key

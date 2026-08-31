@@ -11,6 +11,38 @@ pub enum AppConfig {
     #[serde(alias = "overseerr")]
     Seerr(Box<SeerrConfig>),
     Lidarr(LidarrConfig),
+    Unpackerr(UnpackerrConfig),
+}
+
+// --- Unpackerr ---
+
+/// One *arr instance for Unpackerr's static `/config/unpackerr.conf` (#604).
+///
+/// Unpackerr has no live API of its own, so its *arr connections are seeded
+/// once by an init container from these CRD spec fields rather than
+/// auto-discovered on every reconcile (contrast `CleanuparrSyncSpec`,
+/// `HoundarrSyncSpec`).
+#[derive(Serialize, Deserialize, Clone, Debug, Default, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct UnpackerrArrInstance {
+    /// Base URL of the *arr instance, e.g. `http://sonarr.media.svc:8989`.
+    pub url: String,
+    /// Secret containing this instance's API key (key: `api-key`).
+    pub api_key_secret: String,
+}
+
+/// Unpackerr configuration: one optional instance per supported *arr kind.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct UnpackerrConfig {
+    #[serde(default)]
+    pub sonarr: Option<UnpackerrArrInstance>,
+    #[serde(default)]
+    pub radarr: Option<UnpackerrArrInstance>,
+    #[serde(default)]
+    pub lidarr: Option<UnpackerrArrInstance>,
+    #[serde(default)]
+    pub readarr: Option<UnpackerrArrInstance>,
 }
 
 // --- Prowlarr ---

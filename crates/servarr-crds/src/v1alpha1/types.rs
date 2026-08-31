@@ -760,6 +760,47 @@ pub struct MaintainerrSyncSpec {
     pub plex_token_secret: Option<String>,
 }
 
+/// Sync spec for Cleanuparr → Sonarr/Radarr/Lidarr/Readarr integration.
+///
+/// When enabled on a Cleanuparr-type ServarrApp, the operator discovers *arr
+/// instances in the target namespace and registers them in Cleanuparr via its
+/// JSON `ArrConfigController` API. Reuses the generic `spec.apiKeySecret` +
+/// `ensure_api_key_secret` mechanism already used by Maintainerr — no
+/// Cleanuparr-specific credential field is needed.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CleanuparrSyncSpec {
+    /// Enable Cleanuparr cross-app sync.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Namespace to discover companion apps in. Defaults to Cleanuparr's own namespace.
+    #[serde(default)]
+    pub namespace_scope: Option<String>,
+}
+
+/// Sync spec for Houndarr → Sonarr/Radarr/Lidarr/Readarr integration.
+///
+/// Houndarr has no JSON registration API — the operator logs in as
+/// `admin_credentials_secret`'s username/password and drives its
+/// session/CSRF-protected settings form instead (see `HoundarrClient`).
+/// Required, not optional like the other sync specs' `namespace_scope`: the
+/// client cannot function without a login.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct HoundarrSyncSpec {
+    /// Enable Houndarr cross-app sync.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Namespace to discover companion apps in. Defaults to Houndarr's own namespace.
+    #[serde(default)]
+    pub namespace_scope: Option<String>,
+    /// Secret holding Houndarr's own admin login (keys: `username`, `password`),
+    /// needed for the session-cookie login `HoundarrClient` performs. Same
+    /// Secret shape as the existing admin-credentials pattern
+    /// (`docs/admin-credentials.md`).
+    pub admin_credentials_secret: String,
+}
+
 /// Configuration for the in-cluster NFS server deployed by the MediaStack operator.
 ///
 /// By default (when this field is absent or `enabled` is true), the operator

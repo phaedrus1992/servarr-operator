@@ -52,7 +52,7 @@
 
 Selects which application this resource manages. The operator uses this to determine default images, ports, security profiles, and volume layouts.
 
-Valid values: `Plex`, `Jellyfin`, `SshBastion`, `Sabnzbd`, `Transmission`, `Sonarr`, `Radarr`, `Lidarr`, `Tautulli`, `Seerr`, `Maintainerr`, `Prowlarr`, `Jackett`, `Bazarr`, `Subgen`
+Valid values: `Plex`, `Jellyfin`, `SshBastion`, `Sabnzbd`, `Transmission`, `Sonarr`, `Radarr`, `Lidarr`, `Tautulli`, `Seerr`, `Maintainerr`, `Prowlarr`, `Jackett`, `Bazarr`, `Subgen`, `Unpackerr`, `Cleanuparr`, `Houndarr`
 
 ```yaml
 spec:
@@ -534,7 +534,7 @@ App-specific configuration. This is a tagged enum -- use the variant name matchi
 ```yaml
 spec:
   appConfig:
-    Transmission:
+    transmission:
       settings:
         download-dir: /downloads/complete
         incomplete-dir: /downloads/incomplete
@@ -557,7 +557,7 @@ spec:
 ```yaml
 spec:
   appConfig:
-    Sabnzbd:
+    sabnzbd:
       hostWhitelist:
         - sabnzbd.example.com
       tarUnpack: true
@@ -581,7 +581,7 @@ Each definition creates a YAML file at `/config/Definitions/Custom/{name}.yml` i
 ```yaml
 spec:
   appConfig:
-    Prowlarr:
+    prowlarr:
       customDefinitions:
         - name: my-private-tracker
           content: |
@@ -690,6 +690,39 @@ spec:
               - /mnt/media
           publicKeys: |
             ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA... backup@example.com
+```
+
+#### Variant: `Unpackerr`
+
+Unpackerr has no live API, so the operator seeds `/config/unpackerr.conf` once, at pod
+creation, from this config -- it does not update on later reconciles. One optional
+instance per *arr kind.
+
+| Sub-field | Type |
+|---|---|
+| `sonarr` | `UnpackerrArrInstance` |
+| `radarr` | `UnpackerrArrInstance` |
+| `lidarr` | `UnpackerrArrInstance` |
+| `readarr` | `UnpackerrArrInstance` |
+
+**UnpackerrArrInstance fields:**
+
+| Field | Type | Description |
+|---|---|---|
+| `url` | `string` | Base URL of the *arr instance, e.g. `http://sonarr.media.svc:8989` |
+| `apiKeySecret` | `string` | Secret containing the instance's API key (key: `api-key`) |
+
+```yaml
+spec:
+  app: Unpackerr
+  appConfig:
+    unpackerr:
+      sonarr:
+        url: http://sonarr.media.svc:8989
+        apiKeySecret: sonarr-api-key
+      radarr:
+        url: http://radarr.media.svc:7878
+        apiKeySecret: radarr-api-key
 ```
 
 ---
@@ -975,6 +1008,49 @@ spec:
   maintainerrSync:
     enabled: true
     # optional: plexTokenSecret: my-plex-token
+```
+
+---
+
+### `cleanuparrSync`
+
+**Type:** `CleanuparrSyncSpec` -- **Optional**
+
+Configures Cleanuparr cross-app synchronization. Only applies to `Cleanuparr`-type apps. When enabled, the operator discovers Sonarr and Radarr instances in the target namespace and registers them in Cleanuparr via its JSON `ArrConfigController` API. Reuses `apiKeySecret` (below) for Cleanuparr's own API key -- unlike Bazarr, the operator does not manage this key automatically. Registration is idempotent: already-registered instances are skipped on subsequent reconciles. Sync results are reported via the `CleanuparrSyncReady` status condition.
+
+| Sub-field | Type | Default |
+|---|---|---|
+| `enabled` | `bool` | `false` |
+| `namespaceScope` | `string` | Same namespace as the Cleanuparr CR |
+
+```yaml
+spec:
+  app: Cleanuparr
+  apiKeySecret: cleanuparr-api-key
+  cleanuparrSync:
+    enabled: true
+```
+
+---
+
+### `houndarrSync`
+
+**Type:** `HoundarrSyncSpec` -- **Optional**
+
+Configures Houndarr cross-app synchronization. Only applies to `Houndarr`-type apps. Houndarr has no JSON registration API, so the operator logs in as `adminCredentialsSecret`'s username/password and drives its session/CSRF-protected settings form on every reconcile -- this is a stopgap pending a proper upstream JSON API (tracked separately). Registration is idempotent: already-registered instances are skipped. Sync results are reported via the `HoundarrSyncReady` status condition.
+
+| Sub-field | Type | Default |
+|---|---|---|
+| `enabled` | `bool` | `false` |
+| `namespaceScope` | `string` | Same namespace as the Houndarr CR |
+| `adminCredentialsSecret` | `string` | **Required.** Secret with `username`/`password` keys for Houndarr's own login |
+
+```yaml
+spec:
+  app: Houndarr
+  houndarrSync:
+    enabled: true
+    adminCredentialsSecret: houndarr-admin
 ```
 
 ---

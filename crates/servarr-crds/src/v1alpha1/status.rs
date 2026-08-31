@@ -78,6 +78,10 @@ pub mod condition_types {
     pub const SEERR_SYNC_READY: &str = "SeerrSyncReady";
     /// Cross-app sync health for Maintainerr (True = last sync OK, False = last sync failed).
     pub const MAINTAINERR_SYNC_READY: &str = "MaintainerrSyncReady";
+    /// Cross-app sync health for Cleanuparr (True = last sync OK, False = last sync failed).
+    pub const CLEANUPARR_SYNC_READY: &str = "CleanuparrSyncReady";
+    /// Cross-app sync health for Houndarr (True = last sync OK, False = last sync failed).
+    pub const HOUNDARR_SYNC_READY: &str = "HoundarrSyncReady";
     /// Backup restore result (True = restore succeeded, False = restore failed).
     pub const RESTORE_READY: &str = "RestoreReady";
     /// Transmission download-client data health (True = no torrents reporting missing

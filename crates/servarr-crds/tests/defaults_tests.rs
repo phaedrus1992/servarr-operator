@@ -1159,3 +1159,79 @@ fn seerr_defaults_use_fixed_uid_gid_and_app_config_mount_path() {
         .expect("seerr defaults must have a config volume");
     assert_eq!(config_vol.mount_path, "/app/config");
 }
+
+// ---------------------------------------------------------------------------
+// Unpackerr, Cleanuparr, Houndarr — AppType basics (#604, #605, #606)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn unpackerr_as_str_and_tier() {
+    assert_eq!(AppType::Unpackerr.as_str(), "unpackerr");
+    assert_eq!(AppType::Unpackerr.tier(), 3);
+}
+
+#[test]
+fn cleanuparr_as_str_and_tier() {
+    assert_eq!(AppType::Cleanuparr.as_str(), "cleanuparr");
+    assert_eq!(AppType::Cleanuparr.tier(), 3);
+}
+
+#[test]
+fn houndarr_as_str_and_tier() {
+    assert_eq!(AppType::Houndarr.as_str(), "houndarr");
+    assert_eq!(AppType::Houndarr.tier(), 3);
+}
+
+#[test]
+fn unpackerr_defaults_probe_port_5656() {
+    let defaults = AppDefaults::try_for_app(&AppType::Unpackerr).unwrap();
+    assert_eq!(defaults.service.ports.first().map(|p| p.port), Some(5656));
+}
+
+#[test]
+fn cleanuparr_defaults_probe_port_11011() {
+    let defaults = AppDefaults::try_for_app(&AppType::Cleanuparr).unwrap();
+    assert_eq!(defaults.service.ports.first().map(|p| p.port), Some(11011));
+}
+
+#[test]
+fn houndarr_defaults_probe_port_8877() {
+    let defaults = AppDefaults::try_for_app(&AppType::Houndarr).unwrap();
+    assert_eq!(defaults.service.ports.first().map(|p| p.port), Some(8877));
+}
+
+// ---------------------------------------------------------------------------
+// CleanuparrSyncSpec, HoundarrSyncSpec (#605, #606)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn cleanuparr_sync_spec_defaults() {
+    let spec: CleanuparrSyncSpec = serde_json::from_str(r#"{"enabled":true}"#).unwrap();
+    assert!(spec.enabled);
+    assert!(spec.namespace_scope.is_none());
+}
+
+#[test]
+fn houndarr_sync_spec_requires_admin_credentials_secret() {
+    let spec: HoundarrSyncSpec =
+        serde_json::from_str(r#"{"enabled":true,"adminCredentialsSecret":"houndarr-admin"}"#)
+            .unwrap();
+    assert!(spec.enabled);
+    assert_eq!(spec.admin_credentials_secret, "houndarr-admin");
+    assert!(spec.namespace_scope.is_none());
+}
+
+#[test]
+fn houndarr_config_volume_mounts_at_data() {
+    // Houndarr's image expects its config/db volume at /data, not the generic
+    // /config every other nonroot app uses (confirmed against #606's issue
+    // comment and CI smoke-test failure: "ERROR: /data is not writable").
+    let defaults = AppDefaults::try_for_app(&AppType::Houndarr).unwrap();
+    let config_vol = defaults
+        .persistence
+        .volumes
+        .iter()
+        .find(|v| v.name == "config")
+        .expect("houndarr defaults must have a config volume");
+    assert_eq!(config_vol.mount_path, "/data");
+}

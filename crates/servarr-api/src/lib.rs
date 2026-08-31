@@ -1,6 +1,9 @@
 pub mod bazarr;
+pub mod cleanuparr;
 mod client;
+pub mod cross_app_sync;
 pub mod health;
+pub mod houndarr;
 pub mod jellyfin;
 pub mod k8s;
 pub mod maintainerr;
@@ -16,8 +19,11 @@ mod test_support;
 pub mod transmission;
 
 pub use bazarr::BazarrClient;
+pub use cleanuparr::CleanuparrClient;
 pub use client::{ApiError, HttpClient};
+pub use cross_app_sync::{CrossAppSync, RegisteredArrInstance};
 pub use health::HealthCheck;
+pub use houndarr::HoundarrClient;
 pub use jellyfin::JellyfinClient;
 pub use k8s::{SecretError, read_secret_key};
 pub use maintainerr::MaintainerrClient;

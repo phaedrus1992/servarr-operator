@@ -682,6 +682,9 @@ fn app_type_serde_roundtrip_all_variants() {
         AppType::SshBastion,
         AppType::Bazarr,
         AppType::Subgen,
+        AppType::Unpackerr,
+        AppType::Cleanuparr,
+        AppType::Houndarr,
     ];
     for app in &all {
         let json = serde_json::to_string(app).expect("serialize");
@@ -899,5 +902,62 @@ proptest::proptest! {
         proptest::prop_assert!(!json.contains("plex_token_secret"), "snake_case leaked: {json}");
         let back: MaintainerrSyncSpec = serde_json::from_str(&json).expect("deserialize");
         proptest::prop_assert_eq!(back.plex_token_secret.as_deref(), Some(s.as_str()));
+    }
+}
+
+// proptest: CleanuparrSyncSpec roundtrips through serde for arbitrary field values.
+proptest::proptest! {
+    #[test]
+    fn cleanuparr_sync_spec_roundtrips(
+        enabled in proptest::bool::ANY,
+        namespace_scope in proptest::option::of("[a-z][a-z0-9-]{0,30}"),
+    ) {
+        let spec = CleanuparrSyncSpec { enabled, namespace_scope: namespace_scope.clone() };
+        let json = serde_json::to_string(&spec).expect("serialize");
+        let back: CleanuparrSyncSpec = serde_json::from_str(&json).expect("deserialize");
+        proptest::prop_assert_eq!(back.enabled, enabled);
+        proptest::prop_assert_eq!(back.namespace_scope, namespace_scope);
+    }
+
+    // proptest: HoundarrSyncSpec roundtrips through serde for arbitrary field values.
+    #[test]
+    fn houndarr_sync_spec_roundtrips(
+        enabled in proptest::bool::ANY,
+        namespace_scope in proptest::option::of("[a-z][a-z0-9-]{0,30}"),
+        admin_credentials_secret in "[a-z][a-z0-9-]{0,30}",
+    ) {
+        let spec = HoundarrSyncSpec {
+            enabled,
+            namespace_scope: namespace_scope.clone(),
+            admin_credentials_secret: admin_credentials_secret.clone(),
+        };
+        let json = serde_json::to_string(&spec).expect("serialize");
+        let back: HoundarrSyncSpec = serde_json::from_str(&json).expect("deserialize");
+        proptest::prop_assert_eq!(back.enabled, enabled);
+        proptest::prop_assert_eq!(back.namespace_scope, namespace_scope);
+        proptest::prop_assert_eq!(back.admin_credentials_secret, admin_credentials_secret);
+    }
+
+    // proptest: UnpackerrArrInstance and UnpackerrConfig roundtrip through serde for
+    // arbitrary field values, including arbitrary combinations of configured instances.
+    #[test]
+    fn unpackerr_config_roundtrips(
+        sonarr_url in proptest::option::of(".*"),
+        radarr_url in proptest::option::of(".*"),
+    ) {
+        let make = |url: Option<String>| url.map(|url| servarr_crds::UnpackerrArrInstance {
+            url,
+            api_key_secret: "secret".to_string(),
+        });
+        let config = servarr_crds::UnpackerrConfig {
+            sonarr: make(sonarr_url),
+            radarr: make(radarr_url),
+            lidarr: None,
+            readarr: None,
+        };
+        let json = serde_json::to_string(&config).expect("serialize");
+        let back: servarr_crds::UnpackerrConfig = serde_json::from_str(&json).expect("deserialize");
+        proptest::prop_assert_eq!(back.sonarr.map(|i| i.url), config.sonarr.map(|i| i.url));
+        proptest::prop_assert_eq!(back.radarr.map(|i| i.url), config.radarr.map(|i| i.url));
     }
 }

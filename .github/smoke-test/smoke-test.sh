@@ -4,6 +4,8 @@ set -euo pipefail
 # App name -> default port mapping (from image-defaults.toml)
 declare -A APP_PORTS=(
   [bazarr]=6767
+  [cleanuparr]=11011
+  [houndarr]=8877
   [jackett]=9117
   [jellyfin]=8096
   [lidarr]=8686
@@ -17,6 +19,7 @@ declare -A APP_PORTS=(
   [subgen]=9000
   [tautulli]=8181
   [transmission]=9091
+  [unpackerr]=5656
 )
 
 APPS=("${!APP_PORTS[@]}")
