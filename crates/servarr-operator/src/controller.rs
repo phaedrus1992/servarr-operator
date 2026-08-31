@@ -790,6 +790,17 @@ pub async fn reconcile(app: Arc<ServarrApp>, ctx: Arc<Context>) -> Result<Action
             .map_err(Error::Kube)?;
     }
 
+    // Build and apply Unpackerr init ConfigMap (pre-seeds unpackerr.conf before first boot)
+    if let Some(cm) = servarr_resources::configmap::build_unpackerr_init(&app) {
+        let cm_name = cm.metadata.name.as_deref().unwrap_or(&name);
+        let cm_api = Api::<ConfigMap>::namespaced(client.clone(), &ns);
+        tracing::debug!(%name, cm_name, "SSA: applying Unpackerr init ConfigMap");
+        cm_api
+            .patch(cm_name, &pp, &Patch::Apply(&cm))
+            .await
+            .map_err(Error::Kube)?;
+    }
+
     // Auto-create API key Secret if apiKeySecret is set and the Secret is absent.
     // Uses a get-then-create pattern so an existing key is never overwritten.
     tracing::debug!(%name, "ensuring API key secret");
@@ -1102,6 +1113,66 @@ pub async fn reconcile(app: Arc<ServarrApp>, ctx: Arc<Context>) -> Result<Action
         None
     };
 
+    // Cleanuparr cross-app sync (only for Cleanuparr-type apps with sync enabled)
+    let cleanuparr_sync_condition = if app.spec.app == AppType::Cleanuparr
+        && let Some(ref sync_spec) = app.spec.cleanuparr_sync
+        && sync_spec.enabled
+    {
+        let target_ns = sync_spec.namespace_scope.as_deref().unwrap_or(&ns);
+        let now = chrono_now();
+        let result = sync_cleanuparr_apps(
+            client,
+            &app,
+            target_ns,
+            ctx.app_api_base_override.as_deref(),
+        )
+        .await;
+        Some(result_to_condition(
+            result,
+            ConditionSpec {
+                condition_type: condition_types::CLEANUPARR_SYNC_READY,
+                ok_reason: "SyncComplete",
+                ok_message: TenantSafeMessage::new("Sonarr and Radarr synced into Cleanuparr"),
+                fail_reason: "SyncFailed",
+                fail_log: "Cleanuparr sync failed",
+            },
+            &name,
+            &now,
+        ))
+    } else {
+        None
+    };
+
+    // Houndarr cross-app sync (only for Houndarr-type apps with sync enabled)
+    let houndarr_sync_condition = if app.spec.app == AppType::Houndarr
+        && let Some(ref sync_spec) = app.spec.houndarr_sync
+        && sync_spec.enabled
+    {
+        let target_ns = sync_spec.namespace_scope.as_deref().unwrap_or(&ns);
+        let now = chrono_now();
+        let result = sync_houndarr_apps(
+            client,
+            &app,
+            target_ns,
+            ctx.app_api_base_override.as_deref(),
+        )
+        .await;
+        Some(result_to_condition(
+            result,
+            ConditionSpec {
+                condition_type: condition_types::HOUNDARR_SYNC_READY,
+                ok_reason: "SyncComplete",
+                ok_message: TenantSafeMessage::new("Sonarr and Radarr synced into Houndarr"),
+                fail_reason: "SyncFailed",
+                fail_log: "Houndarr sync failed",
+            },
+            &name,
+            &now,
+        ))
+    } else {
+        None
+    };
+
     // Download-client data health (Transmission only, non-blocking). base_url_override is
     // applied further up when resolving transmission_access -- not needed again here.
     let download_data_condition =
@@ -1121,6 +1192,8 @@ pub async fn reconcile(app: Arc<ServarrApp>, ctx: Arc<Context>) -> Result<Action
             prowlarr_sync: prowlarr_sync_condition,
             seerr_sync: seerr_sync_condition,
             maintainerr_sync: maintainerr_sync_condition,
+            cleanuparr_sync: cleanuparr_sync_condition,
+            houndarr_sync: houndarr_sync_condition,
             restore: restore_condition,
             download_data: download_data_condition,
         },
@@ -2566,6 +2639,10 @@ struct StatusConditions {
     seerr_sync: Option<Condition>,
     /// Maintainerr cross-app sync result (only set for Maintainerr apps with sync enabled).
     maintainerr_sync: Option<Condition>,
+    /// Cleanuparr cross-app sync result (only set for Cleanuparr apps with sync enabled).
+    cleanuparr_sync: Option<Condition>,
+    /// Houndarr cross-app sync result (only set for Houndarr apps with sync enabled).
+    houndarr_sync: Option<Condition>,
     /// Backup restore result (only set when a restore was attempted this reconcile).
     restore: Option<Condition>,
     /// Download-client data health (only set for Transmission apps with health checking
@@ -2628,6 +2705,8 @@ async fn update_status(
         prowlarr_sync: prowlarr_sync_condition,
         seerr_sync: seerr_sync_condition,
         maintainerr_sync: maintainerr_sync_condition,
+        cleanuparr_sync: cleanuparr_sync_condition,
+        houndarr_sync: houndarr_sync_condition,
         restore: restore_condition,
         download_data: download_data_condition,
     } = conditions;
@@ -2736,6 +2815,8 @@ async fn update_status(
         prowlarr_sync_condition,
         seerr_sync_condition,
         maintainerr_sync_condition,
+        cleanuparr_sync_condition,
+        houndarr_sync_condition,
         restore_condition,
         download_data_condition,
     ]
@@ -3944,6 +4025,73 @@ async fn sync_bazarr_apps(
     Ok(())
 }
 
+/// *arr kinds [`sync_cross_app`] attempts to register, paired with the `AppType`
+/// discovery filter and the string kind [`servarr_api::CrossAppSync`] expects.
+const CROSS_APP_SYNC_KINDS: &[(AppType, &str)] =
+    &[(AppType::Sonarr, "sonarr"), (AppType::Radarr, "radarr")];
+
+/// Outcome of [`sync_cross_app`]: how many instances were newly registered per
+/// *arr kind, and how many operations (list or register) failed.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+struct SyncCounts {
+    registered: std::collections::HashMap<&'static str, u32>,
+    failures: u32,
+}
+
+/// List-then-register Sonarr/Radarr instances discovered in the target namespace
+/// into a companion app implementing [`servarr_api::CrossAppSync`].
+///
+/// Extracted from Maintainerr's original Sonarr/Radarr sync logic (#776) so
+/// Cleanuparr and Houndarr share the same idempotent list-then-add behavior:
+/// existing registrations are listed first via `list_registered` and
+/// already-registered names are skipped, so repeated reconciles don't
+/// accumulate duplicates.
+///
+/// A `list_registered` failure for one kind aborts registration attempts for
+/// *that kind only* (to avoid duplicate registrations on a transient error) —
+/// it does not abort the other kinds. A `register` failure for one instance is
+/// logged and counted but does not abort the rest of the sweep.
+async fn sync_cross_app<T: servarr_api::CrossAppSync>(
+    client: &T,
+    app_name: &str,
+    discovered: &[DiscoveredApp],
+) -> SyncCounts {
+    let mut counts = SyncCounts::default();
+    for (app_type, kind) in CROSS_APP_SYNC_KINDS {
+        let existing: std::collections::HashSet<String> = match client.list_registered(kind).await {
+            Ok(names) => names.into_iter().collect(),
+            Err(e) => {
+                let summary = e.log_summary();
+                error!(app_name, kind, error = %summary,
+                    "failed to list existing {kind} instances; skipping {kind} registration to prevent duplicates");
+                counts.failures += 1;
+                continue;
+            }
+        };
+        for discovered_app in discovered.iter().filter(|a| &a.app_type == app_type) {
+            if existing.contains(&discovered_app.name) {
+                continue;
+            }
+            let instance = servarr_api::RegisteredArrInstance {
+                name: discovered_app.name.clone(),
+                base_url: discovered_app.base_url(),
+                api_key: discovered_app.api_key.clone(),
+            };
+            match client.register(kind, &instance).await {
+                Ok(()) => {
+                    *counts.registered.entry(kind).or_default() += 1;
+                }
+                Err(e) => {
+                    warn!(app_name, kind, instance = %discovered_app.name, error = %e.log_summary(),
+                        "failed to register {kind} instance");
+                    counts.failures += 1;
+                }
+            }
+        }
+    }
+    counts
+}
+
 /// Sync Sonarr, Radarr, Seerr, Tautulli, and Plex into Maintainerr.
 ///
 /// Called on every reconcile when `maintainerr_sync.enabled` is true. Discovers
@@ -4241,6 +4389,152 @@ async fn sync_maintainerr_servers(
     if failures > 0 {
         return Err(TenantSafeMessage::new(format!(
             "{failures} app(s) failed to sync into Maintainerr (see warnings above)"
+        )));
+    }
+
+    Ok(())
+}
+
+/// Sync Sonarr and Radarr into Cleanuparr via its JSON `ArrConfigController` API.
+///
+/// Called on every reconcile when `cleanuparr_sync.enabled` is true. Reuses the
+/// operator's generic `apiKeySecret` mechanism (same as Maintainerr/Seerr) —
+/// Cleanuparr has no operator-managed key of its own, unlike Bazarr.
+async fn sync_cleanuparr_apps(
+    client: &Client,
+    cleanuparr: &ServarrApp,
+    target_ns: &str,
+    base_url_override: Option<&str>,
+) -> Result<(), TenantSafeMessage> {
+    let cleanuparr_name = cleanuparr.name_any();
+    let ns = cleanuparr.namespace().unwrap_or_else(|| "default".into());
+
+    let api_key_secret = cleanuparr.spec.api_key_secret.as_deref().ok_or_else(|| {
+        TenantSafeMessage::new("cleanuparrSync is enabled but spec.apiKeySecret is not set")
+    })?;
+    let cleanuparr_key = servarr_api::read_secret_key(client, &ns, api_key_secret, "api-key")
+        .await
+        .map_err(|e| {
+            TenantSafeMessage::new(format!(
+                "failed to read Cleanuparr API key: {}",
+                e.public_summary()
+            ))
+        })?;
+
+    let cleanuparr_app_name = servarr_resources::common::service_name(cleanuparr);
+    let defaults = servarr_crds::AppDefaults::try_for_app(&cleanuparr.spec.app)
+        .map_err(|e| TenantSafeMessage::new(format!("failed to load app defaults: {e}")))?;
+    let svc_spec = cleanuparr
+        .spec
+        .service
+        .as_ref()
+        .unwrap_or(&defaults.service);
+    let port = svc_spec.ports.first().map(|p| p.port).ok_or_else(|| {
+        TenantSafeMessage::new(
+            "Cleanuparr service spec has no ports; check spec.service or app defaults",
+        )
+    })?;
+    let cleanuparr_url = base_url_override
+        .map(str::to_owned)
+        .unwrap_or_else(|| format!("http://{cleanuparr_app_name}.{ns}.svc:{port}"));
+
+    let cleanuparr_client = servarr_api::CleanuparrClient::new(&cleanuparr_url, &cleanuparr_key)
+        .map_err(|e| {
+            TenantSafeMessage::new(format!(
+                "failed to create Cleanuparr client: {}",
+                e.log_summary()
+            ))
+        })?;
+
+    let discovered = discover_namespace_apps(client, target_ns).await?;
+    let counts = sync_cross_app(&cleanuparr_client, &cleanuparr_name, &discovered).await;
+
+    info!(cleanuparr = %cleanuparr_name,
+        sonarr_registered = counts.registered.get("sonarr").copied().unwrap_or(0),
+        radarr_registered = counts.registered.get("radarr").copied().unwrap_or(0),
+        failures = counts.failures, "Cleanuparr sync complete");
+
+    if counts.failures > 0 {
+        return Err(TenantSafeMessage::new(format!(
+            "{} app(s) failed to sync into Cleanuparr (see warnings above)",
+            counts.failures
+        )));
+    }
+
+    Ok(())
+}
+
+/// Sync Sonarr and Radarr into Houndarr via its session/CSRF-protected settings form.
+///
+/// Called on every reconcile when `houndarr_sync.enabled` is true. Houndarr has no
+/// JSON registration API (see `HoundarrClient`), so this logs in as
+/// `houndarr_sync.admin_credentials_secret`'s username/password on every reconcile
+/// rather than reusing a long-lived client.
+async fn sync_houndarr_apps(
+    client: &Client,
+    houndarr: &ServarrApp,
+    target_ns: &str,
+    base_url_override: Option<&str>,
+) -> Result<(), TenantSafeMessage> {
+    let houndarr_name = houndarr.name_any();
+    let ns = houndarr.namespace().unwrap_or_else(|| "default".into());
+
+    let creds_secret = houndarr
+        .spec
+        .houndarr_sync
+        .as_ref()
+        .map(|s| s.admin_credentials_secret.as_str())
+        .ok_or_else(|| {
+            TenantSafeMessage::new("houndarrSync is enabled but adminCredentialsSecret is not set")
+        })?;
+    let username = servarr_api::read_secret_key(client, &ns, creds_secret, "username")
+        .await
+        .map_err(|e| {
+            TenantSafeMessage::new(format!(
+                "failed to read Houndarr admin username: {}",
+                e.public_summary()
+            ))
+        })?;
+    let password = servarr_api::read_secret_key(client, &ns, creds_secret, "password")
+        .await
+        .map_err(|e| {
+            TenantSafeMessage::new(format!(
+                "failed to read Houndarr admin password: {}",
+                e.public_summary()
+            ))
+        })?;
+
+    let houndarr_app_name = servarr_resources::common::service_name(houndarr);
+    let defaults = servarr_crds::AppDefaults::try_for_app(&houndarr.spec.app)
+        .map_err(|e| TenantSafeMessage::new(format!("failed to load app defaults: {e}")))?;
+    let svc_spec = houndarr.spec.service.as_ref().unwrap_or(&defaults.service);
+    let port = svc_spec.ports.first().map(|p| p.port).ok_or_else(|| {
+        TenantSafeMessage::new(
+            "Houndarr service spec has no ports; check spec.service or app defaults",
+        )
+    })?;
+    let houndarr_url = base_url_override
+        .map(str::to_owned)
+        .unwrap_or_else(|| format!("http://{houndarr_app_name}.{ns}.svc:{port}"));
+
+    let houndarr_client = servarr_api::HoundarrClient::new(&houndarr_url, &username, &password)
+        .await
+        .map_err(|e| {
+            TenantSafeMessage::new(format!("failed to log in to Houndarr: {}", e.log_summary()))
+        })?;
+
+    let discovered = discover_namespace_apps(client, target_ns).await?;
+    let counts = sync_cross_app(&houndarr_client, &houndarr_name, &discovered).await;
+
+    info!(houndarr = %houndarr_name,
+        sonarr_registered = counts.registered.get("sonarr").copied().unwrap_or(0),
+        radarr_registered = counts.registered.get("radarr").copied().unwrap_or(0),
+        failures = counts.failures, "Houndarr sync complete");
+
+    if counts.failures > 0 {
+        return Err(TenantSafeMessage::new(format!(
+            "{} app(s) failed to sync into Houndarr (see warnings above)",
+            counts.failures
         )));
     }
 
@@ -6881,6 +7175,8 @@ mod tests {
                 prowlarr_sync: None,
                 seerr_sync: None,
                 maintainerr_sync: None,
+                cleanuparr_sync: None,
+                houndarr_sync: None,
                 restore: None,
                 download_data: None,
             },
@@ -6960,6 +7256,8 @@ mod tests {
                 prowlarr_sync: None,
                 seerr_sync: None,
                 maintainerr_sync: None,
+                cleanuparr_sync: None,
+                houndarr_sync: None,
                 restore: None,
                 download_data: None,
             },
@@ -7852,6 +8150,197 @@ mod tests {
             msg.contains("HTTP API error (status: 500)"),
             "expected log_summary()'s sanitized form in: {msg}"
         );
+    }
+
+    // ---- sync_cross_app tests (#776) ----
+
+    fn discovered_sonarr(name: &str, host: &str, port: i32, api_key: &str) -> DiscoveredApp {
+        DiscoveredApp {
+            name: name.to_string(),
+            app_type: AppType::Sonarr,
+            host: host.to_string(),
+            port,
+            api_key: api_key.to_string(),
+            instance: None,
+        }
+    }
+
+    fn discovered_radarr(name: &str, host: &str, port: i32, api_key: &str) -> DiscoveredApp {
+        DiscoveredApp {
+            name: name.to_string(),
+            app_type: AppType::Radarr,
+            host: host.to_string(),
+            port,
+            api_key: api_key.to_string(),
+            instance: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn sync_cross_app_registers_discovered_absent_from_existing() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/configuration/sonarr"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"instances": []})),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/configuration/radarr"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"instances": []})),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/configuration/sonarr/instances"))
+            .respond_with(ResponseTemplate::new(201))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/configuration/radarr/instances"))
+            .respond_with(ResponseTemplate::new(201))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = servarr_api::CleanuparrClient::new(&server.uri(), "test-key").unwrap();
+        let discovered = vec![
+            discovered_sonarr("Sonarr1", "sonarr.media.svc", 8989, "sonarr-key"),
+            discovered_radarr("Radarr1", "radarr.media.svc", 7878, "radarr-key"),
+        ];
+
+        let counts = sync_cross_app(&client, "cleanuparr", &discovered).await;
+
+        assert_eq!(counts.registered.get("sonarr"), Some(&1));
+        assert_eq!(counts.registered.get("radarr"), Some(&1));
+        assert_eq!(counts.failures, 0);
+    }
+
+    #[tokio::test]
+    async fn sync_cross_app_skips_already_registered() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/configuration/sonarr"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "instances": [{"name": "Sonarr1"}]
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/configuration/radarr"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"instances": []})),
+            )
+            .mount(&server)
+            .await;
+        // No POST mock for sonarr: it must not be called (already registered).
+
+        let client = servarr_api::CleanuparrClient::new(&server.uri(), "test-key").unwrap();
+        let discovered = vec![discovered_sonarr(
+            "Sonarr1",
+            "sonarr.media.svc",
+            8989,
+            "sonarr-key",
+        )];
+
+        let counts = sync_cross_app(&client, "cleanuparr", &discovered).await;
+
+        assert_eq!(counts.registered.get("sonarr"), None);
+        assert_eq!(counts.failures, 0);
+    }
+
+    #[tokio::test]
+    async fn sync_cross_app_list_failure_for_one_kind_does_not_abort_others() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/configuration/sonarr"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("Internal error"))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/configuration/radarr"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"instances": []})),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/configuration/radarr/instances"))
+            .respond_with(ResponseTemplate::new(201))
+            .expect(1)
+            .mount(&server)
+            .await;
+        // No POST mock for sonarr: a list failure must abort registration for
+        // that kind only, to avoid duplicate registrations on a transient error.
+
+        let client = servarr_api::CleanuparrClient::new(&server.uri(), "test-key").unwrap();
+        let discovered = vec![
+            discovered_sonarr("Sonarr1", "sonarr.media.svc", 8989, "sonarr-key"),
+            discovered_radarr("Radarr1", "radarr.media.svc", 7878, "radarr-key"),
+        ];
+
+        let counts = sync_cross_app(&client, "cleanuparr", &discovered).await;
+
+        assert_eq!(counts.registered.get("sonarr"), None);
+        assert_eq!(counts.registered.get("radarr"), Some(&1));
+        assert_eq!(counts.failures, 1);
+    }
+
+    #[tokio::test]
+    async fn sync_cross_app_register_failure_counts_but_does_not_abort() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/configuration/sonarr"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"instances": []})),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/configuration/radarr"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"instances": []})),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/configuration/sonarr/instances"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("Internal error"))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/configuration/radarr/instances"))
+            .respond_with(ResponseTemplate::new(201))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = servarr_api::CleanuparrClient::new(&server.uri(), "test-key").unwrap();
+        let discovered = vec![
+            discovered_sonarr("Sonarr1", "sonarr.media.svc", 8989, "sonarr-key"),
+            discovered_radarr("Radarr1", "radarr.media.svc", 7878, "radarr-key"),
+        ];
+
+        let counts = sync_cross_app(&client, "cleanuparr", &discovered).await;
+
+        assert_eq!(counts.registered.get("sonarr"), None);
+        assert_eq!(counts.registered.get("radarr"), Some(&1));
+        assert_eq!(counts.failures, 1);
     }
 
     // ---- sync_maintainerr_servers tests ----

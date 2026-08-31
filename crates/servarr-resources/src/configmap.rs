@@ -632,10 +632,26 @@ pub fn build_unpackerr_init(app: &ServarrApp) -> Option<ConfigMap> {
 
     let mut blocks = String::new();
     for (kind, instance, env_var) in [
-        ("sonarr", &unpackerr_config.sonarr, "UNPACKERR_SONARR_0_APIKEY"),
-        ("radarr", &unpackerr_config.radarr, "UNPACKERR_RADARR_0_APIKEY"),
-        ("lidarr", &unpackerr_config.lidarr, "UNPACKERR_LIDARR_0_APIKEY"),
-        ("readarr", &unpackerr_config.readarr, "UNPACKERR_READARR_0_APIKEY"),
+        (
+            "sonarr",
+            &unpackerr_config.sonarr,
+            "UNPACKERR_SONARR_0_APIKEY",
+        ),
+        (
+            "radarr",
+            &unpackerr_config.radarr,
+            "UNPACKERR_RADARR_0_APIKEY",
+        ),
+        (
+            "lidarr",
+            &unpackerr_config.lidarr,
+            "UNPACKERR_LIDARR_0_APIKEY",
+        ),
+        (
+            "readarr",
+            &unpackerr_config.readarr,
+            "UNPACKERR_READARR_0_APIKEY",
+        ),
     ] {
         if let Some(instance) = instance {
             blocks.push_str(&format!(
@@ -670,10 +686,7 @@ UNPACKERR_EOF
             owner_references: Some(vec![common::owner_reference(app)]),
             ..Default::default()
         },
-        data: Some(BTreeMap::from([(
-            "unpackerr-init.sh".to_string(),
-            script,
-        )])),
+        data: Some(BTreeMap::from([("unpackerr-init.sh".to_string(), script)])),
         ..Default::default()
     })
 }
