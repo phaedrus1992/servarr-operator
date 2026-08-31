@@ -928,7 +928,9 @@ pub async fn reconcile(app: Arc<ServarrApp>, ctx: Arc<Context>) -> Result<Action
     )
     .await;
 
-    // Admin credential sync via live API (SABnzbd, Transmission, Jellyfin, Tautulli, Seerr)
+    // Admin credential sync via live API or env-var injection (Sonarr, Radarr, Lidarr,
+    // Prowlarr, SABnzbd, Transmission, Jellyfin, Tautulli, Seerr, Bazarr). Not Cleanuparr,
+    // Houndarr, Unpackerr -- see the sync_admin_credentials match's own `_ => return None`.
     let admin_creds_condition = sync_admin_credentials(
         client,
         &app,
@@ -1652,7 +1654,10 @@ async fn sync_admin_credentials(
             }
         }
         // Plex: uses plex.tv account auth, not configurable via operator
-        // Maintainerr: no credential API exposed
+        // Maintainerr, Cleanuparr, Houndarr: no admin-credential API exposed (Cleanuparr/
+        // Houndarr sync *arr instances, not admin logins; Houndarr logs in with its own
+        // separate houndarrSync.adminCredentialsSecret, not this generic mechanism)
+        // Unpackerr: config-file driven, no live API at all
         _ => return None,
     };
 
@@ -4027,6 +4032,13 @@ async fn sync_bazarr_apps(
 
 /// *arr kinds [`sync_cross_app`] attempts to register, paired with the `AppType`
 /// discovery filter and the string kind [`servarr_api::CrossAppSync`] expects.
+///
+/// Both kinds here are in every current client's `SUPPORTED_KINDS`, so
+/// `validate_kind`'s error path in `sync_cross_app` can't actually trigger from
+/// this call site today. If this list ever grows to a kind one client doesn't
+/// support, that error carries only a generic message (`ApiError::OperationFailed`
+/// via `log_summary()`) rather than naming the unsupported kind -- acceptable
+/// since the kind name itself carries no credential risk.
 const CROSS_APP_SYNC_KINDS: &[(AppType, &str)] =
     &[(AppType::Sonarr, "sonarr"), (AppType::Radarr, "radarr")];
 
