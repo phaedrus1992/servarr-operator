@@ -214,9 +214,11 @@ jobs:
 
       # Reuses the same script a contributor can run locally
       # (scripts/smoke-test-local.sh, via `pre-commit run --hook-stage manual
-      # smoke-test`), so CI and local runs exercise identical setup. This is
-      # the gate — the script is manual-stage only, not part of the pre-push
-      # hook (#767). This checks that the 14 media-stack app deployments
+      # smoke-test`), so CI and local runs exercise identical setup. The
+      # script is manual-stage only, not part of the pre-push hook (#767) —
+      # this job is a required check on main, but release/N.x branches have
+      # no branch protection yet (#770), so treat it as advisory there until
+      # that's fixed. This checks that the 14 media-stack app deployments
       # (bazarr, jackett, jellyfin, lidarr, ... — see APP_PORTS in
       # smoke-test.sh) reach Ready and that Jellyfin's admin credentials
       # authenticate; it is not a full end-to-end functional test of every
