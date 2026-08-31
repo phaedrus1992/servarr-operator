@@ -69,6 +69,9 @@ jobs:
         run: |
           set -euo pipefail
 
+          VERIFIED=()
+          HALTED=""
+
           emit_outputs() {
             local delim
             delim="targets-$(uuidgen)"
@@ -80,6 +83,12 @@ jobs:
               echo "$delim"
             } >> "$GITHUB_OUTPUT"
           }
+          # Runs on every exit path, including an unexpected failure from an
+          # otherwise-unguarded command inside the loop below (set -e would
+          # otherwise kill the script before the post-loop emit_outputs call,
+          # silently dropping whatever earlier targets had already verified
+          # and been added to bundles/).
+          trap emit_outputs EXIT
 
           # Build target list: every newer release branch (semver order) + main.
           TARGETS=()
@@ -93,15 +102,11 @@ jobs:
             fi
           done <<< "$BRANCHES"
 
-          VERIFIED=()
-          HALTED=""
-
           # Guard: the pushed branch must be a recognized versioned release line.
           # The trigger (release/**) is broader than the X.x regex, so a branch
           # like release/foo would otherwise fall through and merge into main.
           if [[ "$FOUND" -eq 0 ]]; then
             echo "::warning::$CURRENT is not a versioned release/X.x branch; skipping cascade"
-            emit_outputs
             exit 0
           fi
 
@@ -139,7 +144,17 @@ jobs:
 
           for TARGET in "${TARGETS[@]}"; do
             echo "::group::Verify $CURRENT → $TARGET"
-            TARGET_SHA=$(git rev-parse "origin/$TARGET" 2>/dev/null || echo "")
+
+            # Fetch before reading either ref, so both the up-to-date check
+            # and the base recorded below reflect the current remote state
+            # rather than whatever was fetched at job start.
+            if ! FETCH_ERR=$(git fetch origin "$CURRENT" "$TARGET" 2>&1); then
+              echo "::error::Cascade halted: failed to fetch $CURRENT/$TARGET from origin: $FETCH_ERR"
+              echo "::endgroup::"
+              HALTED="fetch failure for $CURRENT/$TARGET"
+              break
+            fi
+            TARGET_SHA=$(git rev-parse "origin/$TARGET")
             CURRENT_SHA=$(git rev-parse "origin/$CURRENT")
 
             if [[ "$TARGET_SHA" == "$CURRENT_SHA" ]]; then
@@ -148,12 +163,6 @@ jobs:
               continue
             fi
 
-            if ! FETCH_ERR=$(git fetch origin "$CURRENT" "$TARGET" 2>&1); then
-              echo "::error::Cascade halted: failed to fetch $CURRENT/$TARGET from origin: $FETCH_ERR"
-              echo "::endgroup::"
-              HALTED="fetch failure for $CURRENT/$TARGET"
-              break
-            fi
             git checkout -q "origin/$TARGET"
 
             if ! git merge --no-commit --no-ff "origin/$CURRENT" 2>/dev/null; then
@@ -192,22 +201,31 @@ jobs:
               break
             fi
 
+            # Record the merge commit's actual parents rather than the
+            # pre-merge TARGET_SHA/CURRENT_SHA above — self-consistent with
+            # what's really in the bundle, so forward-merge can assert the
+            # real commit graph matches instead of trusting an echoed value.
+            # This job runs `cargo build` on merged (not fully trusted) code,
+            # so its output — including these files — isn't trusted as
+            # control data on the other side of the write-credential
+            # boundary; only the git objects themselves are self-verifying.
             MERGE_SHA=$(git rev-parse HEAD)
+            BASE_SHA=$(git rev-parse HEAD^1)
+            MERGED_SHA=$(git rev-parse HEAD^2)
             SAFE_TARGET=${TARGET//\//_}
             mkdir -p "bundles/$SAFE_TARGET"
             # Bundle everything reachable from the merge commit that target
             # doesn't already have. forward-merge unbundles this and pushes
             # $MERGE_SHA — it never re-runs the merge or the build.
-            git bundle create "bundles/$SAFE_TARGET/merge.bundle" "$TARGET_SHA..HEAD"
-            echo "$TARGET_SHA" > "bundles/$SAFE_TARGET/base.sha"
+            git bundle create "bundles/$SAFE_TARGET/merge.bundle" "$BASE_SHA..HEAD"
+            echo "$BASE_SHA" > "bundles/$SAFE_TARGET/base.sha"
+            echo "$MERGED_SHA" > "bundles/$SAFE_TARGET/current.sha"
             echo "$MERGE_SHA" > "bundles/$SAFE_TARGET/merge.sha"
             echo "$TARGET" > "bundles/$SAFE_TARGET/target.txt"
             VERIFIED+=("$TARGET")
 
             echo "::endgroup::"
           done
-
-          emit_outputs
 
           if [[ -n "$HALTED" ]]; then
             echo "Verify cascade halted ($HALTED); downstream targets not verified"
@@ -237,6 +255,12 @@ jobs:
   # untrusted code (#616).
   forward-merge:
     needs: verify-merge
+    # Run even if verify-merge itself failed (as opposed to cleanly halting
+    # with exit 0, which it does for every anticipated failure mode) — an
+    # unguarded command failing mid-loop there still leaves earlier targets
+    # verified and bundled, and those still need to be pushed rather than
+    # silently dropped because the job-level needs gate blocked this job.
+    if: always()
     runs-on: ubuntu-latest
     # Intentionally no actor filter: CI-initiated pushes (auto-commit version
     # bumps from the release workflow) must also trigger the forward-merge
@@ -248,13 +272,6 @@ jobs:
       CURRENT: ${{ needs.verify-merge.outputs.current }}
       VERIFIED_TARGETS: ${{ needs.verify-merge.outputs.verified_targets }}
       VERIFY_HALTED: ${{ needs.verify-merge.outputs.halted }}
-      GH_TOKEN: ${{ github.token }}
-      # A PAT with workflow scope allows pushing merge commits that touch
-      # .github/workflows/ — the built-in GITHUB_TOKEN cannot. Injected per
-      # push via `-c http.extraheader` (see push_sha_to_target below) instead
-      # of `git remote set-url`, which would write it in cleartext into
-      # .git/config for the rest of the job.
-      FORWARD_MERGE_PAT: ${{ secrets.FORWARD_MERGE_PAT }}
     steps:
       - name: Checkout
         if: needs.verify-merge.outputs.verified_targets != ''
@@ -272,41 +289,66 @@ jobs:
 
       - name: Push verified merges
         if: needs.verify-merge.outputs.verified_targets != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # A PAT with workflow scope allows pushing merge commits that touch
+          # .github/workflows/ — the built-in GITHUB_TOKEN cannot. Scoped to
+          # this one step (not the whole job) since no other step needs it.
+          FORWARD_MERGE_PAT: ${{ secrets.FORWARD_MERGE_PAT }}
         run: |
           set -euo pipefail
 
+          # Injected per push via GIT_CONFIG_KEY_0/VALUE_0 (not `-c`, which
+          # would put the base64 blob in argv — visible in a `ps` listing on
+          # a shared runner) and never written to .git/config, so it never
+          # sits on disk. `::add-mask::` also stops it echoing into logs if
+          # a future change accidentally prints the auth args.
+          PAT_B64=""
+          if [[ -n "${FORWARD_MERGE_PAT:-}" ]]; then
+            PAT_B64=$(printf 'x-access-token:%s' "$FORWARD_MERGE_PAT" | base64 -w0)
+            echo "::add-mask::$PAT_B64"
+          fi
+
+          git_authed() {
+            if [[ -n "$PAT_B64" ]]; then
+              GIT_CONFIG_COUNT=1 \
+                GIT_CONFIG_KEY_0="http.https://github.com/.extraheader" \
+                GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $PAT_B64" \
+                git "$@"
+            else
+              git "$@"
+            fi
+          }
+
           # Both push helpers below capture stderr instead of discarding it,
-          # so a real git error (bad PAT, rate limit, stale
-          # --force-with-lease) is distinguishable from the
-          # branch-protection / workflow-permission case the caller falls
-          # back on — previously all failures looked identical to the
-          # caller.
+          # so a real git error (bad PAT, rate limit) is distinguishable
+          # from the branch-protection / stale-target cases the caller
+          # dispatches on — previously all failures looked identical.
           #
-          # When FORWARD_MERGE_PAT is set, it's injected as a `-c
-          # http.extraheader` override scoped to this single git invocation
-          # rather than written to .git/config, so it never sits on disk.
+          # Returns: 0 success, 2 non-fast-forward (target moved — a race,
+          # not a permissions problem), 1 anything else (assumed branch
+          # protection / auth, falls back to the PR flow).
           push_sha_to_target() {
             local sha="$1" target="$2" err
-            local -a auth=()
-            if [[ -n "${FORWARD_MERGE_PAT:-}" ]]; then
-              auth=(-c "http.https://github.com/.extraheader=AUTHORIZATION: basic $(
-                printf 'x-access-token:%s' "$FORWARD_MERGE_PAT" | base64 -w0
-              )")
-            fi
-            err=$(git "${auth[@]}" push origin "$sha":"$target" 2>&1) && return 0
+            err=$(git_authed push origin "$sha":"$target" 2>&1) && return 0
             echo "::warning::push_sha_to_target failed ($sha -> $target): $err"
+            if [[ "$err" == *"fetch first"* || "$err" == *"non-fast-forward"* || "$err" == *"stale info"* ]]; then
+              return 2
+            fi
             return 1
           }
 
+          # Pushes $sha straight to refs/heads/$branch with no local
+          # checkout — this branch exists only as a PR source for the
+          # protected-target fallback below, and this job must never
+          # materialize the merged tree on disk (#616: it holds write
+          # credentials, and a checked-out tree is a foothold for whatever
+          # runs next in this job in the future, even though nothing does
+          # today). Plain --force is fine: forward-merge/* branches are
+          # owned entirely by this automation, nothing else pushes to them.
           force_push_branch() {
-            local branch="$1" err
-            local -a auth=()
-            if [[ -n "${FORWARD_MERGE_PAT:-}" ]]; then
-              auth=(-c "http.https://github.com/.extraheader=AUTHORIZATION: basic $(
-                printf 'x-access-token:%s' "$FORWARD_MERGE_PAT" | base64 -w0
-              )")
-            fi
-            err=$(git "${auth[@]}" push origin "$branch" --force-with-lease 2>&1) && return 0
+            local sha="$1" branch="$2" err
+            err=$(git_authed push origin --force "$sha:refs/heads/$branch" 2>&1) && return 0
             echo "::warning::force_push_branch failed ($branch): $err"
             return 1
           }
@@ -317,18 +359,44 @@ jobs:
             echo "::error::(Actions tab -> this run -> Re-run all jobs) so verify-merge re-verifies against $target's current state."
           }
 
+          validate_ref_name() {
+            [[ "$1" =~ ^(main|release/[0-9]+\.x)$ ]]
+          }
+
+          validate_sha() {
+            [[ "$1" =~ ^[0-9a-f]{40}$ ]]
+          }
+
           HALTED=""
 
           while IFS= read -r TARGET; do
             [[ -z "$TARGET" ]] && continue
             echo "::group::Push $CURRENT → $TARGET"
 
+            # verify-merge runs `cargo build` on merged code before writing
+            # these files, so they're not trusted control data on this side
+            # of the write-credential boundary — validate shape before use.
+            if ! validate_ref_name "$TARGET"; then
+              echo "::error::Cascade halted: '$TARGET' is not a recognized release/main branch name — refusing to push"
+              echo "::endgroup::"
+              HALTED="invalid target name"
+              break
+            fi
+
             SAFE_TARGET=${TARGET//\//_}
             BASE_SHA=$(cat "bundles/$SAFE_TARGET/base.sha")
+            MERGED_SHA=$(cat "bundles/$SAFE_TARGET/current.sha")
             MERGE_SHA=$(cat "bundles/$SAFE_TARGET/merge.sha")
 
-            if ! FETCH_ERR=$(git fetch origin "$TARGET" 2>&1); then
-              echo "::error::Cascade halted: failed to fetch $TARGET from origin: $FETCH_ERR"
+            if ! validate_sha "$BASE_SHA" || ! validate_sha "$MERGED_SHA" || ! validate_sha "$MERGE_SHA"; then
+              echo "::error::Cascade halted: bundle metadata for $TARGET is not a well-formed SHA — refusing to push"
+              echo "::endgroup::"
+              HALTED="malformed bundle metadata for $TARGET"
+              break
+            fi
+
+            if ! FETCH_ERR=$(git fetch origin "$TARGET" "$CURRENT" 2>&1); then
+              echo "::error::Cascade halted: failed to fetch $TARGET/$CURRENT from origin: $FETCH_ERR"
               echo "::endgroup::"
               HALTED="fetch failure for $TARGET"
               break
@@ -338,9 +406,7 @@ jobs:
             # TOCTOU guard: if $TARGET moved since verify-merge built this
             # bundle against $BASE_SHA, the verified merge no longer applies
             # cleanly — pushing it could silently drop whatever landed on
-            # $TARGET in between. git's own non-fast-forward rejection would
-            # likely catch this too, but check explicitly for a clear error
-            # instead of relying on that as the only guard.
+            # $TARGET in between.
             if [[ "$CURRENT_TARGET_SHA" != "$BASE_SHA" ]]; then
               bail_on_stale_target "$TARGET" "$BASE_SHA" "$CURRENT_TARGET_SHA"
               echo "::endgroup::"
@@ -348,20 +414,69 @@ jobs:
               break
             fi
 
-            git bundle unbundle "bundles/$SAFE_TARGET/merge.bundle" >/dev/null
+            if ! git bundle unbundle "bundles/$SAFE_TARGET/merge.bundle" >/dev/null 2>&1; then
+              echo "::error::Cascade halted: failed to unbundle merge for $TARGET — bundle may be corrupt or malformed — refusing to push"
+              echo "::endgroup::"
+              HALTED="bad bundle for $TARGET"
+              break
+            fi
+
+            # Don't trust the artifact's own claim about its parents — assert
+            # the real commit graph matches. The first-parent check ties the
+            # push to the target tip just fetched independently (not merely
+            # the file's claim); the second-parent check ties it to a commit
+            # actually reachable from $CURRENT's real history on origin, not
+            # just an asserted SHA. A merge commit that fails either isn't
+            # the merge verify-merge claims it is. `-q --verify` so a forged
+            # $MERGE_SHA with fewer than two parents fails this check
+            # cleanly instead of crashing the step on a raw `fatal:`.
+            if ! MERGE_PARENT1=$(git rev-parse -q --verify "$MERGE_SHA^1" 2>/dev/null); then
+              echo "::error::Cascade halted: $MERGE_SHA is not a valid merge commit (missing first parent) — refusing to push"
+              echo "::endgroup::"
+              HALTED="malformed merge commit for $TARGET"
+              break
+            fi
+            if ! MERGE_PARENT2=$(git rev-parse -q --verify "$MERGE_SHA^2" 2>/dev/null); then
+              echo "::error::Cascade halted: $MERGE_SHA is not a valid merge commit (missing second parent) — refusing to push"
+              echo "::endgroup::"
+              HALTED="malformed merge commit for $TARGET"
+              break
+            fi
+            if [[ "$MERGE_PARENT1" != "$CURRENT_TARGET_SHA" ]]; then
+              echo "::error::Cascade halted: $MERGE_SHA's first parent ($MERGE_PARENT1) doesn't match $TARGET's actual tip ($CURRENT_TARGET_SHA) — refusing to push"
+              echo "::endgroup::"
+              HALTED="parent mismatch for $TARGET"
+              break
+            fi
+            if ! git merge-base --is-ancestor "$MERGE_PARENT2" "origin/$CURRENT"; then
+              echo "::error::Cascade halted: $MERGE_SHA's second parent ($MERGE_PARENT2) is not part of $CURRENT's history on origin — refusing to push"
+              echo "::endgroup::"
+              HALTED="parent mismatch for $TARGET"
+              break
+            fi
 
             # Land the merge directly so the fix propagates automatically — main
             # is the final target and is forward-merged the same way as every
             # release branch, with no manual step. If a target is branch-protected
             # the push is rejected; fall back to opening a PR and halt so the
-            # remaining (now un-merged) targets aren't silently skipped.
-            if push_sha_to_target "$MERGE_SHA" "$TARGET"; then
+            # remaining (now un-merged) targets aren't silently skipped. A
+            # non-fast-forward rejection means $TARGET moved again in the
+            # last few seconds (a race, not a permissions problem) — bail
+            # the same way the pre-push staleness check above does, rather
+            # than misreporting it as a protected branch.
+            PUSH_STATUS=0
+            push_sha_to_target "$MERGE_SHA" "$TARGET" || PUSH_STATUS=$?
+            if [[ "$PUSH_STATUS" -eq 0 ]]; then
               echo "Pushed directly to $TARGET"
+            elif [[ "$PUSH_STATUS" -eq 2 ]]; then
+              bail_on_stale_target "$TARGET" "$BASE_SHA" "(moved again during push)"
+              echo "::endgroup::"
+              HALTED="stale target $TARGET"
+              break
             else
               MERGE_BRANCH="forward-merge/$CURRENT-to-$TARGET"
-              git checkout -B "$MERGE_BRANCH" "$MERGE_SHA"
 
-              if force_push_branch "$MERGE_BRANCH"; then
+              if force_push_branch "$MERGE_SHA" "$MERGE_BRANCH"; then
                 # The default GITHUB_TOKEN cannot create pull requests
                 # ("GitHub Actions is not permitted to create or approve
                 # pull requests") — that's the exact gap FORWARD_MERGE_PAT
