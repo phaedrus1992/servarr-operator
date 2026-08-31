@@ -131,3 +131,11 @@ repos:
         pass_filenames: false
         stages: [pre-push]
         always_run: false
+
+      - id: smoke-test-local-script-tests
+        name: tests for smoke-test-local.sh
+        entry: bash scripts/smoke-test-local_test.sh
+        language: system
+        pass_filenames: false
+        files: ^scripts/smoke-test-local(_test)?\.sh$
+        stages: [pre-push]
