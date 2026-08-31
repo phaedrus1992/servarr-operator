@@ -103,6 +103,19 @@ impl AppDefaults {
                 .ok_or_else(|| "Seerr defaults must have a 'config' volume".to_string())?;
             config_vol.mount_path = "/app/config".to_string();
         }
+        if matches!(app, super::AppType::Houndarr) {
+            // #606: Houndarr's image expects its db/config volume at /data, not
+            // /config -- confirmed by the CI smoke-test failure ("/data is not
+            // writable by UID 65534") when the volume was still mounted at the
+            // generic /config path.
+            let config_vol = defaults
+                .persistence
+                .volumes
+                .iter_mut()
+                .find(|v| v.name == "config")
+                .ok_or_else(|| "Houndarr defaults must have a 'config' volume".to_string())?;
+            config_vol.mount_path = "/data".to_string();
+        }
         Ok(defaults)
     }
 

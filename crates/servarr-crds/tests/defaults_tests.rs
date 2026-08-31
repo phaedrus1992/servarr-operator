@@ -1220,3 +1220,18 @@ fn houndarr_sync_spec_requires_admin_credentials_secret() {
     assert_eq!(spec.admin_credentials_secret, "houndarr-admin");
     assert!(spec.namespace_scope.is_none());
 }
+
+#[test]
+fn houndarr_config_volume_mounts_at_data() {
+    // Houndarr's image expects its config/db volume at /data, not the generic
+    // /config every other nonroot app uses (confirmed against #606's issue
+    // comment and CI smoke-test failure: "ERROR: /data is not writable").
+    let defaults = AppDefaults::try_for_app(&AppType::Houndarr).unwrap();
+    let config_vol = defaults
+        .persistence
+        .volumes
+        .iter()
+        .find(|v| v.name == "config")
+        .expect("houndarr defaults must have a config volume");
+    assert_eq!(config_vol.mount_path, "/data");
+}
