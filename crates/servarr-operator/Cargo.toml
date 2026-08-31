@@ -29,6 +29,14 @@ pre-release-replacements = [
   { file = "../../charts/servarr-operator/Chart.yaml", search = "^appVersion: .*$", replace = "appVersion: \"{{version}}\"", exactly = 1 },
 ]
 
+[features]
+# Exposes Context::for_test and its with_* builder methods, which skip Context::new's
+# WATCH_NAMESPACE validation. Enabled only by this crate's own dev-dependency below, so no
+# build command in this repo enables it in a shipped binary (#757) -- but nothing enforces
+# that: an explicit --features test-util or --all-features on a release build would still
+# compile it in.
+test-util = []
+
 [dependencies]
 kube.workspace = true
 k8s-openapi.workspace = true
@@ -59,6 +67,7 @@ hex = "=0.4.3"
 md5 = "=0.8.1"
 
 [dev-dependencies]
+servarr-operator = { path = ".", features = ["test-util"] }
 wiremock.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }
 http = "=1.5.0"

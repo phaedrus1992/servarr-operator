@@ -6643,7 +6643,7 @@ mod tests {
         let after = crate::metrics::MANAGED_APPS_LIST_FAILURES_TOTAL
             .with_label_values(&[] as &[&str])
             .get();
-        assert_eq!(after, before + 1);
+        assert!(after > before, "before={before}, after={after}");
     }
 
     // The terminal ReconcileSuccess Event is advisory (#746). Two guarantees, asserted in one

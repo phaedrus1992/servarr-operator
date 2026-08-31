@@ -7,19 +7,24 @@ use crate::metrics::increment_event_publish_failure;
 use std::collections::{HashMap, HashSet};
 use tracing::{info, warn};
 
+/// Every field is `pub(crate)`, so code outside this crate cannot construct a struct literal that
+/// skips the `WATCH_NAMESPACE` validation [`Context::new`] performs (#757). This does not cover
+/// in-crate `#[cfg(test)]` code, which can still see `pub(crate)` fields directly and build a
+/// `Context` by struct literal -- that is same-crate test code with direct field access either
+/// way, not a validation bypass reachable from outside.
 pub struct Context {
-    pub client: Client,
+    pub(crate) client: Client,
     /// Image overrides loaded from DEFAULT_IMAGE_<APP>_REPO / DEFAULT_IMAGE_<APP>_TAG env vars.
     /// Keys are lowercase app names (e.g. "sonarr", "radarr").
-    pub image_overrides: HashMap<String, ImageSpec>,
+    pub(crate) image_overrides: HashMap<String, ImageSpec>,
     /// Lowercase app names whose `image_overrides` entry came from a deprecated
     /// pre-rename env var fallback (e.g. `seerr` via `DEFAULT_IMAGE_OVERSEERR_*`) rather
     /// than an explicit override for the app's current name. Reconcile uses this to
     /// publish a Warning Event so a stale Helm value can't silently drive the image
     /// with only a startup log line to notice it (#534).
-    pub legacy_image_override_apps: HashSet<String>,
+    pub(crate) legacy_image_override_apps: HashSet<String>,
     /// Reporter identity used when publishing Kubernetes Events.
-    pub reporter: Reporter,
+    pub(crate) reporter: Reporter,
     /// The namespace to watch. When `Some`, the operator uses `Api::namespaced()`
     /// and only needs `Role`/`RoleBinding` privileges. When `None`, the operator
     /// watches all namespaces and requires `ClusterRole`/`ClusterRoleBinding`.
@@ -27,15 +32,15 @@ pub struct Context {
     /// Defaults to the pod's own namespace (from `WATCH_NAMESPACE` env, typically
     /// set via the downward API). Set `WATCH_ALL_NAMESPACES=true` to opt into
     /// cluster-scoped mode.
-    pub watch_namespace: Option<String>,
+    pub(crate) watch_namespace: Option<String>,
     /// Override base URL for in-cluster app API calls. `None` in production (URLs
     /// are built from `<name>.<ns>.svc:<port>`). Tests set this to a wiremock URI.
-    pub app_api_base_override: Option<String>,
+    pub(crate) app_api_base_override: Option<String>,
     /// Tracks Event-publish tasks spawned outside the Controller's own reconcile
     /// stream -- currently only `error_policy`'s `ReconcileError` publish. Awaited
     /// during shutdown so a runtime exit does not drop a task before it is ever
     /// polled (#752).
-    pub event_publish_tasks: tokio_util::task::TaskTracker,
+    pub(crate) event_publish_tasks: tokio_util::task::TaskTracker,
 }
 
 /// Parses `WATCH_ALL_NAMESPACES`. Standalone (not just an inline step of [`Context::new`]) so
@@ -102,6 +107,44 @@ impl Context {
             app_api_base_override: None,
             event_publish_tasks: tokio_util::task::TaskTracker::new(),
         })
+    }
+
+    /// Test-only constructor. Skips the `WATCH_NAMESPACE` validation `Context::new` performs, so
+    /// this is gated behind the `test-util` feature -- no non-test build path can reach it.
+    /// Defaults to namespace-scoped mode with an empty namespace; chain the `with_*` methods
+    /// below to set the fields a given test needs to vary.
+    #[cfg(feature = "test-util")]
+    #[must_use]
+    pub fn for_test(client: Client) -> Self {
+        Self {
+            client,
+            image_overrides: HashMap::new(),
+            legacy_image_override_apps: HashSet::new(),
+            reporter: Reporter {
+                controller: "test-controller".into(),
+                instance: None,
+            },
+            watch_namespace: Some("test".into()),
+            app_api_base_override: None,
+            event_publish_tasks: tokio_util::task::TaskTracker::new(),
+        }
+    }
+
+    #[cfg(feature = "test-util")]
+    #[must_use]
+    pub fn with_image_overrides(mut self, image_overrides: HashMap<String, ImageSpec>) -> Self {
+        self.image_overrides = image_overrides;
+        self
+    }
+
+    #[cfg(feature = "test-util")]
+    #[must_use]
+    pub fn with_legacy_image_override_apps(
+        mut self,
+        legacy_image_override_apps: HashSet<String>,
+    ) -> Self {
+        self.legacy_image_override_apps = legacy_image_override_apps;
+        self
     }
 
     /// Closes `event_publish_tasks` and waits up to `timeout` for every tracked Event publish

@@ -2912,6 +2912,7 @@ dependencies = [
  "serde_yaml",
  "servarr-api",
  "servarr-crds",
+ "servarr-operator",
  "servarr-resources",
  "sha2",
  "temp-env",

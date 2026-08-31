@@ -219,7 +219,9 @@ mod tests {
         let after = MANAGED_APPS_LIST_FAILURES_TOTAL
             .with_label_values(&[] as &[&str])
             .get();
-        assert_eq!(after, before + 1);
+        // `>` rather than `==`: controller.rs's update_managed_apps_gauge test hits this same
+        // label combo on the same process-wide counter and may run concurrently.
+        assert!(after > before, "before={before}, after={after}");
     }
 
     #[test]
@@ -231,7 +233,9 @@ mod tests {
         let after = MANAGED_STACKS_LIST_FAILURES_TOTAL
             .with_label_values(&[] as &[&str])
             .get();
-        assert_eq!(after, before + 1);
+        // `>` rather than `==`: media_stack_controller.rs's update_managed_stacks_gauge test
+        // hits this same label combo on the same process-wide counter and may run concurrently.
+        assert!(after > before, "before={before}, after={after}");
     }
 
     #[test]
