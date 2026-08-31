@@ -20,45 +20,32 @@ declare -A APP_PORTS=(
 )
 
 APPS=("${!APP_PORTS[@]}")
-TIMEOUT=360
-POLL_INTERVAL=10
 MIN_READY=${#APPS[@]}
 
-echo "Phase 1: Waiting for deployments to become ready (timeout: ${TIMEOUT}s, min: ${MIN_READY}/${#APPS[@]})"
+echo "Phase 1: Waiting for deployments to become ready (${MIN_READY} apps)"
 
-elapsed=0
-ready_apps=()
-while true; do
-  ready_count=0
-  ready_apps=()
-  not_ready_apps=()
+# kubectl wait blocks on the API server's own watch stream for the Available
+# condition — it wakes up on the actual state-change event, not a fixed poll
+# interval. --timeout is a single overall ceiling, not a per-poll magic number.
+DEPLOYMENT_ARGS=("${APPS[@]/#/deployment/}")
+if kubectl wait --for=condition=Available --timeout=10m "${DEPLOYMENT_ARGS[@]}"; then
+  echo "All ${#APPS[@]} deployments are ready."
+else
+  echo "ERROR: not every deployment reached Available"
+  echo "Deployment status:"
+  kubectl get deployments -o wide
   for app in "${APPS[@]}"; do
     ready=$(kubectl get deployment "$app" -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo "0")
-    if [[ "${ready:-0}" -ge 1 ]]; then
-      ready_count=$((ready_count + 1))
-      ready_apps+=("$app")
-    else
-      not_ready_apps+=("$app")
+    if [[ "${ready:-0}" -lt 1 ]]; then
+      echo ""
+      echo "--- ${app}: pod events ---"
+      kubectl describe pod -l "app.kubernetes.io/name=${app}" 2>&1 | tail -20
+      echo "--- ${app}: container logs ---"
+      kubectl logs -l "app.kubernetes.io/name=${app}" --tail=30 --all-containers 2>&1
     fi
   done
-
-  if [[ $ready_count -eq ${#APPS[@]} ]]; then
-    echo "All ${#APPS[@]} deployments are ready."
-    break
-  fi
-
-  if [[ $elapsed -ge $TIMEOUT ]]; then
-    echo "ERROR: Only ${ready_count}/${#APPS[@]} deployments ready after ${TIMEOUT}s"
-    echo "  Not ready: ${not_ready_apps[*]}"
-    echo "Deployment status:"
-    kubectl get deployments -o wide
-    exit 1
-  fi
-
-  echo "  ${ready_count}/${#APPS[@]} ready (${elapsed}s/${TIMEOUT}s)"
-  sleep "$POLL_INTERVAL"
-  elapsed=$((elapsed + POLL_INTERVAL))
-done
+  exit 1
+fi
 
 echo ""
 echo "Phase 2: HTTP health checks via port-forward"
@@ -148,44 +135,27 @@ done
 kubectl patch mediastack media --type=merge \
   -p '{"spec":{"defaults":{"adminCredentials":{"secretName":"smoke-admin"}}}}'
 
-echo "  Patch applied.  Waiting for media-sonarr and media-transmission rollouts to complete (up to 300s)..."
-TRANSITION_TIMEOUT=300
-elapsed=0
-while true; do
-  all_done=true
-  for app in media-sonarr media-transmission; do
-    gen=$(kubectl get deployment "$app" \
-      -o jsonpath='{.metadata.generation}' 2>/dev/null || echo "${PRE_GEN[$app]}")
-    obs=$(kubectl get deployment "$app" \
-      -o jsonpath='{.status.observedGeneration}' 2>/dev/null || echo "0")
-    updated=$(kubectl get deployment "$app" \
-      -o jsonpath='{.status.updatedReplicas}' 2>/dev/null || echo "0")
-    desired=$(kubectl get deployment "$app" \
-      -o jsonpath='{.spec.replicas}' 2>/dev/null || echo "1")
-    ready=$(kubectl get deployment "$app" \
-      -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo "0")
-    # Wait for the operator to bump the generation AND the rollout to complete.
-    if [[ "$gen" -le "${PRE_GEN[$app]}" \
-        || "$obs" -lt "$gen" \
-        || "${updated:-0}" -lt "${desired:-1}" \
-        || "${ready:-0}" -lt "${desired:-1}" ]]; then
-      all_done=false
-      break
-    fi
-  done
-  if $all_done; then
-    echo "  All media-* deployments completed their rollout."
-    break
-  fi
-  if [[ $elapsed -ge $TRANSITION_TIMEOUT ]]; then
-    echo "ERROR: media-* rollouts not complete after credential transition (${TRANSITION_TIMEOUT}s)"
+echo "  Patch applied. Waiting for the operator to reconcile media-sonarr and media-transmission..."
+# Wait for each Deployment's generation to actually change first — kubectl
+# rollout status alone can return trivially true against a Deployment the
+# operator hasn't reconciled yet, since nothing has changed there so far.
+for app in media-sonarr media-transmission; do
+  if ! kubectl wait --for="jsonpath={.metadata.generation}!=${PRE_GEN[$app]}" \
+    --timeout=5m "deployment/${app}"; then
+    echo "ERROR: operator never bumped ${app}'s Deployment generation after the credential patch"
     kubectl get deployments -l "app.kubernetes.io/instance=media" -o wide
     exit 1
   fi
-  echo "  Waiting... (${elapsed}s/${TRANSITION_TIMEOUT}s)"
-  sleep 10
-  elapsed=$((elapsed + 10))
 done
+
+echo "  Reconciled. Waiting for the rollouts to complete..."
+if kubectl rollout status --timeout=5m deployment/media-sonarr deployment/media-transmission; then
+  echo "  All media-* deployments completed their rollout."
+else
+  echo "ERROR: media-* rollouts did not complete after the credential transition"
+  kubectl get deployments -l "app.kubernetes.io/instance=media" -o wide
+  exit 1
+fi
 
 # ---------------------------------------------------------------------------
 # Phase 4: Admin credential verification
