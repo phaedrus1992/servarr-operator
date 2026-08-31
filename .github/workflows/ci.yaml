@@ -225,19 +225,31 @@ jobs:
   semgrep:
     needs: [fmt, actionlint, zizmor, pre-commit-config-lint]
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+
       - name: Install Semgrep
-        run: python3 -m pip install --quiet 'semgrep==1.175.0'
+        run: |
+          uv tool install 'semgrep==1.175.0'
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       # CodeQL has no Rust extractor, so Semgrep is the applicable SAST tool here.
       # p/secrets is the standard secrets baseline; p/rust and p/github-actions
       # scope the rest to this repo's actual languages (Rust source + this
       # directory of workflow files) rather than pulling in unrelated rulesets.
+      #
+      # These three rulesets are fetched from the Semgrep registry at run time, not
+      # vendored — a push that passed yesterday can fail today with no code change here
+      # if a rule changes upstream, and the reverse (a rule silently withdrawn) loses
+      # coverage with no signal. Accepted tradeoff for now; vendoring them under version
+      # control would remove it at the cost of manually pulling in rule updates.
       - name: Run Semgrep
         run: |
           semgrep --metrics=off --error \
@@ -246,6 +258,7 @@ jobs:
   shear:
     needs: [fmt, actionlint, zizmor, pre-commit-config-lint]
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
