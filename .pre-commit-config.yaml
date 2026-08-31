@@ -129,8 +129,12 @@ repos:
         entry: scripts/smoke-test-local.sh
         language: script
         pass_filenames: false
-        stages: [pre-push]
-        always_run: false
+        # Manual only — CI already gates every push with the same script (the `smoke-test`
+        # job in ci.yaml). Running it again at pre-push meant every push depended on the
+        # developer's current kubectl context being a local cluster (#767); run it by hand
+        # with `pre-commit run --hook-stage manual smoke-test` when you want to check it
+        # before pushing.
+        stages: [manual]
 
       - id: smoke-test-local-script-tests
         name: tests for smoke-test-local.sh
