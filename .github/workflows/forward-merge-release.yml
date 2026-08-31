@@ -301,12 +301,16 @@ jobs:
           # Injected per push via GIT_CONFIG_KEY_0/VALUE_0 (not `-c`, which
           # would put the base64 blob in argv — visible in a `ps` listing on
           # a shared runner) and never written to .git/config, so it never
-          # sits on disk. `::add-mask::` also stops it echoing into logs if
-          # a future change accidentally prints the auth args.
+          # sits on disk. Not registered as a masked workflow value: doing
+          # so is only as good as the log channel it runs over, which an
+          # injected command to halt workflow-command processing earlier in
+          # the same log stream can disable before the registration takes
+          # effect. GitHub's own automatic masking of the raw PAT secret
+          # already covers the one thing that matters here, and nothing in
+          # this step ever echoes $PAT_B64.
           PAT_B64=""
           if [[ -n "${FORWARD_MERGE_PAT:-}" ]]; then
             PAT_B64=$(printf 'x-access-token:%s' "$FORWARD_MERGE_PAT" | base64 -w0)
-            echo "::add-mask::$PAT_B64"
           fi
 
           git_authed() {
