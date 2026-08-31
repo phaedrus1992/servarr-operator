@@ -136,11 +136,15 @@ kubectl patch mediastack media --type=merge \
   -p '{"spec":{"defaults":{"adminCredentials":{"secretName":"smoke-admin"}}}}'
 
 echo "  Patch applied. Waiting for the operator to reconcile media-sonarr and media-transmission..."
-# Wait for each Deployment's generation to actually change first — kubectl
-# rollout status alone can return trivially true against a Deployment the
-# operator hasn't reconciled yet, since nothing has changed there so far.
+# Wait for each Deployment's generation to actually reach PRE_GEN+1 first —
+# kubectl rollout status alone can return trivially true against a Deployment
+# the operator hasn't reconciled yet, since nothing has changed there so far.
+# kubectl wait's jsonpath condition only supports equality, not !=, but a
+# generation always increments by exactly 1 per spec change, so waiting for
+# that exact next value is equivalent to "wait for it to change" here.
 for app in media-sonarr media-transmission; do
-  if ! kubectl wait --for="jsonpath={.metadata.generation}!=${PRE_GEN[$app]}" \
+  next_gen=$((PRE_GEN[$app] + 1))
+  if ! kubectl wait --for="jsonpath={.metadata.generation}=${next_gen}" \
     --timeout=5m "deployment/${app}"; then
     echo "ERROR: operator never bumped ${app}'s Deployment generation after the credential patch"
     kubectl get deployments -l "app.kubernetes.io/instance=media" -o wide
