@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased] - ReleaseDate
 
+Fixes instance registration for all three companion apps added in 1.4.0 — Cleanuparr and Houndarr
+both failed every registration attempt outright, and the admission webhook rejected any
+`spec.appConfig.unpackerr` block before it could even reach a running Unpackerr.
+
+### Fixed
+
+- Fix Cleanuparr instance registration always failing with a 400. `ArrInstanceRequest.Version` is
+  required server-side; the operator never sent it (#796).
+- Fix Houndarr instance registration always failing. The CSRF token was sent as a `csrf_token`
+  form field instead of the `X-CSRF-Token` header — Houndarr's CSRF check consumes the request
+  body itself when the header is absent, so every other field came back "missing" (422). The
+  create request also needs `connection_verified=true` or the server rejects it outright; Houndarr
+  re-probes the *arr instance independently regardless, so this only satisfies a UI-state flag,
+  not real validation (#797).
+- Fix the admission webhook rejecting any `spec.appConfig.unpackerr` block with a false
+  "appConfig variant does not match app type" error — the `Unpackerr` variant was never added to
+  `validate_app_config_match`'s match arms (#795).
+
 ## [1.4.0] - 2026-09-01
 
 Adds Unpackerr, Cleanuparr, and Houndarr as companion apps, and fixes a `webhook.port` Helm value
