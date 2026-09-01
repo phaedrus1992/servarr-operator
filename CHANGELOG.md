@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased] - ReleaseDate
 
+## [1.4.0] - 2026-09-01
+
+Adds Unpackerr, Cleanuparr, and Houndarr as companion apps, and fixes a `webhook.port` Helm value
+that never actually reached the running operator. The bulk of this release fails closed instead of
+silently defaulting: every environment-variable read, persistence collision check, and
+Kubernetes Event/Condition message now either surfaces a real problem or gets sanitized, rather
+than swallowing it, substituting an unnoticed default, or leaking upstream error detail. Also fixes
+a CRD schema bug that silently pruned the legacy `overseerrSync` field, and bumps default images
+across the board — including SABnzbd to 5.1.1, which closes a critical authentication-bypass
+vulnerability in 5.1.0 and earlier.
+
 ### Added
 
 - Add Unpackerr, Cleanuparr, and Houndarr as companion apps. Unpackerr extracts archives for
@@ -27,6 +38,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   setting it moved the operator's listener and left the API server dialing a port nothing was on.
   The one value now drives the container port, the Service target, and the operator's own
   `WEBHOOK_PORT` together (#732).
+
+### Image Updates
+
+- **SABnzbd**: `4.5.5` -> `5.1.1`
+  - Fixes a critical authentication-bypass vulnerability (GHSA-xrfq-jhgh-wqch) in 5.1.0 and
+    earlier: an attacker who can reach SABnzbd's own web login could obtain a valid session even
+    behind a username/password, exposing everything in SABnzbd. You're affected only if that web
+    interface is reachable by an untrusted party — check `External internet access` is not set
+    beyond its default `No access`. If you were exposed, rotate the SABnzbd username/password,
+    its API key, and any Usenet/indexer/notification credentials stored in it.
+  - 5.0.0 adds NNTP Pipelining and Direct Write (both opt-in for existing servers; new servers
+    default to pipelining) and reworks the article cache; upgrading from before SABnzbd 3.0.0
+    requires a manual queue repair.
+- **Tautulli**: `2.17.2` -> `2.18.1`
+  - Fixes a path-traversal bug in update-tarfile extraction and a Plex-token leak via a
+    case-sensitive URL bypass in `pms_image_proxy` (both in 2.18.0), and a guest-user API
+    permission bug that let a guest read another user's history (2.18.1).
+  - Adds anonymous system-analytics telemetry, with an opt-out toggle in the setup wizard and
+    settings page (2.18.0).
+- **Maintainerr**: `3.15.2` -> `3.26.0`
+  - Adds anonymous weekly telemetry; opt out with the `TELEMETRY=off` environment variable
+    (3.25.0).
+  - Hardens the appliance against cross-origin reads, unvalidated settings bodies, HTML in
+    email, and world-writable code (3.22.0).
+  - Adds Sportarr as a native application connection and metadata provider (3.20.0, 3.26.0).
+- **Jackett**: `0.24.2424` -> `0.24.2486` (indexer-definition rollups)
 
 ### Fixed
 
@@ -174,6 +211,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   publish can't block shutdown past `terminationGracePeriodSeconds`. A publish abandoned at that
   timeout now also counts under `servarr_operator_event_publish_failures_total{reason="ShutdownTimeout"}`
   instead of only logging (#755).
+- Fix Kubernetes silently dropping a manifest that still spells the legacy `overseerrSync` field,
+  instead of accepting or rejecting it. The field-level alias existed in Rust
+  (`#[serde(alias = "overseerrSync")]`) but never reached the generated CRD schema — schemars
+  can't add a sibling property key for an alias on an object-typed field the way it does for the
+  `AppType` enum alias, so the CRD only ever declared `seerrSync`. Kubernetes' structural schema
+  then silently pruned any `overseerrSync` a manifest still used, which is worse than a loud
+  rejection. Both `ServarrApp`'s and `MediaStack`'s generated CRD schemas now declare
+  `overseerrSync` alongside `seerrSync` (#545). Also corrects a stale `docs/troubleshooting.md`
+  claim that the operator auto-registers the CRD on startup — it only performs a read-only
+  staleness check (#563).
+- Fix the Prowlarr/Seerr finalizer-cleanup path logging every non-404 failure identically,
+  giving on-call no way to tell a permission/config problem that needs a manual fix from one
+  that will clear on its own without reading pod logs. A 401/403 or credential failure is now
+  logged separately from a genuinely transient one; the tenant-visible `CleanupFailed` Event is
+  unchanged, since revealing which category fired would itself leak operator control-plane state
+  (#669, #674). Also adds a debug-level log line distinguishing a PVC 404 because it was already
+  detached from one because the computed name never matched a real PVC (#670).
 
 ### Changed
 
@@ -197,6 +251,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - `Condition::fail` now requires a sanitized message type instead of a plain string, closing a
   gap where a future code change could have leaked raw API-server error detail into a
   tenant-visible status Condition. No existing Condition message changes as a result (#668).
+- `Condition::ok` and `Condition::unknown` now also require that same sanitized message type —
+  the last two ways to build a tenant-visible Condition without going through it. No existing
+  Condition message changes as a result (#709).
+- `EnvError`'s `reason` field is now `&'static str` instead of `impl Into<String>`, so the type
+  system enforces the "never log the value, only the variable name and length" rule the doc
+  comment already stated. Every current call site was already clean, so this only closes the door
+  on a future one interpolating a credential-bearing value into a log line (#740).
+- `Context`'s fields (`client`, `image_overrides`, `legacy_image_override_apps`, `reporter`,
+  `watch_namespace`, `app_api_base_override`, `event_publish_tasks`) are now `pub(crate)` instead
+  of `pub`. Any code with crate access could previously build a `Context` via struct literal and
+  skip the `WATCH_NAMESPACE` validation `Context::new` performs, silently widening the operator
+  from namespace-scoped to cluster-scoped with no startup log line (#757).
 - Persistence mount-path collision detection now resolves known base-image symlink aliases
   (`/var/run` -> `/run`, `/var/lock` -> `/run/lock`) before comparing, so an override spelled
   through the symlinked form now correctly collides with the reserved real path — a spec that
@@ -640,7 +706,8 @@ to stop leaking raw upstream/Kubernetes errors into tenant-visible status and Ev
   on each `v*` tag.
 
 <!-- next-url -->
-[Unreleased]: https://github.com/phaedrus1992/servarr-operator/compare/v1.3.1...HEAD
+[Unreleased]: https://github.com/phaedrus1992/servarr-operator/compare/v1.4.0...HEAD
+[1.4.0]: https://github.com/phaedrus1992/servarr-operator/compare/v1.3.1...v1.4.0
 [1.3.1]: https://github.com/phaedrus1992/servarr-operator/compare/v1.3.0...v1.3.1
 [1.3.0]: https://github.com/phaedrus1992/servarr-operator/compare/v1.2.3...v1.3.0
 [1.2.3]: https://github.com/phaedrus1992/servarr-operator/compare/v1.2.2...v1.2.3
