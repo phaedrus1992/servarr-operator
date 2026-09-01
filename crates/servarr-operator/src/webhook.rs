@@ -418,6 +418,7 @@ fn validate_app_config_match(spec: &ServarrAppSpec, errors: &mut Vec<String>) {
                 | (AppType::SshBastion, AppConfig::SshBastion(_))
                 | (AppType::Seerr, AppConfig::Seerr(_))
                 | (AppType::Lidarr, AppConfig::Lidarr(_))
+                | (AppType::Unpackerr, AppConfig::Unpackerr(_))
         );
         if !valid {
             errors.push(format!(
@@ -1157,6 +1158,15 @@ mod tests {
     fn app_config_match_lidarr_ok() {
         let mut spec = minimal_spec(AppType::Lidarr);
         spec.app_config = Some(AppConfig::Lidarr(LidarrConfig::default()));
+        let mut errors = Vec::new();
+        validate_app_config_match(&spec, &mut errors);
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn app_config_match_unpackerr_ok() {
+        let mut spec = minimal_spec(AppType::Unpackerr);
+        spec.app_config = Some(AppConfig::Unpackerr(UnpackerrConfig::default()));
         let mut errors = Vec::new();
         validate_app_config_match(&spec, &mut errors);
         assert!(errors.is_empty());

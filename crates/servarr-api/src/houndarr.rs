@@ -9,13 +9,23 @@
 //!   readable) on success — a 303 redirect. Bad credentials answer 401;
 //!   rate-limited answers 429 (both re-render the login page).
 //! - Every mutating request (POST/PUT/PATCH/DELETE) must echo the
-//!   `houndarr_csrf` cookie's value back as the `csrf_token` form field
-//!   (double-submit CSRF; `houndarr.auth.csrf.validate_csrf`).
+//!   `houndarr_csrf` cookie's value back via the `X-CSRF-Token` header
+//!   (double-submit CSRF; `houndarr.auth.csrf.validate_csrf`). The same
+//!   value is also accepted as a `csrf_token` form field for plain HTML
+//!   form submissions, but that path makes `validate_csrf` call
+//!   `request.form()` itself before the route's own `Form()` params get
+//!   parsed, consuming the body stream first -- every other field comes
+//!   back "missing" (422) as a result. Always use the header.
 //! - `GET /api/status` returns `{"instances": [{"name", "type", ...}, ...]}`
 //!   JSON — listing registered instances needs no HTML scraping.
 //! - `POST /settings/instances` (form: `name`, `type`, `url`, `api_key`,
 //!   plus policy fields that default server-side) is the only way to
 //!   register an instance; a 200 (HTMX partial) or 303 both mean success.
+//!   Also requires `connection_verified=true` -- without it the server
+//!   rejects the create outright with "Test connection successfully before
+//!   adding." (`services/instance_submit.py`). The server re-probes the
+//!   *arr instance itself either way, so this is just satisfying a UI-state
+//!   flag, not skipping real validation.
 //!
 //! This client tracks the session/CSRF cookies itself rather than via
 //! reqwest's cookie jar, so behavior stays deterministic and testable
@@ -207,16 +217,27 @@ impl CrossAppSync for HoundarrClient {
     /// supports. See [`ApiError`] for other failure modes.
     async fn register(&self, kind: &str, instance: &RegisteredArrInstance) -> Result<(), ApiError> {
         Self::validate_kind(kind)?;
+        // The CSRF token MUST go in the X-CSRF-Token header, not a `csrf_token` form
+        // field. Houndarr's CSRF check (auth/csrf.py) only calls `request.form()`
+        // itself when the header is absent; that call consumes the body stream
+        // before the route's own Form() params get parsed, so every other field
+        // (name/type/url/api_key) comes back "missing" if csrf_token rides in the
+        // form body instead.
         let resp = self
             .client
             .post(format!("{}/settings/instances", self.base_url))
             .header(reqwest::header::COOKIE, &self.cookie_header)
+            .header("X-CSRF-Token", self.csrf_token.as_str())
+            // `connection_verified` gates instance_submit.submit_create -- the
+            // server independently re-probes the *arr instance regardless of this
+            // flag's value (services/instance_submit.py's _verify_remote), so it's
+            // not a trust-me bypass, just the UI's "I ran the test" checkbox state.
             .form(&[
                 ("name", instance.name.as_str()),
                 ("type", kind),
                 ("url", instance.base_url.as_str()),
                 ("api_key", instance.api_key.as_str()),
-                ("csrf_token", self.csrf_token.as_str()),
+                ("connection_verified", "true"),
             ])
             .send()
             .await
@@ -457,7 +478,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn register_posts_form_with_csrf_token() {
+    async fn register_sends_csrf_token_as_header_not_form_field() {
         let server = MockServer::start().await;
         mount_successful_login(&server).await;
         Mock::given(method("POST"))
@@ -466,8 +487,9 @@ mod tests {
                 "Cookie",
                 "houndarr_session=sess-token; houndarr_csrf=csrf-token",
             ))
-            .and(body_string_contains("csrf_token=csrf-token"))
+            .and(header("X-CSRF-Token", "csrf-token"))
             .and(body_string_contains("name=Sonarr1"))
+            .and(body_string_contains("connection_verified=true"))
             .respond_with(ResponseTemplate::new(200).set_body_string("<table>...</table>"))
             .mount(&server)
             .await;
