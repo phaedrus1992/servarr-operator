@@ -29,6 +29,13 @@ pre-release-replacements = [
   { file = "../../charts/servarr-operator/Chart.yaml", search = "^appVersion: .*$", replace = "appVersion: \"{{version}}\"", exactly = 1 },
 ]
 
+# Runs after the replacements above and before the release commit (cargo-release always
+# runs a pre-release-hook, even on a dry-run preview -- the script itself checks $DRY_RUN).
+# Auto-bumps charts/servarr-crds/Chart.yaml's `version:` field when the generated CRD
+# templates changed since the last release but nobody bumped the chart version by hand.
+# See scripts/bump-crd-chart-version.sh.
+pre-release-hook = ["bash", "../../scripts/bump-crd-chart-version.sh"]
+
 [features]
 # Exposes Context::for_test and its with_* builder methods, which skip Context::new's
 # WATCH_NAMESPACE validation. Enabled only by this crate's own dev-dependency below, so no
