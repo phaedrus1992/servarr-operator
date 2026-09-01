@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased] - ReleaseDate
 
+## [1.4.1] - 2026-09-01
+
 Fixes instance registration for all three companion apps added in 1.4.0 — Cleanuparr and Houndarr
 both failed every registration attempt outright, and the admission webhook rejected any
 `spec.appConfig.unpackerr` block before it could even reach a running Unpackerr.
@@ -724,7 +726,8 @@ to stop leaking raw upstream/Kubernetes errors into tenant-visible status and Ev
   on each `v*` tag.
 
 <!-- next-url -->
-[Unreleased]: https://github.com/phaedrus1992/servarr-operator/compare/v1.4.0...HEAD
+[Unreleased]: https://github.com/phaedrus1992/servarr-operator/compare/v1.4.1...HEAD
+[1.4.1]: https://github.com/phaedrus1992/servarr-operator/compare/v1.4.0...v1.4.1
 [1.4.0]: https://github.com/phaedrus1992/servarr-operator/compare/v1.3.1...v1.4.0
 [1.3.1]: https://github.com/phaedrus1992/servarr-operator/compare/v1.3.0...v1.3.1
 [1.3.0]: https://github.com/phaedrus1992/servarr-operator/compare/v1.2.3...v1.3.0
