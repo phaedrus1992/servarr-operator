@@ -40,6 +40,21 @@ struct ArrInstanceRequest<'a> {
     url: &'a str,
     #[serde(rename = "apiKey")]
     api_key: &'a str,
+    version: f32,
+}
+
+/// Cleanuparr's `ArrInstanceRequest.Version` is `[Required]` and, for Sonarr/Radarr/
+/// Lidarr/Readarr, purely descriptive metadata -- `ArrClientFactory.GetClient` only
+/// branches on it for Whisparr (2 vs 3). The value must still match each app's actual
+/// API major version, confirmed against each hardcoded client's REST path in
+/// Cleanuparr v2.10.5 source (`SonarrClient`/`RadarrClient`: `/api/v3/...`;
+/// `LidarrClient`/`ReadarrClient`: `/api/v1/...`). Omitting the field entirely fails
+/// ASP.NET Core model validation with a 400 before the request ever reaches this logic.
+fn arr_kind_version(kind: &str) -> f32 {
+    match kind {
+        "lidarr" | "readarr" => 1.0,
+        _ => 3.0,
+    }
 }
 
 impl CleanuparrClient {
@@ -127,6 +142,7 @@ impl CrossAppSync for CleanuparrClient {
             instance_type: kind,
             url: &instance.base_url,
             api_key: &instance.api_key,
+            version: arr_kind_version(kind),
         };
         let resp = self
             .client
@@ -256,6 +272,35 @@ mod tests {
         };
         client
             .register("sonarr", &instance)
+            .await
+            .expect("should register");
+    }
+
+    #[tokio::test]
+    async fn register_sends_required_version_field() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/configuration/lidarr/instances"))
+            .and(wiremock::matchers::body_json(serde_json::json!({
+                "name": "Lidarr1",
+                "type": "lidarr",
+                "url": "http://lidarr:8686",
+                "apiKey": "lidarr-key",
+                "version": 1.0
+            })))
+            .respond_with(ResponseTemplate::new(201))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = CleanuparrClient::new(&server.uri(), "test-key").expect("should construct");
+        let instance = RegisteredArrInstance {
+            name: "Lidarr1".to_string(),
+            base_url: "http://lidarr:8686".to_string(),
+            api_key: "lidarr-key".to_string(),
+        };
+        client
+            .register("lidarr", &instance)
             .await
             .expect("should register");
     }
