@@ -459,6 +459,38 @@ jobs:
               break
             fi
 
+            # Genuine parents don't prove genuine content: `git commit-tree
+            # <any-tree> -p $MERGE_PARENT1 -p $MERGE_PARENT2` builds a commit
+            # that passes every check above while carrying arbitrary file
+            # content (#779). `git merge-tree --write-tree` recomputes what a
+            # clean merge of the two verified parents produces — no working
+            # tree, no hooks, no code execution from either side — and its
+            # result must match the pushed commit's own tree. Both jobs use
+            # the same `ubuntu-latest` runner image within one workflow run,
+            # so `verify-merge`'s real `git merge` and this recomputation use
+            # the same git version and the same default rename-detection
+            # behavior (both use the ort strategy) — a mismatch here means
+            # tampered content, not tool skew. A future runner-image split
+            # between the two jobs would need this re-checked.
+            if ! EXPECTED_TREE=$(git merge-tree --write-tree "$MERGE_PARENT1" "$MERGE_PARENT2" 2>&1); then
+              echo "::error::Cascade halted: could not recompute the merge tree for $MERGE_SHA — refusing to push"
+              echo "::error::  git merge-tree --write-tree $MERGE_PARENT1 $MERGE_PARENT2"
+              echo "::endgroup::"
+              HALTED="tree recomputation failed for $TARGET"
+              break
+            fi
+            ACTUAL_TREE=$(git rev-parse "$MERGE_SHA^{tree}")
+            if [[ "$EXPECTED_TREE" != "$ACTUAL_TREE" ]]; then
+              echo "::error::Cascade halted: $MERGE_SHA's tree ($ACTUAL_TREE) doesn't match a clean merge of its own parents ($EXPECTED_TREE) — refusing to push"
+              echo "::error::This merge commit has genuine parents but tampered file content. Resolve manually:"
+              echo "::error::  git fetch origin && git checkout $TARGET && git reset --hard origin/$TARGET"
+              echo "::error::  git merge origin/$CURRENT"
+              echo "::error::  # verify the result, then: git push origin $TARGET"
+              echo "::endgroup::"
+              HALTED="tree mismatch for $TARGET"
+              break
+            fi
+
             # Land the merge directly so the fix propagates automatically — main
             # is the final target and is forward-merged the same way as every
             # release branch, with no manual step. If a target is branch-protected
