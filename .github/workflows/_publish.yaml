@@ -180,12 +180,18 @@ jobs:
             # Best-effort bookkeeping for the *next* release, not required for this one —
             # the local Chart.yaml bump above already applies to the package/publish step
             # right after this one. A branch-protected release line rejects a direct push
-            # (#787), so don't let that abort the rest of the job over a bump that can be
-            # landed by hand.
-            if git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "HEAD:${RELEASE_BRANCH}"; then
+            # (#787) — that specific case is safe to continue past. Anything else (auth,
+            # network, a permissions regression on this workflow) is not, so only the
+            # known-safe rejection is downgraded to a warning; every other failure still
+            # fails the release the way it always did.
+            if PUSH_OUTPUT="$(git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "HEAD:${RELEASE_BRANCH}" 2>&1)"; then
+              echo "${PUSH_OUTPUT}"
               echo "Committed and pushed CRD chart version bump to ${RELEASE_BRANCH}"
+            elif echo "${PUSH_OUTPUT}" | grep -qiE 'protected branch|GH006'; then
+              echo "::warning::Could not push the CRD chart version bump to ${RELEASE_BRANCH}: rejected by branch protection (direct pushes need a PR). This release's own Helm chart still packages at ${NEW_VERSION}; open a PR by hand with 'chore: bump CRD chart to ${NEW_VERSION}' on ${RELEASE_BRANCH} so the next release starts from the right version. Push output: ${PUSH_OUTPUT}"
             else
-              echo "::warning::Could not push the CRD chart version bump to ${RELEASE_BRANCH} (likely branch protection — direct pushes need a PR). This release's own Helm chart still packages at ${NEW_VERSION}; open a PR by hand with 'chore: bump CRD chart to ${NEW_VERSION}' on ${RELEASE_BRANCH} so the next release starts from the right version."
+              echo "::error::Could not push the CRD chart version bump to ${RELEASE_BRANCH} for a reason other than branch protection — refusing to treat this as safe to continue past: ${PUSH_OUTPUT}"
+              exit 1
             fi
           else
             echo "Warning: could not determine release branch; version bump was not committed."
@@ -204,6 +210,18 @@ jobs:
           echo "$GITHUB_TOKEN" | helm registry login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
 
           if [ "${CRD_CHART_CHANGED}" = "true" ]; then
+            # If the version-bump commit above failed to push (branch protection,
+            # #787) and nobody landed the manual follow-up PR before the next
+            # release, this recomputes the same "next patch" version from the
+            # still-unbumped Chart.yaml every time — which would publish
+            # genuinely different CRD content under a version tag already
+            # shipped. OCI registries don't refuse that overwrite on their own,
+            # so check first and fail loud rather than silently mutate a
+            # published version.
+            if helm show chart "${HELM_REGISTRY}/servarr-crds" --version "${CRD_CHART_VERSION}" >/dev/null 2>&1; then
+              echo "::error::servarr-crds ${CRD_CHART_VERSION} is already published, but CRD templates changed again without a version bump landing on the release branch — refusing to overwrite a shipped version with different content. Bump charts/servarr-crds/Chart.yaml by hand and retry."
+              exit 1
+            fi
             helm dependency build charts/servarr-crds/
             helm package charts/servarr-crds/ \
               --version "${CRD_CHART_VERSION}" \
