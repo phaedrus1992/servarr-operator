@@ -128,21 +128,26 @@ jobs:
             --push \
             /tmp/docker-context
 
-      - name: Detect CRD template changes and bump version
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Detect CRD template changes
         run: |
           set -euo pipefail
 
+          # Bumping charts/servarr-crds/Chart.yaml's version is cargo-release's job now
+          # (scripts/bump-crd-chart-version.sh, a pre-release-hook that runs locally
+          # before the tag exists — see RELEASING.md). This step only reads the
+          # version that's already committed and decides whether templates changed
+          # since the last release, so the chart-publish step below knows whether to
+          # publish a new servarr-crds package at all. It must never bump or push:
+          # release/1.x requires a PR for any change (#774), and a CI-side bump here
+          # duplicated the hook's job and broke every release with CRD changes (#787).
           CRD_CHART_VERSION="$(grep '^version: ' charts/servarr-crds/Chart.yaml | awk '{print $2}')"
-          export CRD_CHART_VERSION
+          echo "CRD_CHART_VERSION=${CRD_CHART_VERSION}" >> "$GITHUB_ENV"
 
           PREV_TAG="$(git describe --tags --abbrev=0 --match 'v*' HEAD^ 2>/dev/null || true)"
 
           if [ -z "${PREV_TAG}" ]; then
             echo "No previous release tag found — this is the first release."
             echo "CRD_CHART_CHANGED=true" >> "$GITHUB_ENV"
-            echo "CRD_CHART_VERSION=${CRD_CHART_VERSION}" >> "$GITHUB_ENV"
             exit 0
           fi
 
@@ -151,50 +156,9 @@ jobs:
           if git diff --exit-code "${PREV_TAG}" -- charts/servarr-crds/templates/ >/dev/null 2>&1; then
             echo "CRD templates unchanged since ${PREV_TAG}; skipping CRD chart publication."
             echo "CRD_CHART_CHANGED=false" >> "$GITHUB_ENV"
-            echo "CRD_CHART_VERSION=${CRD_CHART_VERSION}" >> "$GITHUB_ENV"
-            exit 0
-          fi
-
-          echo "CRD templates changed since ${PREV_TAG}; bumping version."
-
-          MAJOR_MINOR="$(echo "${CRD_CHART_VERSION}" | cut -d. -f1-2)"
-          PATCH="$(echo "${CRD_CHART_VERSION}" | cut -d. -f3)"
-          NEW_PATCH=$((PATCH + 1))
-          NEW_VERSION="${MAJOR_MINOR}.${NEW_PATCH}"
-
-          sed -i 's/^version: .*/version: '"${NEW_VERSION}"'/' charts/servarr-crds/Chart.yaml
-
-          echo "CRD chart version bumped: ${CRD_CHART_VERSION} → ${NEW_VERSION}"
-          echo "CRD_CHART_CHANGED=true" >> "$GITHUB_ENV"
-          echo "CRD_CHART_VERSION=${NEW_VERSION}" >> "$GITHUB_ENV"
-
-          # Commit and push the version bump back to the release branch so the
-          # next release starts from the correct CRD chart version.
-          RELEASE_BRANCH="$(git branch -a --contains HEAD | grep -E 'remotes/origin/release/' | head -1 | sed 's|.*remotes/origin/||' || true)"
-
-          if [ -n "${RELEASE_BRANCH}" ]; then
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git add charts/servarr-crds/Chart.yaml
-            git commit -m "chore: bump CRD chart to ${NEW_VERSION}"
-            # Best-effort bookkeeping for the *next* release, not required for this one —
-            # the local Chart.yaml bump above already applies to the package/publish step
-            # right after this one. A branch-protected release line rejects a direct push
-            # (#787) — that specific case is safe to continue past. Anything else (auth,
-            # network, a permissions regression on this workflow) is not, so only the
-            # known-safe rejection is downgraded to a warning; every other failure still
-            # fails the release the way it always did.
-            if PUSH_OUTPUT="$(git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "HEAD:${RELEASE_BRANCH}" 2>&1)"; then
-              echo "${PUSH_OUTPUT}"
-              echo "Committed and pushed CRD chart version bump to ${RELEASE_BRANCH}"
-            elif echo "${PUSH_OUTPUT}" | grep -qiE 'protected branch|GH006'; then
-              echo "::warning::Could not push the CRD chart version bump to ${RELEASE_BRANCH}: rejected by branch protection (direct pushes need a PR). This release's own Helm chart still packages at ${NEW_VERSION}; open a PR by hand with 'chore: bump CRD chart to ${NEW_VERSION}' on ${RELEASE_BRANCH} so the next release starts from the right version. Push output: ${PUSH_OUTPUT}"
-            else
-              echo "::error::Could not push the CRD chart version bump to ${RELEASE_BRANCH} for a reason other than branch protection — refusing to treat this as safe to continue past: ${PUSH_OUTPUT}"
-              exit 1
-            fi
           else
-            echo "Warning: could not determine release branch; version bump was not committed."
+            echo "CRD templates changed since ${PREV_TAG}; publishing servarr-crds chart ${CRD_CHART_VERSION}."
+            echo "CRD_CHART_CHANGED=true" >> "$GITHUB_ENV"
           fi
 
       - name: Set up Helm
@@ -210,14 +174,12 @@ jobs:
           echo "$GITHUB_TOKEN" | helm registry login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
 
           if [ "${CRD_CHART_CHANGED}" = "true" ]; then
-            # If the version-bump commit above failed to push (branch protection,
-            # #787) and nobody landed the manual follow-up PR before the next
-            # release, this recomputes the same "next patch" version from the
-            # still-unbumped Chart.yaml every time — which would publish
-            # genuinely different CRD content under a version tag already
-            # shipped. OCI registries don't refuse that overwrite on their own,
-            # so check first and fail loud rather than silently mutate a
-            # published version.
+            # Belt-and-suspenders: cargo-release's pre-release-hook is supposed to
+            # guarantee CRD_CHART_VERSION is already bumped past whatever's
+            # published (RELEASING.md), but if a release is ever tagged without
+            # running it, this would otherwise publish genuinely different CRD
+            # content under a version tag already shipped. OCI registries don't
+            # refuse that overwrite on their own, so check first and fail loud.
             if helm show chart "${HELM_REGISTRY}/servarr-crds" --version "${CRD_CHART_VERSION}" >/dev/null 2>&1; then
               echo "::error::servarr-crds ${CRD_CHART_VERSION} is already published, but CRD templates changed again without a version bump landing on the release branch — refusing to overwrite a shipped version with different content. Bump charts/servarr-crds/Chart.yaml by hand and retry."
               exit 1
