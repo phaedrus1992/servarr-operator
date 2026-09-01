@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased] - ReleaseDate
 
+## [1.4.0] - 2026-09-01
+
 Adds Unpackerr, Cleanuparr, and Houndarr as companion apps, and fixes a `webhook.port` Helm value
 that never actually reached the running operator. The bulk of this release fails closed instead of
 silently defaulting: every environment-variable read, persistence collision check, and
@@ -704,7 +706,8 @@ to stop leaking raw upstream/Kubernetes errors into tenant-visible status and Ev
   on each `v*` tag.
 
 <!-- next-url -->
-[Unreleased]: https://github.com/phaedrus1992/servarr-operator/compare/v1.3.1...HEAD
+[Unreleased]: https://github.com/phaedrus1992/servarr-operator/compare/v1.4.0...HEAD
+[1.4.0]: https://github.com/phaedrus1992/servarr-operator/compare/v1.3.1...v1.4.0
 [1.3.1]: https://github.com/phaedrus1992/servarr-operator/compare/v1.3.0...v1.3.1
 [1.3.0]: https://github.com/phaedrus1992/servarr-operator/compare/v1.2.3...v1.3.0
 [1.2.3]: https://github.com/phaedrus1992/servarr-operator/compare/v1.2.2...v1.2.3
