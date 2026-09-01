@@ -177,8 +177,16 @@ jobs:
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
             git add charts/servarr-crds/Chart.yaml
             git commit -m "chore: bump CRD chart to ${NEW_VERSION}"
-            git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "HEAD:${RELEASE_BRANCH}"
-            echo "Committed and pushed CRD chart version bump to ${RELEASE_BRANCH}"
+            # Best-effort bookkeeping for the *next* release, not required for this one —
+            # the local Chart.yaml bump above already applies to the package/publish step
+            # right after this one. A branch-protected release line rejects a direct push
+            # (#787), so don't let that abort the rest of the job over a bump that can be
+            # landed by hand.
+            if git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "HEAD:${RELEASE_BRANCH}"; then
+              echo "Committed and pushed CRD chart version bump to ${RELEASE_BRANCH}"
+            else
+              echo "::warning::Could not push the CRD chart version bump to ${RELEASE_BRANCH} (likely branch protection — direct pushes need a PR). This release's own Helm chart still packages at ${NEW_VERSION}; open a PR by hand with 'chore: bump CRD chart to ${NEW_VERSION}' on ${RELEASE_BRANCH} so the next release starts from the right version."
+            fi
           else
             echo "Warning: could not determine release branch; version bump was not committed."
           fi
