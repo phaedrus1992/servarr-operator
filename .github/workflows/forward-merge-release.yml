@@ -406,6 +406,7 @@ jobs:
               break
             fi
             CURRENT_TARGET_SHA=$(git rev-parse "origin/$TARGET")
+            CURRENT_SOURCE_SHA=$(git rev-parse "origin/$CURRENT")
 
             # TOCTOU guard: if $TARGET moved since verify-merge built this
             # bundle against $BASE_SHA, the verified merge no longer applies
@@ -452,10 +453,51 @@ jobs:
               HALTED="parent mismatch for $TARGET"
               break
             fi
-            if ! git merge-base --is-ancestor "$MERGE_PARENT2" "origin/$CURRENT"; then
-              echo "::error::Cascade halted: $MERGE_SHA's second parent ($MERGE_PARENT2) is not part of $CURRENT's history on origin — refusing to push"
+            # Pin the second parent to $CURRENT's real tip, not merely
+            # "somewhere in its history" — an ancestor-only check would let
+            # an attacker with control of verify-merge's build.rs choose an
+            # older-but-genuine commit as the second parent, landing content
+            # that isn't forged but is stale (silently skipping whatever
+            # landed on $CURRENT after that point). A mismatch here is the
+            # same situation as $TARGET moving, so it reuses that message.
+            if [[ "$MERGE_PARENT2" != "$CURRENT_SOURCE_SHA" ]]; then
+              bail_on_stale_target "$CURRENT" "$MERGE_PARENT2" "$CURRENT_SOURCE_SHA"
               echo "::endgroup::"
-              HALTED="parent mismatch for $TARGET"
+              HALTED="stale source $CURRENT"
+              break
+            fi
+
+            # Genuine parents don't prove genuine content: `git commit-tree
+            # <any-tree> -p $MERGE_PARENT1 -p $MERGE_PARENT2` builds a commit
+            # that passes every check above while carrying arbitrary file
+            # content (#779). `git merge-tree --write-tree` recomputes what a
+            # clean merge of the two verified parents produces — no working
+            # tree, no hooks, no code execution from either side — and its
+            # result must match the pushed commit's own tree. This assumes
+            # verify-merge's real `git merge` and this recomputation run the
+            # same git version — true in practice since both jobs use
+            # `ubuntu-latest` within the same workflow run, though GitHub
+            # doesn't document that as a guarantee. A mismatch here almost
+            # always means tampered content; treat a suspected version-skew
+            # false positive as something to investigate, not assume away.
+            if ! EXPECTED_TREE=$(git merge-tree --write-tree "$MERGE_PARENT1" "$MERGE_PARENT2" 2>/dev/null); then
+              MERGE_TREE_ERR=$(git merge-tree --write-tree "$MERGE_PARENT1" "$MERGE_PARENT2" 2>&1 >/dev/null || true)
+              echo "::error::Cascade halted: could not recompute the merge tree for $MERGE_SHA — refusing to push"
+              echo "::error::  git merge-tree --write-tree $MERGE_PARENT1 $MERGE_PARENT2"
+              echo "::error::$MERGE_TREE_ERR"
+              echo "::endgroup::"
+              HALTED="tree recomputation failed for $TARGET"
+              break
+            fi
+            ACTUAL_TREE=$(git rev-parse "$MERGE_SHA^{tree}")
+            if [[ "$EXPECTED_TREE" != "$ACTUAL_TREE" ]]; then
+              echo "::error::Cascade halted: $MERGE_SHA's tree ($ACTUAL_TREE) doesn't match a clean merge of its own parents ($EXPECTED_TREE) — refusing to push"
+              echo "::error::This merge commit has genuine parents but tampered file content. Resolve manually:"
+              echo "::error::  git fetch origin && git checkout $TARGET && git reset --hard origin/$TARGET"
+              echo "::error::  git merge origin/$CURRENT"
+              echo "::error::  # verify the result, then: git push origin $TARGET"
+              echo "::endgroup::"
+              HALTED="tree mismatch for $TARGET"
               break
             fi
 
