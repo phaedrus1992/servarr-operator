@@ -102,7 +102,7 @@ defaultImages:
     tag: "v3.4.1"
   maintainerr:
     repository: ghcr.io/maintainerr/maintainerr
-    tag: "3.26.0"
+    tag: "3.27.0"
   jackett:
     repository: linuxserver/jackett
     tag: "0.24.2489"
