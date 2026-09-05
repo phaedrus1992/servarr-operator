@@ -105,7 +105,7 @@ defaultImages:
     tag: "3.26.0"
   jackett:
     repository: linuxserver/jackett
-    tag: "0.24.2486"
+    tag: "0.24.2489"
   bazarr:
     repository: linuxserver/bazarr
     tag: "1.6.0"
