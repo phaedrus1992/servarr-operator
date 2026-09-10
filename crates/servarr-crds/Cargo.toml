@@ -16,7 +16,7 @@ indexmap = { version = "=2.14.1", features = ["serde"] }
 servarr-api = { path = "../servarr-api" }
 
 [build-dependencies]
-toml = "=1.1.4"
+toml = "=1.1.5"
 serde = { version = "=1.0.229", features = ["derive"] }
 
 [dev-dependencies]
