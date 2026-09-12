@@ -72,14 +72,14 @@ probe_path = "/api/v1/settings/public"
 
 [maintainerr]
 repository = "ghcr.io/maintainerr/maintainerr"
-tag = "3.27.0"
+tag = "3.28.0"
 port = 6246
 security = "nonroot"
 downloads = false
 
 [jackett]
 repository = "linuxserver/jackett"
-tag = "0.24.2531"
+tag = "0.24.2538"
 port = 9117
 security = "linuxserver"
 downloads = false
