@@ -105,7 +105,7 @@ defaultImages:
     tag: "3.28.0"
   jackett:
     repository: linuxserver/jackett
-    tag: "0.24.2541"
+    tag: "0.24.2544"
   bazarr:
     repository: linuxserver/bazarr
     tag: "1.6.0"
@@ -117,7 +117,7 @@ defaultImages:
     tag: "0.16.1"
   cleanuparr:
     repository: ghcr.io/cleanuparr/cleanuparr
-    tag: "2.10.5"
+    tag: "2.10.6"
   houndarr:
     repository: ghcr.io/av1155/houndarr
     tag: "v1.13.2"
