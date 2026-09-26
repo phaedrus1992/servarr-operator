@@ -72,14 +72,14 @@ probe_path = "/api/v1/settings/public"
 
 [maintainerr]
 repository = "ghcr.io/maintainerr/maintainerr"
-tag = "3.28.0"
+tag = "3.29.0"
 port = 6246
 security = "nonroot"
 downloads = false
 
 [jackett]
 repository = "linuxserver/jackett"
-tag = "0.24.2541"
+tag = "0.24.2624"
 port = 9117
 security = "linuxserver"
 downloads = false
@@ -110,14 +110,14 @@ downloads = true
 
 [cleanuparr]
 repository = "ghcr.io/cleanuparr/cleanuparr"
-tag = "2.10.5"
+tag = "2.10.8"
 port = 11011
 security = "nonroot"
 downloads = true
 
 [houndarr]
 repository = "ghcr.io/av1155/houndarr"
-tag = "v1.13.2"
+tag = "v1.13.3"
 port = 8877
 security = "nonroot"
 downloads = false
