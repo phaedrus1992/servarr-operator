@@ -78,16 +78,16 @@ nfd:
 defaultImages:
   sonarr:
     repository: linuxserver/sonarr
-    tag: "4.0.19"
+    tag: "4.0.20"
   radarr:
     repository: linuxserver/radarr
-    tag: "6.3.0"
+    tag: "6.4.4"
   lidarr:
     repository: linuxserver/lidarr
     tag: "3.1.0"
   prowlarr:
     repository: linuxserver/prowlarr
-    tag: "2.5.2"
+    tag: "2.6.5"
   sabnzbd:
     repository: linuxserver/sabnzbd
     tag: "5.1.2"
@@ -99,16 +99,16 @@ defaultImages:
     tag: "2.18.1"
   seerr:
     repository: ghcr.io/seerr-team/seerr
-    tag: "v3.4.1"
+    tag: "v3.5.0"
   maintainerr:
     repository: ghcr.io/maintainerr/maintainerr
-    tag: "3.28.0"
+    tag: "3.30.1"
   jackett:
     repository: linuxserver/jackett
-    tag: "0.24.2541"
+    tag: "0.24.2670"
   bazarr:
     repository: linuxserver/bazarr
-    tag: "1.6.0"
+    tag: "1.6.2"
   subgen:
     repository: mccloud/subgen
     tag: "2026.07.3"
@@ -117,10 +117,10 @@ defaultImages:
     tag: "0.16.1"
   cleanuparr:
     repository: ghcr.io/cleanuparr/cleanuparr
-    tag: "2.10.5"
+    tag: "2.10.8"
   houndarr:
     repository: ghcr.io/av1155/houndarr
-    tag: "v1.13.2"
+    tag: "v1.13.3"
   jellyfin:
     repository: linuxserver/jellyfin
     tag: "10.11.11"
