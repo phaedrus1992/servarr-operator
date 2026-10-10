@@ -64,7 +64,7 @@ probe_path = "/status"
 
 [seerr]
 repository = "ghcr.io/seerr-team/seerr"
-tag = "v3.4.1"
+tag = "v3.5.0"
 port = 5055
 security = "nonroot"
 downloads = false
@@ -72,14 +72,14 @@ probe_path = "/api/v1/settings/public"
 
 [maintainerr]
 repository = "ghcr.io/maintainerr/maintainerr"
-tag = "3.28.0"
+tag = "3.30.1"
 port = 6246
 security = "nonroot"
 downloads = false
 
 [jackett]
 repository = "linuxserver/jackett"
-tag = "0.24.2541"
+tag = "0.24.2780"
 port = 9117
 security = "linuxserver"
 downloads = false
@@ -87,7 +87,7 @@ probe_path = "/health"
 
 [bazarr]
 repository = "linuxserver/bazarr"
-tag = "1.6.0"
+tag = "1.6.1"
 port = 6767
 security = "linuxserver"
 downloads = false
@@ -110,14 +110,14 @@ downloads = true
 
 [cleanuparr]
 repository = "ghcr.io/cleanuparr/cleanuparr"
-tag = "2.10.5"
+tag = "2.10.9"
 port = 11011
 security = "nonroot"
 downloads = true
 
 [houndarr]
 repository = "ghcr.io/av1155/houndarr"
-tag = "v1.13.2"
+tag = "v1.13.3"
 port = 8877
 security = "nonroot"
 downloads = false
