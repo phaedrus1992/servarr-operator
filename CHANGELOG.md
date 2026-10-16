@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased] - ReleaseDate
 
+### Fixed
+
+- Fix the Transmission self-heal skipping completed torrents whose data was deleted. Detection now matches any local-error torrent. Removal still requires a 0% torrent after verify (#840).
+- Hold back Transmission torrents when every torrent in their download directory reports missing data. The directory may be unmounted. The condition reason is `DownloadDirUnavailable` (#840).
+- Report a torrent without a `hashString` as `Unknown`, not as a clean pass (#840).
+- Write Transmission `settings.json` with mode 0660, so the LinuxServer init can read it (#834).
+
 ## [1.4.1] - 2026-09-01
 
 Fixes instance registration for all three companion apps added in 1.4.0 — Cleanuparr and Houndarr
