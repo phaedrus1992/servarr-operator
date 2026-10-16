@@ -33,6 +33,12 @@ mod cleanup;
 use cleanup::{cleanup_prowlarr_registration, cleanup_seerr_registration};
 mod download_health;
 use download_health::check_download_client_health;
+mod health_throttle;
+mod transmission_access;
+use health_throttle::{
+    CorruptTimestampPolicy, is_destructive_poll_throttled, is_health_poll_throttled,
+};
+use transmission_access::{TransmissionAccess, resolve_transmission_access};
 
 fn app_type_to_kind(app_type: &AppType) -> Option<AppKind> {
     match app_type {
@@ -1723,36 +1729,6 @@ fn resolve_service_base_url(
     Ok(format!("http://{app_name}.{ns}.svc:{port}"))
 }
 
-/// Read Transmission's optional adminCredentials secret for RPC authentication. A missing
-/// secret or unreadable key logs a warning and falls back to unauthenticated access rather
-/// than failing the caller outright.
-async fn read_transmission_admin_creds(
-    client: &Client,
-    app: &ServarrApp,
-    ns: &str,
-) -> (Option<String>, Option<String>) {
-    let Some(ref ac) = app.spec.admin_credentials else {
-        return (None, None);
-    };
-    let u = match servarr_api::read_secret_key(client, ns, &ac.secret_name, "username").await {
-        Ok(v) => Some(v),
-        Err(e) => {
-            warn!(app = %app.name_any(), error = %e.log_summary(),
-                    "health-check: failed to read Transmission username, proceeding unauthenticated");
-            None
-        }
-    };
-    let p = match servarr_api::read_secret_key(client, ns, &ac.secret_name, "password").await {
-        Ok(v) => Some(v),
-        Err(e) => {
-            warn!(app = %app.name_any(), error = %e.log_summary(),
-                    "health-check: failed to read Transmission password, proceeding unauthenticated");
-            None
-        }
-    };
-    (u, p)
-}
-
 /// Whether `app` is a Transmission app with `apiHealthCheck.enabled` set -- the gate shared by
 /// `reconcile`'s `transmission_access` resolution and `check_download_client_health`.
 fn transmission_health_check_enabled(app: &ServarrApp) -> bool {
@@ -1774,53 +1750,6 @@ const TRANSMISSION_CLIENT_UNRESOLVED: &str =
 /// contract "Defaults to 60" (#506).
 const DEFAULT_HEALTH_CHECK_INTERVAL_SECONDS: u32 = 60;
 
-/// Transmission client + admin-credential state resolved once per reconcile pass and shared
-/// between `check_api_health`'s Transmission arm and `check_download_client_health` — both gate
-/// on the same `apiHealthCheck.enabled` flag, so building this independently in each would mean
-/// double the Secret GETs and a redundant session-ID handshake against the same app (#499).
-#[derive(Debug)]
-pub(crate) struct TransmissionAccess {
-    client: servarr_api::TransmissionClient,
-    /// `true` when `adminCredentials` was configured but at least one of username/password
-    /// could not be read (partial or total read failure). The read-only health probe below
-    /// degrades to unauthenticated in this case; the destructive download-health path fails
-    /// closed instead (#483 hardening) — this flag lets each caller apply its own policy
-    /// against the same resolved credentials.
-    credentials_incomplete: bool,
-}
-
-/// Resolve a [`TransmissionAccess`] for `app`: read the optional adminCredentials secret and
-/// build a `TransmissionClient` against `base_url`. Called once per reconcile (see `reconcile`)
-/// so both health checks share the same client instance instead of each triggering their own
-/// session-ID handshake (#499).
-async fn resolve_transmission_access(
-    client: &Client,
-    app: &ServarrApp,
-    ns: &str,
-    base_url: &str,
-) -> Result<TransmissionAccess, String> {
-    let (tx_user, tx_pass) = read_transmission_admin_creds(client, app, ns).await;
-    // Covers both a partial read (one of username/password missing) and a total read failure
-    // (both missing, e.g. the secret was deleted or renamed) -- either way adminCredentials was
-    // configured but couldn't be fully honored, so the destructive path below must not proceed
-    // unauthenticated on the strength of an unrelated coincidence (both `None`).
-    let credentials_incomplete =
-        app.spec.admin_credentials.is_some() && !(tx_user.is_some() && tx_pass.is_some());
-    // Half-set credentials are unrepresentable: build the Basic-auth pair only when both
-    // halves are present, else degrade to an anonymous client. `credentials_incomplete`
-    // above still records the partial-read case so the destructive path can fail closed (#505).
-    let tx_credentials = match (tx_user.as_deref(), tx_pass.as_deref()) {
-        (Some(u), Some(p)) => Some(servarr_api::BasicCredentials::new(u, p)),
-        _ => None,
-    };
-    let tx_client = servarr_api::TransmissionClient::new(base_url, tx_credentials.as_ref())
-        .map_err(|e| e.log_summary())?;
-    Ok(TransmissionAccess {
-        client: tx_client,
-        credentials_incomplete,
-    })
-}
-
 /// Return the app's current status condition of `condition_type`, if any.
 fn current_condition<'a>(app: &'a ServarrApp, condition_type: &str) -> Option<&'a Condition> {
     app.status.as_ref().and_then(|s| {
@@ -1828,73 +1757,6 @@ fn current_condition<'a>(app: &'a ServarrApp, condition_type: &str) -> Option<&'
             .iter()
             .find(|c| c.condition_type == condition_type)
     })
-}
-
-/// How [`is_health_poll_throttled`] treats an *existing* condition whose `lastTransitionTime`
-/// fails to parse. A raw `bool` here is a misuse trap: a swapped literal at a call site
-/// silently reintroduces #519's fail-open bug on a destructive caller with no compile error
-/// and no test signal, so this is a dedicated type instead of a positional flag.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CorruptTimestampPolicy {
-    /// Treat an unparseable timestamp as "not throttled" — run the poll. Safe for read-only
-    /// callers (re-running a probe on corrupt data costs nothing extra).
-    FailOpen,
-    /// Treat an unparseable timestamp as throttled — skip, preserve/repair the existing
-    /// condition, and log a warning. Required for callers gating a destructive operation.
-    FailClosed,
-}
-
-/// `apiHealthCheck.intervalSeconds` throttle (#506): whether the health poll for
-/// `condition_type` should be skipped because the existing condition's
-/// `lastTransitionTime` still falls inside `interval_seconds` of now.
-///
-/// Only a positive health assertion (`status == "True"`) is rate-limited. An error,
-/// `Unknown`, or `False` condition is never throttled, so recovery is re-probed on the
-/// next reconcile instead of being frozen until the interval elapses. A missing timestamp,
-/// a future-dated timestamp, or an unset/zero interval never throttles — the poll runs.
-///
-/// An *existing* condition whose `lastTransitionTime` fails to parse is ambiguous: it's cheap
-/// to just re-run a read-only probe, but running an unthrottled destructive pass (torrent
-/// removal) on corrupt status data every reconcile is not (#519). `policy` lets the caller
-/// pick — see [`CorruptTimestampPolicy`].
-fn is_health_poll_throttled(
-    existing: Option<&Condition>,
-    interval_seconds: Option<u32>,
-    now: &str,
-    policy: CorruptTimestampPolicy,
-) -> bool {
-    let interval = interval_seconds.unwrap_or(DEFAULT_HEALTH_CHECK_INTERVAL_SECONDS);
-    let Some(existing) = existing else {
-        return false;
-    };
-    if existing.status != "True" {
-        return false;
-    }
-    let (Ok(last), Ok(current)) = (
-        chrono::DateTime::parse_from_rfc3339(&existing.last_transition_time),
-        chrono::DateTime::parse_from_rfc3339(now),
-    ) else {
-        // Corrupt status data is worth a trace either way, even on the lenient fail-open path
-        // where it's silently overwritten by the next probe result. This helper has no access
-        // to the owning object's identity (it's a pure function over a Condition), so it can
-        // only log the condition type/value; a fail-closed caller is expected to also emit its
-        // own object-scoped warning (see check_download_client_health) since that's the case
-        // where the corrupt data actually blocks an operation rather than being replaced.
-        debug!(
-            condition_type = %existing.condition_type,
-            last_transition_time = %existing.last_transition_time,
-            policy = ?policy,
-            "is_health_poll_throttled: unparseable lastTransitionTime"
-        );
-        return policy == CorruptTimestampPolicy::FailClosed;
-    };
-    // Fail open on a future-dated timestamp (clock skew, hand-edit): `current < last`
-    // would otherwise throttle every poll — including at `intervalSeconds: 0` — until
-    // the future passes.
-    if current < last {
-        return false;
-    }
-    current - last < chrono::Duration::seconds(i64::from(interval))
 }
 
 async fn check_api_health(
@@ -4320,7 +4182,9 @@ mod tests {
         ClassifyCleanupSeverity, CleanupSeverity, RetryOutlook, SonarrSeerr,
         cleanup_prowlarr_registration_body, cleanup_seerr_registration_body, seerr_remove_server,
     };
-    use super::download_health::remediate::{poll_until_settled, remediate_stale_torrents};
+    use super::download_health::remediate::{
+        poll_until_settled, poll_with_budget, remediate_stale_torrents,
+    };
     use super::download_health::report::{build_download_health_condition, report_stale_torrents};
     use super::download_health::{
         RemediationOutcome, is_confirmed_missing, is_missing_data_torrent,
@@ -4598,6 +4462,7 @@ mod tests {
             removed: Vec::new(),
             confirmed_orphaned: Vec::new(),
             still_pending: Vec::new(),
+            ..Default::default()
         };
         let cond = build_download_health_condition(2, 0, &outcome, "2026-08-05T00:00:00Z");
         assert_eq!(cond.status, "True");
@@ -4610,6 +4475,7 @@ mod tests {
             removed: vec!["hash1".to_string()],
             confirmed_orphaned: Vec::new(),
             still_pending: Vec::new(),
+            ..Default::default()
         };
         let cond = build_download_health_condition(1, 0, &outcome, "2026-08-05T00:00:00Z");
         assert_eq!(cond.status, "False");
@@ -4623,6 +4489,7 @@ mod tests {
             removed: Vec::new(),
             confirmed_orphaned: Vec::new(),
             still_pending: vec!["hash1".to_string(), "hash2".to_string()],
+            ..Default::default()
         };
         let cond = build_download_health_condition(2, 0, &outcome, "2026-08-05T00:00:00Z");
         assert_eq!(cond.status, "False");
@@ -4637,6 +4504,7 @@ mod tests {
             removed: Vec::new(),
             confirmed_orphaned: vec!["hash1".to_string()],
             still_pending: Vec::new(),
+            ..Default::default()
         };
         let cond = build_download_health_condition(1, 0, &outcome, "2026-08-05T00:00:00Z");
         assert_eq!(cond.status, "False");
@@ -4661,15 +4529,30 @@ mod tests {
             .await;
 
         let client = servarr_api::TransmissionClient::new(&mock_server.uri(), None).unwrap();
-        let settled = poll_until_settled(&client, &["hash-1"]).await;
+        let settled = poll_until_settled(&client, &["hash-1"]).await.unwrap();
         assert_eq!(settled.len(), 1);
         assert_eq!(settled[0].status, 0);
+    }
+
+    // An RPC error during the poll must surface as Err, not as an empty "still pending" list (#845).
+    #[tokio::test(start_paused = true)]
+    async fn poll_until_settled_reports_rpc_error_as_err() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/transmission/rpc"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&mock_server)
+            .await;
+
+        let client = servarr_api::TransmissionClient::new(&mock_server.uri(), None).unwrap();
+        let result = poll_until_settled(&client, &["hash-1"]).await;
+        assert_eq!(result.err(), Some("torrent-get"));
     }
 
     // start_paused: VERIFY_POLL_ATTEMPTS x VERIFY_POLL_INTERVAL is ~50s of real sleeps
     // (#537, widened for large batches) -- paused virtual time auto-advances through the
     // idle sleeps between mock-server round trips instead of burning wall-clock time.
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn poll_until_settled_gives_up_and_returns_empty_when_still_checking() {
         let mock_server = MockServer::start().await;
         Mock::given(method("POST"))
@@ -4684,7 +4567,9 @@ mod tests {
             .await;
 
         let client = servarr_api::TransmissionClient::new(&mock_server.uri(), None).unwrap();
-        let settled = poll_until_settled(&client, &["hash-1"]).await;
+        let settled = poll_with_budget(&client, &["hash-1"], 3, Duration::ZERO)
+            .await
+            .unwrap();
         assert!(
             settled.is_empty(),
             "still-checking torrents must not be treated as settled"
@@ -4788,7 +4673,8 @@ mod tests {
         let outcome = remediate_stale_torrents(&client, &[stale_torrent], true).await;
 
         assert!(outcome.removed.is_empty());
-        assert_eq!(outcome.still_pending, vec!["hash-1".to_string()]);
+        assert!(outcome.still_pending.is_empty());
+        assert_eq!(outcome.settled_with_data, vec!["hash-1".to_string()]);
     }
 
     #[tokio::test]
@@ -4932,6 +4818,7 @@ mod tests {
             removed: vec!["hash-1".to_string()],
             confirmed_orphaned: Vec::new(),
             still_pending: Vec::new(),
+            ..Default::default()
         };
         report_stale_torrents(&recorder, &obj_ref, &stale, &outcome, 0).await;
 
@@ -4967,6 +4854,7 @@ mod tests {
             removed: Vec::new(),
             confirmed_orphaned: Vec::new(),
             still_pending: Vec::new(),
+            ..Default::default()
         };
         report_stale_torrents(&recorder, &obj_ref, &stale, &outcome, 0).await;
 
@@ -5352,6 +5240,7 @@ mod tests {
         let incomplete = TransmissionAccess {
             client: servarr_api::TransmissionClient::new(&mock_server.uri(), None).unwrap(),
             credentials_incomplete: true,
+            credentials_error: None,
         };
         let incomplete_client =
             transmission_verify_client(Some(&Ok(incomplete)), &mock_server.uri(), "user", "pass")

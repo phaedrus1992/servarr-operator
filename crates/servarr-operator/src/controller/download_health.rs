@@ -148,11 +148,16 @@ pub(super) fn is_checking(t: &servarr_api::TorrentInfo) -> bool {
 /// `hashString` (#500): which were removed as confirmed-orphaned, which were confirmed orphaned
 /// but left alone because `auto_remove` is disabled (#498), and which are still hash-checking
 /// (retried on the next reconcile).
+///
+/// `settled_with_data` holds torrents that settled with error 3 but still report data (#845).
+/// `rpc_failure` names the first Transmission RPC that failed in the pass (#845).
 #[derive(Default)]
 pub(super) struct RemediationOutcome {
     pub(super) removed: Vec<String>,
     pub(super) confirmed_orphaned: Vec<String>,
     pub(super) still_pending: Vec<String>,
+    pub(super) settled_with_data: Vec<String>,
+    pub(super) rpc_failure: Option<&'static str>,
 }
 
 /// Detect Transmission torrents whose on-disk data has gone missing, trigger a verify so
@@ -181,15 +186,10 @@ pub(super) async fn check_download_client_health(
     // `autoRemoveOrphanedTorrents: true` expects the destructive torrent-remove check at most
     // hourly, not on every reconcile.
     let existing_download = current_condition(app, condition_types::DOWNLOAD_DATA_HEALTHY);
-    // Destructive path (torrent-verify / torrent-remove): fail_closed so a corrupt or
-    // unparseable lastTransitionTime is treated as throttled rather than running the self-heal
-    // pass unthrottled on every reconcile (#519).
-    if is_health_poll_throttled(
-        existing_download,
-        health_check.interval_seconds,
-        &now,
-        CorruptTimestampPolicy::FailClosed,
-    ) {
+    // Destructive path (torrent-verify / torrent-remove). Throttles on every status, because
+    // the pass writes its own time into the condition, so the timestamp records the last
+    // attempt (#844). A corrupt timestamp fails closed (#519).
+    if is_destructive_poll_throttled(existing_download, health_check.interval_seconds, &now) {
         // A skip is intentional (rate-limit window), but it must be observable — otherwise the
         // self-heal pass pausing (including destructive torrent-remove checks) looks like a
         // hang. This branch returns before the access match, so a broken client/credential
@@ -253,9 +253,15 @@ pub(super) async fn check_download_client_health(
         warn!(app = %app.name_any(),
             "download-client health: adminCredentials secret is missing username and/or \
              password, refusing to proceed unauthenticated on a destructive path");
+        // Name the failure category. A transient or RBAC error is not a problem with the
+        // secret contents (#846).
+        let message = match &access.credentials_error {
+            Some(category) => format!("adminCredentials could not be read: {category}"),
+            None => "adminCredentials secret is missing username or password".to_string(),
+        };
         return Some(download_health_unknown(
             "CredentialReadError",
-            TenantSafeMessage::new("adminCredentials secret is missing username or password"),
+            TenantSafeMessage::new(message),
             &now,
         ));
     }

@@ -14,6 +14,8 @@ pub(in crate::controller) async fn report_stale_torrents(
     if outcome.removed.is_empty()
         && outcome.confirmed_orphaned.is_empty()
         && outcome.still_pending.is_empty()
+        && outcome.settled_with_data.is_empty()
+        && outcome.rpc_failure.is_none()
         && held_back == 0
     {
         return;
@@ -106,10 +108,22 @@ pub(in crate::controller) fn build_download_health_condition(
             now,
         );
     }
+    // An RPC failure is not a data finding, so it gets its own reason (#845).
+    if let Some(op) = outcome.rpc_failure {
+        return Condition::unknown(
+            condition_types::DOWNLOAD_DATA_HEALTHY,
+            "RemediationRpcError",
+            TenantSafeMessage::new(format!(
+                "Transmission {op} failed during the self-heal pass; the pass retries on the next reconcile"
+            )),
+            now,
+        );
+    }
     let recovered = stale_count
         .saturating_sub(outcome.removed.len())
         .saturating_sub(outcome.confirmed_orphaned.len())
-        .saturating_sub(outcome.still_pending.len());
+        .saturating_sub(outcome.still_pending.len())
+        .saturating_sub(outcome.settled_with_data.len());
     if recovered == stale_count {
         return Condition::ok(
             condition_types::DOWNLOAD_DATA_HEALTHY,
@@ -123,11 +137,49 @@ pub(in crate::controller) fn build_download_health_condition(
         "MissingDataDetected",
         TenantSafeMessage::new(format!(
             "{stale_count} torrent(s) reporting missing data ({recovered} recovered, {} removed, \
-             {} confirmed orphaned but not removed, {} pending verify)",
+             {} confirmed orphaned but not removed, {} pending verify, {} settled with data \
+             present)",
             outcome.removed.len(),
             outcome.confirmed_orphaned.len(),
             outcome.still_pending.len(),
+            outcome.settled_with_data.len(),
         )),
         now,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const NOW: &str = "2026-10-16T12:00:00Z";
+
+    #[test]
+    fn rpc_failure_reports_remediation_error_not_pending_verify() {
+        // #845: an RPC error must not read as "N pending verify" for every pass.
+        let outcome = RemediationOutcome {
+            still_pending: vec!["hash-1".to_string()],
+            rpc_failure: Some("torrent-remove"),
+            ..Default::default()
+        };
+        let cond = build_download_health_condition(1, 0, &outcome, NOW);
+        assert_eq!(cond.status, "Unknown");
+        assert_eq!(cond.reason, "RemediationRpcError");
+        assert!(cond.message.contains("torrent-remove"), "{}", cond.message);
+    }
+
+    #[test]
+    fn settled_with_data_is_counted_separately_from_pending() {
+        // #845: a torrent that settled with error 3 and data present is its own outcome.
+        let outcome = RemediationOutcome {
+            settled_with_data: vec!["hash-1".to_string()],
+            ..Default::default()
+        };
+        let cond = build_download_health_condition(1, 0, &outcome, NOW);
+        assert_eq!(cond.reason, "MissingDataDetected");
+        assert!(
+            cond.message
+                .contains("0 pending verify, 1 settled with data present")
+        );
+    }
 }
