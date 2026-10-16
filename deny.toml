@@ -70,6 +70,9 @@ feature-depth = 1
 # A list of advisory IDs to ignore. Note that ignored advisories will still
 # output a note when they are encountered.
 ignore = [
+    # serde_yaml 0.9 (deprecated) pulls in unsafe-libyaml. The crate parses and emits only
+    # operator-owned YAML (CRD output and test fixtures), never untrusted input. Replacement: #853.
+    { id = "RUSTSEC-2024-0449", reason = "unsafe-libyaml is unmaintained; only trusted CRD YAML is emitted or parsed (#853 tracks replacement)" },
     #"RUSTSEC-0000-0000",
     #{ id = "RUSTSEC-0000-0000", reason = "you can specify a reason the advisory is ignored" },
     #"a-crate-that-is-yanked@0.1.1", # you can also ignore yanked crate versions if you wish
