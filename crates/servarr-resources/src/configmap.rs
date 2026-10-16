@@ -464,8 +464,10 @@ fi
 rm -f "$TMP" "$AUTH_FILE"
 
 # Fix ownership (best-effort: may not be possible on adopted PVCs owned by a different uid)
+# Mode 660 keeps the group bit set. LSIO init runs as root without CAP_DAC_OVERRIDE, so it
+# reads this file through the pod fsGroup (#834).
 chown {uid}:{gid} "$SETTINGS_FILE" 2>/dev/null || true
-chmod 600 "$SETTINGS_FILE" 2>/dev/null || true
+chmod 660 "$SETTINGS_FILE" 2>/dev/null || true
 
 echo "Settings applied successfully."
 "#
@@ -747,6 +749,35 @@ mod tests {
             },
             status: None,
         }
+    }
+
+    fn minimal_transmission_app() -> ServarrApp {
+        ServarrApp {
+            metadata: ObjectMeta {
+                name: Some("transmission".into()),
+                namespace: Some("media".into()),
+                uid: Some("uid-transmission".into()),
+                ..Default::default()
+            },
+            spec: servarr_crds::ServarrAppSpec {
+                app: AppType::Transmission,
+                ..Default::default()
+            },
+            status: None,
+        }
+    }
+
+    #[test]
+    fn transmission_apply_script_leaves_settings_group_readable() {
+        // A 0600 file is unreadable to LSIO init (root without DAC_OVERRIDE). Regress to 0600 and
+        // this test fails (#834).
+        let cm = build(&minimal_transmission_app()).expect("transmission ConfigMap");
+        let script = cm.data.expect("data")["apply-settings.sh"].clone();
+        assert!(
+            script.contains("chmod 660 \"$SETTINGS_FILE\""),
+            "script: {script}"
+        );
+        assert!(!script.contains("chmod 600"), "script: {script}");
     }
 
     #[test]
