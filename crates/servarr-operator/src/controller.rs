@@ -5943,6 +5943,112 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn check_download_client_health_holds_back_unmounted_directory() {
+        // Both torrents share a directory and both report a local error. Neither may be verified
+        // or removed, and the condition names the unavailable directory (#840).
+        let mock_server = MockServer::start().await;
+        let client = build_mock_client(&mock_server.uri()).await;
+        mount_secret_mock(
+            &mock_server,
+            "test",
+            "tx-admin-creds",
+            json!({"username": "YWRtaW4=", "password": "c2VjcmV0"}),
+        )
+        .await;
+        Mock::given(method("POST"))
+            .and(path("/transmission/rpc"))
+            .and(body_partial_json(
+                serde_json::json!({"method": "torrent-get"}),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "result": "success",
+                "arguments": {"torrents": [
+                    {"id": 1, "name": "a", "error": 3, "errorString": "No data found!", "status": 0,
+                     "hashString": "hash-1", "percentDone": 0.0, "downloadDir": "/mnt/a"},
+                    {"id": 2, "name": "b", "error": 3, "errorString": "No data found!", "status": 0,
+                     "hashString": "hash-2", "percentDone": 0.0, "downloadDir": "/mnt/a/"}
+                ]}
+            })))
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/transmission/rpc"))
+            .and(body_partial_json(
+                serde_json::json!({"method": "torrent-verify"}),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "result": "success", "arguments": {}
+            })))
+            .expect(0)
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/transmission/rpc"))
+            .and(body_partial_json(
+                serde_json::json!({"method": "torrent-remove"}),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "result": "success", "arguments": {}
+            })))
+            .expect(0)
+            .mount(&mock_server)
+            .await;
+
+        let mut app = transmission_app_with_health_check(true);
+        app.status = None;
+        let recorder = Recorder::new(client.clone(), "test".into());
+        let obj_ref = app.object_ref(&());
+        let access = resolve_transmission_access(&client, &app, "test", &mock_server.uri()).await;
+        assert!(access.is_ok(), "expected access to resolve, got {access:?}");
+
+        let cond = check_download_client_health(&app, &recorder, &obj_ref, Some(&access)).await;
+        let cond = cond.expect("a fresh pass must produce a condition");
+        assert_eq!(cond.status, "False");
+        assert_eq!(cond.reason, "DownloadDirUnavailable");
+    }
+
+    #[tokio::test]
+    async fn check_download_client_health_reports_missing_hash_instead_of_all_clear() {
+        // A torrent with missing data and no hashString cannot be verified. The pass must not
+        // report "NoStaleData" for it (#840 review).
+        let mock_server = MockServer::start().await;
+        let client = build_mock_client(&mock_server.uri()).await;
+        mount_secret_mock(
+            &mock_server,
+            "test",
+            "tx-admin-creds",
+            json!({"username": "YWRtaW4=", "password": "c2VjcmV0"}),
+        )
+        .await;
+        Mock::given(method("POST"))
+            .and(path("/transmission/rpc"))
+            .and(body_partial_json(
+                serde_json::json!({"method": "torrent-get"}),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "result": "success",
+                "arguments": {"torrents": [
+                    {"id": 7, "name": "x", "error": 3, "errorString": "No data found!", "status": 0,
+                     "percentDone": 0.0, "downloadDir": "/mnt/b"}
+                ]}
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let mut app = transmission_app_with_health_check(true);
+        app.status = None;
+        let recorder = Recorder::new(client.clone(), "test".into());
+        let obj_ref = app.object_ref(&());
+        let access = resolve_transmission_access(&client, &app, "test", &mock_server.uri()).await;
+        assert!(access.is_ok(), "expected access to resolve, got {access:?}");
+
+        let cond = check_download_client_health(&app, &recorder, &obj_ref, Some(&access)).await;
+        let cond = cond.expect("a fresh pass must produce a condition");
+        assert_eq!(cond.status, "Unknown");
+        assert_eq!(cond.reason, "MissingHashString");
+    }
+
+    #[tokio::test]
     async fn check_download_client_health_polls_when_interval_elapsed() {
         let mock_server = MockServer::start().await;
         let client = build_mock_client(&mock_server.uri()).await;
