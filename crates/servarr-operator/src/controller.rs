@@ -31,6 +31,8 @@ use crate::metrics::{
 
 mod cleanup;
 use cleanup::{cleanup_prowlarr_registration, cleanup_seerr_registration};
+mod download_health;
+use download_health::check_download_client_health;
 
 fn app_type_to_kind(app_type: &AppType) -> Option<AppKind> {
     match app_type {
@@ -2178,458 +2180,6 @@ async fn check_update_available(
     })
 }
 
-/// How many times to re-poll a torrent's status after triggering `torrent-verify` before
-/// treating it as "still checking, try again next reconcile" rather than removing it.
-/// For large batches (hundreds of torrents) the verify itself can take minutes, so the
-/// poll window must cover that (#537). 100 attempts × 500ms = 50s total, enough for
-/// batches of several hundred torrents to complete verification.
-const VERIFY_POLL_ATTEMPTS: u8 = 100;
-const VERIFY_POLL_INTERVAL: Duration = Duration::from_millis(500);
-
-/// Transmission RPC status codes meaning "still hash-checking" (queued-to-verify, verifying).
-const CHECKING_STATUSES: [i64; 2] = [1, 2];
-
-/// `torrent-get` fields needed for self-heal detection and polling. A single shared list (not
-/// duplicated per call site) so `hashString` can never silently drop from one of the two calls —
-/// a `TorrentInfo` with a missing hash defaults to `""` (#500), which would scope subsequent
-/// `torrent-verify`/`torrent-remove`/`torrent-get` calls to an empty-string id instead of failing
-/// loudly.
-const TORRENT_HEALTH_FIELDS: [&str; 7] = [
-    "id",
-    "name",
-    "error",
-    "errorString",
-    "status",
-    "hashString",
-    "percentDone",
-];
-
-/// Transmission's `tr_stat` error code for "the torrent has a local I/O problem" (missing or
-/// unreadable data, permissions, etc.). Codes `1`/`2` are tracker warning/error and carry
-/// `errorString` text controlled by the torrent's tracker, not the local filesystem — matching
-/// on those would let a hostile tracker trigger removal of a perfectly healthy torrent by
-/// returning "no data found" in a `failure reason`/`warning message` (#483).
-const TR_STAT_LOCAL_ERROR: i64 = 3;
-
-/// Build an `Unknown` `DownloadDataHealthy` condition — used for every non-destructive
-/// failure path in [`check_download_client_health`] so a swallowed error still surfaces on
-/// the ServarrApp status instead of the condition silently disappearing (#483).
-///
-/// Takes a [`TenantSafeMessage`] and goes through [`Condition::unknown`] rather than building
-/// the struct directly. A direct struct literal would accept a raw `String` and skip the
-/// sanitized-message check that `Condition::ok` and `Condition::fail` enforce (#709), which
-/// would leave this the one unguarded way to write a tenant-visible Condition message. (#744)
-fn download_health_unknown(
-    reason: &str,
-    message: impl Into<TenantSafeMessage>,
-    now: &str,
-) -> Condition {
-    Condition::unknown(condition_types::DOWNLOAD_DATA_HEALTHY, reason, message, now)
-}
-
-fn is_missing_data_torrent(t: &servarr_api::TorrentInfo) -> bool {
-    // Match on error code 3 (TR_STAT_LOCAL_ERROR) rather than errorString: Transmission
-    // rewrites the message during/after verify (e.g. "no data found" -> "no data was
-    // found!"), so substring matching is brittle (#537). But TR_STAT_LOCAL_ERROR also
-    // covers non-missing-data local I/O problems (permissions, disk-full, read-only
-    // remount) — require percentDone == 0.0 too, so a torrent that's merely stuck on a
-    // transient I/O error isn't misclassified as having lost its data.
-    t.error == TR_STAT_LOCAL_ERROR && t.percent_done == 0.0
-}
-
-fn is_checking(t: &servarr_api::TorrentInfo) -> bool {
-    CHECKING_STATUSES.contains(&t.status)
-}
-
-/// Outcome of attempting to remediate a batch of stale torrents, addressed by their stable
-/// `hashString` (#500): which were removed as confirmed-orphaned, which were confirmed orphaned
-/// but left alone because `auto_remove` is disabled (#498), and which are still hash-checking
-/// (retried on the next reconcile).
-#[derive(Default)]
-struct RemediationOutcome {
-    removed: Vec<String>,
-    confirmed_orphaned: Vec<String>,
-    still_pending: Vec<String>,
-}
-
-/// Detect Transmission torrents whose on-disk data has gone missing, trigger a verify so
-/// Transmission re-checks, and remove torrents confirmed still broken once the verify
-/// settles (#483). Gated behind `apiHealthCheck.enabled` since it needs the same live RPC
-/// access as [`check_api_health`]; only applies to Transmission apps. Removal additionally
-/// requires `apiHealthCheck.autoRemove` (#498).
-async fn check_download_client_health(
-    app: &ServarrApp,
-    recorder: &Recorder,
-    obj_ref: &k8s_openapi::api::core::v1::ObjectReference,
-    transmission_access: Option<&Result<TransmissionAccess, String>>,
-) -> Option<Condition> {
-    if app.spec.app != AppType::Transmission {
-        return None;
-    }
-    let health_check = match app.spec.api_health_check.as_ref() {
-        Some(hc) if hc.enabled => hc,
-        _ => return None,
-    };
-    let now = chrono_now();
-
-    // `intervalSeconds` throttle (#506): while the existing DOWNLOAD_DATA_HEALTHY condition
-    // is still inside its poll window, skip the self-heal pass entirely. This is the fix the
-    // throttle primarily exists for — a user setting `intervalSeconds: 3600` next to
-    // `autoRemoveOrphanedTorrents: true` expects the destructive torrent-remove check at most
-    // hourly, not on every reconcile.
-    let existing_download = current_condition(app, condition_types::DOWNLOAD_DATA_HEALTHY);
-    // Destructive path (torrent-verify / torrent-remove): fail_closed so a corrupt or
-    // unparseable lastTransitionTime is treated as throttled rather than running the self-heal
-    // pass unthrottled on every reconcile (#519).
-    if is_health_poll_throttled(
-        existing_download,
-        health_check.interval_seconds,
-        &now,
-        CorruptTimestampPolicy::FailClosed,
-    ) {
-        // A skip is intentional (rate-limit window), but it must be observable — otherwise the
-        // self-heal pass pausing (including destructive torrent-remove checks) looks like a
-        // hang. This branch returns before the access match, so a broken client/credential
-        // surfaced here would otherwise be invisible until the window elapses.
-        debug!(
-            app = %app.name_any(),
-            condition = condition_types::DOWNLOAD_DATA_HEALTHY,
-            interval_seconds = health_check
-                .interval_seconds
-                .unwrap_or(DEFAULT_HEALTH_CHECK_INTERVAL_SECONDS),
-            "download client health poll throttled inside intervalSeconds window; keeping existing condition"
-        );
-        // #519 follow-up: a corrupt/unparseable lastTransitionTime is what triggered the
-        // fail-closed skip above, not a genuinely-recent valid one -- re-persisting it
-        // verbatim would wedge the destructive path forever, since every future reconcile
-        // hits the same unparseable value and fails closed again. Repair it to `now` (keeping
-        // status/reason/message) so this reconcile still skips the pass once, but a normal,
-        // parseable elapsed-time throttle governs from here on.
-        if let Some(existing) = existing_download
-            && chrono::DateTime::parse_from_rfc3339(&existing.last_transition_time).is_err()
-        {
-            warn!(
-                app = %app.name_any(),
-                condition = condition_types::DOWNLOAD_DATA_HEALTHY,
-                last_transition_time = %existing.last_transition_time,
-                "download client health: corrupt lastTransitionTime failed closed; repairing \
-                 timestamp so the self-heal pass isn't wedged indefinitely"
-            );
-            return Some(Condition {
-                condition_type: existing.condition_type.clone(),
-                status: existing.status.clone(),
-                reason: existing.reason.clone(),
-                message: existing.message.clone(),
-                last_transition_time: now,
-            });
-        }
-        return existing_download.cloned();
-    }
-    let auto_remove = health_check.auto_remove_orphaned_torrents;
-
-    let access = match transmission_access {
-        Some(Ok(a)) => a,
-        // `resolve_transmission_access` builds its error string from `log_summary()`, so this
-        // is sanitizer output -- category (c) of the TenantSafeMessage::new contract.
-        Some(Err(e)) => {
-            return Some(download_health_unknown(
-                "ClientBuildError",
-                TenantSafeMessage::new(e.clone()),
-                &now,
-            ));
-        }
-        None => {
-            return Some(download_health_unknown(
-                "ClientBuildError",
-                TenantSafeMessage::new(TRANSMISSION_CLIENT_UNRESOLVED),
-                &now,
-            ));
-        }
-    };
-    // access.client is built from the same credential read `check_api_health`'s read-only probe
-    // uses, but this path can delete torrents, so fail closed instead of silently proceeding
-    // unauthenticated when adminCredentials was configured but couldn't be fully read (#483).
-    if access.credentials_incomplete {
-        warn!(app = %app.name_any(),
-            "download-client health: adminCredentials secret is missing username and/or \
-             password, refusing to proceed unauthenticated on a destructive path");
-        return Some(download_health_unknown(
-            "CredentialReadError",
-            TenantSafeMessage::new("adminCredentials secret is missing username or password"),
-            &now,
-        ));
-    }
-    let tx_client = &access.client;
-
-    let torrents = match tx_client.torrent_get(&TORRENT_HEALTH_FIELDS, None).await {
-        Ok(t) => t,
-        Err(e) => {
-            warn!(app = %app.name_any(), error = %e.log_summary(),
-                    "download-client health: torrent-get failed");
-            return Some(download_health_unknown(
-                "TorrentGetError",
-                // Sanitizer output -- category (c) of the TenantSafeMessage::new contract.
-                TenantSafeMessage::new(e.log_summary()),
-                &now,
-            ));
-        }
-    };
-
-    let stale: Vec<_> = torrents
-        .into_iter()
-        .filter(is_missing_data_torrent)
-        .filter(|t| {
-            // hash_string defaults to "" (#[serde(default)]) if Transmission's response ever
-            // omits hashString despite it being requested. Skip rather than address an empty
-            // string via torrent-verify/torrent-remove -- an empty scope would misclassify as
-            // "settled" (vacuously true over zero results) and leave the torrent silently stuck
-            // in "still pending" forever instead of surfacing the anomaly (#500).
-            let has_hash = !t.hash_string.is_empty();
-            if !has_hash {
-                warn!(app = %app.name_any(), torrent_id = t.id,
-                    "download-client health: torrent reporting missing data has no hashString, \
-                     skipping until Transmission reports one");
-            }
-            has_hash
-        })
-        .collect();
-    if stale.is_empty() {
-        return Some(Condition::ok(
-            condition_types::DOWNLOAD_DATA_HEALTHY,
-            "NoStaleData",
-            TenantSafeMessage::new("No torrents reporting missing data"),
-            &now,
-        ));
-    }
-
-    let outcome = remediate_stale_torrents(tx_client, &stale, auto_remove).await;
-    report_stale_torrents(recorder, obj_ref, &stale, &outcome).await;
-
-    Some(build_download_health_condition(stale.len(), &outcome, &now))
-}
-
-/// Trigger `torrent-verify` on every stale torrent, wait for the verify to settle, then remove
-/// any that are still reporting missing data -- Transmission's own re-check is the safety gate
-/// that distinguishes "transient" from "genuinely gone" (#483). Torrents are addressed by their
-/// stable `hashString`, not the process-local numeric `id`, which can be reassigned to a
-/// different torrent if Transmission restarts inside the detect-to-remediate window (#500).
-/// Removal is skipped -- confirmed-orphaned torrents are reported but left alone -- unless
-/// `auto_remove` is set (#498).
-async fn remediate_stale_torrents(
-    tx_client: &servarr_api::TransmissionClient,
-    stale: &[servarr_api::TorrentInfo],
-    auto_remove: bool,
-) -> RemediationOutcome {
-    // Torrents Transmission is already hash-checking (e.g. verify was triggered on a
-    // previous reconcile and hasn't finished) must not be re-verified — restarting the
-    // hash-check on every 300s reconcile means a large torrent's verify never converges
-    // and disk I/O never lets up (#483).
-    let already_checking: Vec<String> = stale
-        .iter()
-        .filter(|t| is_checking(t))
-        .map(|t| t.hash_string.clone())
-        .collect();
-    let hashes: Vec<String> = stale
-        .iter()
-        .filter(|t| !is_checking(t))
-        .map(|t| t.hash_string.clone())
-        .collect();
-    if hashes.is_empty() {
-        return RemediationOutcome {
-            still_pending: already_checking,
-            ..Default::default()
-        };
-    }
-    let hash_refs: Vec<&str> = hashes.iter().map(String::as_str).collect();
-
-    if let Err(e) = tx_client.torrent_verify(&hash_refs).await {
-        warn!(error = %e.log_summary(), "download-client health: torrent-verify failed");
-        let mut still_pending = hashes;
-        still_pending.extend(already_checking);
-        return RemediationOutcome {
-            still_pending,
-            ..Default::default()
-        };
-    }
-
-    let settled = poll_until_settled(tx_client, &hash_refs).await;
-    let still_erroring: Vec<String> = settled
-        .iter()
-        .filter(|t| is_missing_data_torrent(t))
-        .map(|t| t.hash_string.clone())
-        .collect();
-    let mut still_checking: Vec<String> = hashes
-        .into_iter()
-        .filter(|h| !settled.iter().any(|t| &t.hash_string == h))
-        .collect();
-    still_checking.extend(already_checking);
-
-    // still_erroring.is_empty() falls through to the branches below rather than an early
-    // return: with auto_remove=false that's already `confirmed_orphaned: [] , still_pending:
-    // still_checking`, and with auto_remove=true, torrent_remove(&[]) is a documented no-op
-    // that produces the identical outcome -- both paths already agree, no need to special-case.
-    if !auto_remove {
-        return RemediationOutcome {
-            confirmed_orphaned: still_erroring,
-            still_pending: still_checking,
-            ..Default::default()
-        };
-    }
-
-    let still_erroring_refs: Vec<&str> = still_erroring.iter().map(String::as_str).collect();
-    match tx_client
-        .torrent_remove(&still_erroring_refs, servarr_api::DeleteLocalData::No)
-        .await
-    {
-        Ok(()) => RemediationOutcome {
-            removed: still_erroring,
-            still_pending: still_checking,
-            ..Default::default()
-        },
-        Err(e) => {
-            warn!(error = %e.log_summary(), "download-client health: torrent-remove failed");
-            let mut still_pending = still_erroring;
-            still_pending.extend(still_checking);
-            RemediationOutcome {
-                still_pending,
-                ..Default::default()
-            }
-        }
-    }
-}
-
-/// Poll `torrent-get` for `hashes` until none are still hash-checking, or
-/// [`VERIFY_POLL_ATTEMPTS`] is exhausted. Returns an empty `Vec` on timeout or RPC error —
-/// callers treat that as "still pending", never as grounds for removal.
-async fn poll_until_settled(
-    tx_client: &servarr_api::TransmissionClient,
-    hashes: &[&str],
-) -> Vec<servarr_api::TorrentInfo> {
-    // Transmission applies torrent-verify's status transition asynchronously relative to the
-    // RPC response returning, so polling immediately risks reading the pre-verify snapshot —
-    // still showing the old error with status 0 (not checking) — and wrongly treating the
-    // torrent as "settled and still broken" before Transmission ever re-checked it (#483).
-    // Sleep first to give the transition time to land.
-    tokio::time::sleep(VERIFY_POLL_INTERVAL).await;
-    for _ in 0..VERIFY_POLL_ATTEMPTS {
-        match tx_client
-            .torrent_get(&TORRENT_HEALTH_FIELDS, Some(hashes))
-            .await
-        {
-            Ok(t) if t.iter().all(|x| !is_checking(x)) => return t,
-            Ok(_) => tokio::time::sleep(VERIFY_POLL_INTERVAL).await,
-            Err(e) => {
-                warn!(error = %e.log_summary(), "download-client health: torrent-get (poll) failed");
-                return Vec::new();
-            }
-        }
-    }
-    Vec::new()
-}
-
-async fn report_stale_torrents(
-    recorder: &Recorder,
-    obj_ref: &k8s_openapi::api::core::v1::ObjectReference,
-    stale: &[servarr_api::TorrentInfo],
-    outcome: &RemediationOutcome,
-) {
-    // Nothing needed remediation by the time this pass finished (e.g. every stale torrent
-    // recovered during the verify poll) — no Warning worth surfacing.
-    if outcome.removed.is_empty()
-        && outcome.confirmed_orphaned.is_empty()
-        && outcome.still_pending.is_empty()
-    {
-        return;
-    }
-
-    // Torrent names come from tracker/`.torrent` metadata outside the operator's trust
-    // boundary, so they must not reach a tenant-visible Event unsanitized (control
-    // characters, unbounded length — `events.k8s.io/v1` rejects a note over 1024 chars).
-    // Report the operator-assigned ids instead; names are available in the operator's own
-    // debug log for troubleshooting (#483).
-    //
-    // For large batches the full id list overflows 1024 chars (486 torrents → 2448-char
-    // note). Truncate to first 20 ids + "...and N more" to stay within the limit
-    // regardless of batch size (#538).
-    debug!(
-        names = ?stale.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(),
-        "download-client health: stale torrent names"
-    );
-    let ids: Vec<i64> = stale.iter().map(|t| t.id).collect();
-    let note = build_stale_torrent_note(&ids, stale.len(), outcome);
-    publish_event(
-        recorder,
-        obj_ref,
-        TenantEvent {
-            type_: EventType::Warning,
-            reason: "DownloadDataMissing",
-            note: TenantSafeMessage::new(note),
-            action: "DownloadClientHealthCheck",
-        },
-    )
-    .await;
-}
-
-/// Build the event note for a stale-torrent batch, truncating the id list if necessary
-/// to stay within the 1024-char limit on `events.k8s.io/v1` notes (#538).
-fn build_stale_torrent_note(
-    ids: &[i64],
-    stale_count: usize,
-    outcome: &RemediationOutcome,
-) -> String {
-    const MAX_IDS_SHOWN: usize = 20;
-    let truncated = ids.len().saturating_sub(MAX_IDS_SHOWN);
-    let displayed: Vec<String> = ids
-        .iter()
-        .take(MAX_IDS_SHOWN)
-        .map(|id| id.to_string())
-        .collect();
-    let ids_part = if truncated > 0 {
-        format!("{} ...and {truncated} more", displayed.join(", "))
-    } else {
-        displayed.join(", ")
-    };
-    format!(
-        "{stale_count} torrent(s) reporting missing data (ids: {ids_part}); \
-         {} removed as orphaned, {} confirmed orphaned but not removed, \
-         {} pending verify",
-        outcome.removed.len(),
-        outcome.confirmed_orphaned.len(),
-        outcome.still_pending.len(),
-    )
-}
-
-fn build_download_health_condition(
-    stale_count: usize,
-    outcome: &RemediationOutcome,
-    now: &str,
-) -> Condition {
-    let recovered = stale_count
-        .saturating_sub(outcome.removed.len())
-        .saturating_sub(outcome.confirmed_orphaned.len())
-        .saturating_sub(outcome.still_pending.len());
-    if recovered == stale_count {
-        return Condition::ok(
-            condition_types::DOWNLOAD_DATA_HEALTHY,
-            "DataRecovered",
-            TenantSafeMessage::new(format!("{stale_count} torrent(s) recovered after verify")),
-            now,
-        );
-    }
-    Condition::fail(
-        condition_types::DOWNLOAD_DATA_HEALTHY,
-        "MissingDataDetected",
-        TenantSafeMessage::new(format!(
-            "{stale_count} torrent(s) reporting missing data ({recovered} recovered, {} removed, \
-             {} confirmed orphaned but not removed, {} pending verify)",
-            outcome.removed.len(),
-            outcome.confirmed_orphaned.len(),
-            outcome.still_pending.len(),
-        )),
-        now,
-    )
-}
-
 struct StatusConditions {
     health: Option<Condition>,
     update: Option<Condition>,
@@ -4770,6 +4320,12 @@ mod tests {
         ClassifyCleanupSeverity, CleanupSeverity, RetryOutlook, SonarrSeerr,
         cleanup_prowlarr_registration_body, cleanup_seerr_registration_body, seerr_remove_server,
     };
+    use super::download_health::remediate::{poll_until_settled, remediate_stale_torrents};
+    use super::download_health::report::{build_download_health_condition, report_stale_torrents};
+    use super::download_health::{
+        RemediationOutcome, is_confirmed_missing, is_missing_data_torrent,
+        partition_unavailable_dirs,
+    };
     use super::*;
     use serde_json::json;
     use wiremock::matchers::{body_json, body_partial_json, header, method, path};
@@ -4892,6 +4448,7 @@ mod tests {
             status: 0,
             hash_string: format!("hash-{id}"),
             percent_done: 0.0,
+            download_dir: "/downloads".to_string(),
         }
     }
 
@@ -4925,14 +4482,75 @@ mod tests {
     }
 
     #[test]
-    fn is_missing_data_torrent_ignores_local_error_with_data_present() {
-        // TR_STAT_LOCAL_ERROR (3) also covers permissions/disk-full/read-only-remount —
-        // not just missing data. A torrent that's mostly/fully downloaded but hit one of
-        // those must not be classified as missing-data (#537 regression: the errorString
-        // conjunct this replaced happened to exclude these too, just for the wrong reason).
+    fn is_missing_data_torrent_matches_completed_torrent_whose_data_is_gone() {
+        // A finished torrent keeps `percentDone == 1.0` until Transmission re-verifies it. The
+        // detection predicate must still match it, or it is dropped before verify runs (#840).
+        let mut t = torrent(1, 3, "No data found!");
+        t.percent_done = 1.0;
+        assert!(is_missing_data_torrent(&t));
+    }
+
+    #[test]
+    fn is_confirmed_missing_requires_zero_percent_done() {
+        // TR_STAT_LOCAL_ERROR (3) also covers permissions/disk-full/read-only-remount. Only a
+        // torrent at 0% after verify is removed. One that still holds data stays (#537, #840).
         let mut t = torrent(1, 3, "Permission denied");
         t.percent_done = 0.97;
-        assert!(!is_missing_data_torrent(&t));
+        assert!(!is_confirmed_missing(&t));
+        t.percent_done = 0.0;
+        assert!(is_confirmed_missing(&t));
+    }
+
+    fn partitioned_ids(torrents: Vec<servarr_api::TorrentInfo>) -> (Vec<i64>, Vec<i64>) {
+        let (stale, held) = partition_unavailable_dirs(torrents);
+        (
+            stale.iter().map(|t| t.id).collect(),
+            held.iter().map(|t| t.id).collect(),
+        )
+    }
+
+    fn in_dir(id: i64, error: i64, dir: &str) -> servarr_api::TorrentInfo {
+        let mut t = torrent(id, error, "");
+        t.download_dir = dir.to_string();
+        t
+    }
+
+    #[test]
+    fn partition_holds_back_torrents_when_whole_directory_errors() {
+        // Two torrents in one directory, both erroring: the mount is the likely cause (#840).
+        let torrents = vec![in_dir(1, 3, "/mnt/a"), in_dir(2, 3, "/mnt/a")];
+        assert_eq!(partitioned_ids(torrents), (vec![], vec![1, 2]));
+    }
+
+    #[test]
+    fn partition_keeps_single_torrent_directory_removable() {
+        // One torrent cannot show a directory-wide failure. It stays a removal candidate.
+        let torrents = vec![in_dir(1, 3, "/mnt/a")];
+        assert_eq!(partitioned_ids(torrents), (vec![1], vec![]));
+    }
+
+    #[test]
+    fn partition_keeps_directory_removable_when_a_sibling_is_healthy() {
+        let torrents = vec![in_dir(1, 3, "/mnt/a"), in_dir(2, 0, "/mnt/a")];
+        assert_eq!(partitioned_ids(torrents), (vec![1], vec![]));
+    }
+
+    #[test]
+    fn partition_ignores_torrents_without_download_dir() {
+        // An omitted downloadDir reads as "". Unrelated torrents must not group under it.
+        let torrents = vec![in_dir(1, 3, ""), in_dir(2, 3, "")];
+        assert_eq!(partitioned_ids(torrents), (vec![1, 2], vec![]));
+    }
+
+    #[test]
+    fn build_download_health_condition_held_back_reports_unavailable_directory() {
+        let outcome = RemediationOutcome {
+            held_back: 3,
+            ..Default::default()
+        };
+        let cond = build_download_health_condition(3, &outcome, "2026-08-05T00:00:00Z");
+        assert_eq!(cond.status, "False");
+        assert_eq!(cond.reason, "DownloadDirUnavailable");
     }
 
     #[test]
@@ -4941,6 +4559,7 @@ mod tests {
             removed: Vec::new(),
             confirmed_orphaned: Vec::new(),
             still_pending: Vec::new(),
+            held_back: 0,
         };
         let cond = build_download_health_condition(2, &outcome, "2026-08-05T00:00:00Z");
         assert_eq!(cond.status, "True");
@@ -4953,6 +4572,7 @@ mod tests {
             removed: vec!["hash1".to_string()],
             confirmed_orphaned: Vec::new(),
             still_pending: Vec::new(),
+            held_back: 0,
         };
         let cond = build_download_health_condition(1, &outcome, "2026-08-05T00:00:00Z");
         assert_eq!(cond.status, "False");
@@ -4966,6 +4586,7 @@ mod tests {
             removed: Vec::new(),
             confirmed_orphaned: Vec::new(),
             still_pending: vec!["hash1".to_string(), "hash2".to_string()],
+            held_back: 0,
         };
         let cond = build_download_health_condition(2, &outcome, "2026-08-05T00:00:00Z");
         assert_eq!(cond.status, "False");
@@ -4980,6 +4601,7 @@ mod tests {
             removed: Vec::new(),
             confirmed_orphaned: vec!["hash1".to_string()],
             still_pending: Vec::new(),
+            held_back: 0,
         };
         let cond = build_download_health_condition(1, &outcome, "2026-08-05T00:00:00Z");
         assert_eq!(cond.status, "False");
@@ -5085,6 +4707,53 @@ mod tests {
         assert_eq!(outcome.removed, vec!["hash-1".to_string()]);
         assert!(outcome.confirmed_orphaned.is_empty());
         assert!(outcome.still_pending.is_empty());
+    }
+
+    #[tokio::test]
+    async fn remediate_stale_torrents_keeps_torrent_that_still_has_data_after_verify() {
+        // Post-verify the torrent errors but holds 97% of its data. Only a 0% torrent is
+        // removed, so this one must stay pending and no torrent-remove may be sent (#840).
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/transmission/rpc"))
+            .and(body_partial_json(
+                serde_json::json!({"method": "torrent-verify"}),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "result": "success", "arguments": {}
+            })))
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/transmission/rpc"))
+            .and(body_partial_json(serde_json::json!({"method": "torrent-get"})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "result": "success",
+                "arguments": {
+                    "torrents": [{"id": 1, "name": "x", "error": 3, "errorString": "Permission denied", "status": 0, "hashString": "hash-1", "percentDone": 0.97}]
+                }
+            })))
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/transmission/rpc"))
+            .and(body_partial_json(
+                serde_json::json!({"method": "torrent-remove"}),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "result": "success", "arguments": {}
+            })))
+            .expect(0)
+            .mount(&mock_server)
+            .await;
+
+        let client = servarr_api::TransmissionClient::new(&mock_server.uri(), None).unwrap();
+        let mut stale_torrent = torrent(1, 3, "Permission denied");
+        stale_torrent.percent_done = 0.97;
+        let outcome = remediate_stale_torrents(&client, &[stale_torrent], true).await;
+
+        assert!(outcome.removed.is_empty());
+        assert_eq!(outcome.still_pending, vec!["hash-1".to_string()]);
     }
 
     #[tokio::test]
@@ -5228,6 +4897,7 @@ mod tests {
             removed: vec!["hash-1".to_string()],
             confirmed_orphaned: Vec::new(),
             still_pending: Vec::new(),
+            held_back: 0,
         };
         report_stale_torrents(&recorder, &obj_ref, &stale, &outcome).await;
 
@@ -5263,6 +4933,7 @@ mod tests {
             removed: Vec::new(),
             confirmed_orphaned: Vec::new(),
             still_pending: Vec::new(),
+            held_back: 0,
         };
         report_stale_torrents(&recorder, &obj_ref, &stale, &outcome).await;
 

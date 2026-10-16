@@ -8,6 +8,9 @@ use url::Url;
 use crate::client::ApiError;
 use crate::health::HealthCheck;
 
+mod auth;
+use auth::basic_auth_header;
+
 const SESSION_HEADER: &str = "X-Transmission-Session-Id";
 const RPC_PATH: &str = "/transmission/rpc";
 
@@ -100,6 +103,10 @@ pub struct TorrentInfo {
     /// complete torrent (#537).
     #[serde(default)]
     pub percent_done: f64,
+    /// Directory holding the torrent's data. Empty when Transmission omits it. Torrents that
+    /// share a directory can be checked together to tell a missing mount from lost data (#840).
+    #[serde(default)]
+    pub download_dir: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -339,92 +346,6 @@ impl HealthCheck for TransmissionClient {
     async fn is_healthy(&self) -> Result<bool, ApiError> {
         let info = self.session_get().await?;
         Ok(!info.version.is_empty())
-    }
-}
-
-/// Build the HTTP `Authorization: Basic` header value for `creds`.
-///
-/// Base64-encodes `username:password`. Extracted from `TransmissionClient::new`
-/// (#505) so the credential encoding is independently testable; the resulting
-/// header value is marked `set_sensitive(true)` at the call site.
-fn basic_auth_header(creds: &BasicCredentials) -> String {
-    format!(
-        "Basic {}",
-        base64_encode(&format!("{}:{}", creds.username(), creds.password()))
-    )
-}
-
-fn base64_encode(input: &str) -> String {
-    use std::io::Write;
-    let mut buf = Vec::new();
-    {
-        let mut encoder = Base64Writer::new(&mut buf);
-        encoder.write_all(input.as_bytes()).unwrap();
-        encoder.finish();
-    }
-    String::from_utf8(buf).unwrap()
-}
-
-/// Minimal Base64 encoder (avoids pulling in the `base64` crate).
-struct Base64Writer<'a> {
-    out: &'a mut Vec<u8>,
-    buf: [u8; 3],
-    buf_len: usize,
-}
-
-const B64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-impl<'a> Base64Writer<'a> {
-    fn new(out: &'a mut Vec<u8>) -> Self {
-        Self {
-            out,
-            buf: [0; 3],
-            buf_len: 0,
-        }
-    }
-
-    fn finish(&mut self) {
-        if self.buf_len > 0 {
-            self.encode_block();
-        }
-    }
-
-    fn encode_block(&mut self) {
-        let b = &self.buf;
-        let n = self.buf_len;
-        self.out.push(B64[(b[0] >> 2) as usize]);
-        self.out
-            .push(B64[((b[0] & 0x03) << 4 | b[1] >> 4) as usize]);
-        if n > 1 {
-            self.out
-                .push(B64[((b[1] & 0x0f) << 2 | b[2] >> 6) as usize]);
-        } else {
-            self.out.push(b'=');
-        }
-        if n > 2 {
-            self.out.push(B64[(b[2] & 0x3f) as usize]);
-        } else {
-            self.out.push(b'=');
-        }
-        self.buf = [0; 3];
-        self.buf_len = 0;
-    }
-}
-
-impl std::io::Write for Base64Writer<'_> {
-    fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
-        for &byte in data {
-            self.buf[self.buf_len] = byte;
-            self.buf_len += 1;
-            if self.buf_len == 3 {
-                self.encode_block();
-            }
-        }
-        Ok(data.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
     }
 }
 
@@ -744,7 +665,7 @@ mod tests {
             .unwrap();
     }
 
-    use super::base64_encode;
+    use super::auth::base64_encode;
 
     #[test]
     fn base64_empty() {
@@ -813,6 +734,7 @@ mod tests {
             // Transmission reports a 0.0-1.0 fraction; ANY would generate NaN, which
             // breaks the equality roundtrip assertion below (NaN != NaN).
             percent_done in 0.0f64..=1.0,
+            download_dir in ".{0,200}",
         ) {
             let original = TorrentInfo {
                 id,
@@ -822,6 +744,7 @@ mod tests {
                 status,
                 hash_string,
                 percent_done,
+                download_dir,
             };
             let json = serde_json::to_value(&original).unwrap();
             let roundtripped: TorrentInfo = serde_json::from_value(json).unwrap();

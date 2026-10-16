@@ -1,0 +1,118 @@
+//! Event and condition text for a self-heal pass (#483, #538, #840).
+
+use super::*;
+
+pub(in crate::controller) async fn report_stale_torrents(
+    recorder: &Recorder,
+    obj_ref: &k8s_openapi::api::core::v1::ObjectReference,
+    stale: &[servarr_api::TorrentInfo],
+    outcome: &RemediationOutcome,
+) {
+    // Nothing needed remediation by the time this pass finished (e.g. every stale torrent
+    // recovered during the verify poll) — no Warning worth surfacing.
+    if outcome.removed.is_empty()
+        && outcome.confirmed_orphaned.is_empty()
+        && outcome.still_pending.is_empty()
+    {
+        return;
+    }
+
+    // Torrent names come from tracker/`.torrent` metadata outside the operator's trust
+    // boundary, so they must not reach a tenant-visible Event unsanitized (control
+    // characters, unbounded length — `events.k8s.io/v1` rejects a note over 1024 chars).
+    // Report the operator-assigned ids instead; names are available in the operator's own
+    // debug log for troubleshooting (#483).
+    //
+    // For large batches the full id list overflows 1024 chars (486 torrents → 2448-char
+    // note). Truncate to first 20 ids + "...and N more" to stay within the limit
+    // regardless of batch size (#538).
+    debug!(
+        names = ?stale.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(),
+        "download-client health: stale torrent names"
+    );
+    let ids: Vec<i64> = stale.iter().map(|t| t.id).collect();
+    let note = build_stale_torrent_note(&ids, stale.len(), outcome);
+    publish_event(
+        recorder,
+        obj_ref,
+        TenantEvent {
+            type_: EventType::Warning,
+            reason: "DownloadDataMissing",
+            note: TenantSafeMessage::new(note),
+            action: "DownloadClientHealthCheck",
+        },
+    )
+    .await;
+}
+
+/// Build the event note for a stale-torrent batch, truncating the id list if necessary
+/// to stay within the 1024-char limit on `events.k8s.io/v1` notes (#538).
+pub(in crate::controller) fn build_stale_torrent_note(
+    ids: &[i64],
+    stale_count: usize,
+    outcome: &RemediationOutcome,
+) -> String {
+    const MAX_IDS_SHOWN: usize = 20;
+    let truncated = ids.len().saturating_sub(MAX_IDS_SHOWN);
+    let displayed: Vec<String> = ids
+        .iter()
+        .take(MAX_IDS_SHOWN)
+        .map(|id| id.to_string())
+        .collect();
+    let ids_part = if truncated > 0 {
+        format!("{} ...and {truncated} more", displayed.join(", "))
+    } else {
+        displayed.join(", ")
+    };
+    format!(
+        "{stale_count} torrent(s) reporting missing data (ids: {ids_part}); \
+         {} removed as orphaned, {} confirmed orphaned but not removed, \
+         {} pending verify",
+        outcome.removed.len(),
+        outcome.confirmed_orphaned.len(),
+        outcome.still_pending.len(),
+    )
+}
+
+pub(in crate::controller) fn build_download_health_condition(
+    stale_count: usize,
+    outcome: &RemediationOutcome,
+    now: &str,
+) -> Condition {
+    if outcome.held_back > 0 {
+        return Condition::fail(
+            condition_types::DOWNLOAD_DATA_HEALTHY,
+            "DownloadDirUnavailable",
+            TenantSafeMessage::new(format!(
+                "{} torrent(s) held back: every torrent in their download directory reports \
+                 missing data, so the directory may be unmounted. Removal is skipped.",
+                outcome.held_back,
+            )),
+            now,
+        );
+    }
+    let recovered = stale_count
+        .saturating_sub(outcome.removed.len())
+        .saturating_sub(outcome.confirmed_orphaned.len())
+        .saturating_sub(outcome.still_pending.len());
+    if recovered == stale_count {
+        return Condition::ok(
+            condition_types::DOWNLOAD_DATA_HEALTHY,
+            "DataRecovered",
+            TenantSafeMessage::new(format!("{stale_count} torrent(s) recovered after verify")),
+            now,
+        );
+    }
+    Condition::fail(
+        condition_types::DOWNLOAD_DATA_HEALTHY,
+        "MissingDataDetected",
+        TenantSafeMessage::new(format!(
+            "{stale_count} torrent(s) reporting missing data ({recovered} recovered, {} removed, \
+             {} confirmed orphaned but not removed, {} pending verify)",
+            outcome.removed.len(),
+            outcome.confirmed_orphaned.len(),
+            outcome.still_pending.len(),
+        )),
+        now,
+    )
+}
