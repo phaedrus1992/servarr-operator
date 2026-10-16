@@ -1584,6 +1584,10 @@ echo "Authorized keys copied and permissions set."
 set -e
 # Patch entry.sh to skip chown/chmod on authorized_keys (emptyDir, already set by copy-authorized-keys)
 if [ -f /entry.sh ]; then
+  # Fail when a pattern is missing. A silent no-op would leave the chmod running (#849).
+  for pattern in 'chmod 600 "$f"' 'chown "$user:$user" "$f"'; do
+    grep -qF "$pattern" /entry.sh || { echo "Error: /entry.sh has no line matching $pattern, cannot patch" >&2; exit 1; }
+  done
   sed -i 's/chmod 600 "$f"/true/g' /entry.sh
   sed -i 's/chown "$user:$user" "$f"/true/g' /entry.sh
 fi

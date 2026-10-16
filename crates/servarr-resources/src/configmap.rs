@@ -6,6 +6,9 @@ use tracing::warn;
 
 use crate::common;
 
+mod transmission;
+use transmission::default_transmission_settings;
+
 pub fn build(app: &ServarrApp) -> Option<ConfigMap> {
     match app.spec.app {
         AppType::Transmission => build_transmission(app),
@@ -466,8 +469,10 @@ rm -f "$TMP" "$AUTH_FILE"
 # Fix ownership (best-effort: may not be possible on adopted PVCs owned by a different uid)
 # Mode 660 keeps the group bit set. LSIO init runs as root without CAP_DAC_OVERRIDE, so it
 # reads this file through the pod fsGroup (#834).
-chown {uid}:{gid} "$SETTINGS_FILE" 2>/dev/null || true
-chmod 660 "$SETTINGS_FILE" 2>/dev/null || true
+chown {uid}:{gid} "$SETTINGS_FILE" 2>/dev/null \
+    || echo "Warning: could not chown settings.json to {uid}:{gid} (continuing; check PVC ownership)"
+chmod 660 "$SETTINGS_FILE" 2>/dev/null \
+    || echo "Warning: could not chmod settings.json to 660 (continuing; check PVC mode)"
 
 echo "Settings applied successfully."
 "#
@@ -526,37 +531,6 @@ echo "[transmission-auth] Admin credentials set successfully."
         data: Some(data),
         ..Default::default()
     })
-}
-
-fn default_transmission_settings() -> String {
-    #[expect(
-        clippy::unwrap_used,
-        reason = "serde_json::json! literal is always serializable"
-    )]
-    serde_json::to_string_pretty(&serde_json::json!({
-        "download-dir": "/downloads/complete",
-        "incomplete-dir": "/downloads/incomplete",
-        "incomplete-dir-enabled": true,
-        "dht-enabled": true,
-        "pex-enabled": true,
-        "lpd-enabled": false,
-        "encryption": 1,
-        "speed-limit-down-enabled": false,
-        "speed-limit-up-enabled": false,
-        "ratio-limit-enabled": false,
-        "download-queue-enabled": true,
-        "download-queue-size": 5,
-        "seed-queue-enabled": true,
-        "seed-queue-size": 10,
-        "rpc-host-whitelist-enabled": false,
-        "rpc-whitelist-enabled": true,
-        "rpc-whitelist": "127.0.0.1,::1,10.*,172.*,192.168.*",
-        "cache-size-mb": 4,
-        "umask": "002",
-        "rename-partial-files": true,
-        "start-added-torrents": true,
-    }))
-    .unwrap()
 }
 
 /// Build the ConfigMap containing the Bazarr init script.
@@ -778,6 +752,21 @@ mod tests {
             "script: {script}"
         );
         assert!(!script.contains("chmod 600"), "script: {script}");
+    }
+
+    #[test]
+    fn transmission_apply_script_reports_ownership_failures() {
+        // A silent chown or chmod failure hid the cause of a later permission error (#849).
+        let cm = build(&minimal_transmission_app()).expect("transmission ConfigMap");
+        let script = cm.data.expect("data")["apply-settings.sh"].clone();
+        assert!(
+            script.contains("Warning: could not chown settings.json"),
+            "script: {script}"
+        );
+        assert!(
+            script.contains("Warning: could not chmod settings.json"),
+            "script: {script}"
+        );
     }
 
     #[test]
