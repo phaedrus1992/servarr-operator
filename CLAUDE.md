@@ -53,19 +53,14 @@ alphabetically — matches how the rest of this changelog reads chronologically 
 
 ## Release Branch Workflow
 
-Issues are milestoned by category, not version. The milestone determines the base branch:
+Issues are milestoned by version (`vN.x.y`, for example `v1.4.1`). The milestone determines the base branch.
 
-- **Bug Fixes** and **Small Enhancements** → branch from and target the newest `release/N.x`
-  line (currently `release/1.x`). These ship in patch/minor releases off that line.
-- **Large Features** → branch from and target `main`.
+- **A `vN.x.y` milestone** → branch from and target `release/N.x`. Patch and minor releases ship from that line.
+- **The next major milestone** (`v2.0.0` while `1.x` is current) → branch from and target `main`.
 
-The "newest `release/N.x`" is the highest-major release line on the remote (`release/1.x` today,
-`release/2.x` once it exists). Branches are long-lived per major series, not per patch — there is
-no `release/1.0.x`.
+`release/N.x` exists per major series, for example `release/1.x` today. Branches are long-lived per major series, not per patch. There is no `release/1.0.x`.
 
-Note: dev-sprint's `resolve-base-branch.sh` only auto-resolves a base when the milestone title
-carries a version token (e.g. `1.0`). Category milestones have none, so it falls back to `main`.
-For category milestones, pick the base by the rule above — do not trust the auto-resolver.
+dev-sprint's `resolve-base-branch.sh` resolves the base from a version milestone the same way. Trust its answer, but confirm that the code being changed exists on the resolved branch.
 
 Never retarget a milestone-scoped PR to a different base without explicit user approval.
 
