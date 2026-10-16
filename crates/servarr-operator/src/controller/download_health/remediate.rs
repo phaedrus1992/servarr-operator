@@ -69,10 +69,7 @@ pub(in crate::controller) async fn remediate_stale_torrents(
         settled_with_data,
         ..Default::default()
     };
-    // still_erroring.is_empty() falls through to the branches below rather than an early
-    // return: with auto_remove=false that's already `confirmed_orphaned: [] , still_pending:
-    // still_checking`, and with auto_remove=true, torrent_remove(&[]) is a documented no-op
-    // that produces the identical outcome -- both paths already agree, no need to special-case.
+    // An empty still_erroring is safe to pass on: torrent_remove(&[]) is a no-op.
     if !auto_remove {
         return RemediationOutcome {
             confirmed_orphaned: still_erroring,

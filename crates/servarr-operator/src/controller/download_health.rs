@@ -250,9 +250,9 @@ pub(super) async fn check_download_client_health(
     // uses, but this path can delete torrents, so fail closed instead of silently proceeding
     // unauthenticated when adminCredentials was configured but couldn't be fully read (#483).
     if access.credentials_incomplete {
-        warn!(app = %app.name_any(),
-            "download-client health: adminCredentials secret is missing username and/or \
-             password, refusing to proceed unauthenticated on a destructive path");
+        warn!(app = %app.name_any(), reason = ?access.credentials_error,
+            "download-client health: adminCredentials could not be fully read, refusing to \
+             proceed unauthenticated on a destructive path");
         // Name the failure category. A transient or RBAC error is not a problem with the
         // secret contents (#846).
         let message = match &access.credentials_error {
@@ -305,10 +305,17 @@ pub(super) async fn check_download_client_health(
 
     let outcome = remediate::remediate_stale_torrents(tx_client, &stale, auto_remove).await;
     report::report_stale_torrents(recorder, obj_ref, &stale, &outcome, held_back).await;
-    Some(report::build_download_health_condition(
-        stale.len(),
-        held_back,
-        &outcome,
-        &now,
-    ))
+    let condition = report::build_download_health_condition(stale.len(), held_back, &outcome, &now);
+    // A torrent without a hashString is never verified or removed. A True condition would hide it,
+    // so the pass reports it even when the other stale torrents recovered (#840 review).
+    if missing_hash > 0 && condition.status == "True" {
+        return Some(download_health_unknown(
+            "MissingHashString",
+            TenantSafeMessage::new(format!(
+                "{missing_hash} torrent(s) reporting missing data have no hashString"
+            )),
+            &now,
+        ));
+    }
+    Some(condition)
 }

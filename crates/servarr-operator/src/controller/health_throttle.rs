@@ -82,17 +82,12 @@ fn is_within_poll_window(
         chrono::DateTime::parse_from_rfc3339(&existing.last_transition_time),
         chrono::DateTime::parse_from_rfc3339(now),
     ) else {
-        // Corrupt status data is worth a trace either way, even on the lenient fail-open path
-        // where it's silently overwritten by the next probe result. This helper has no access
-        // to the owning object's identity (it's a pure function over a Condition), so it can
-        // only log the condition type/value; a fail-closed caller is expected to also emit its
-        // own object-scoped warning (see check_download_client_health) since that's the case
-        // where the corrupt data actually blocks an operation rather than being replaced.
+        // This helper cannot name the owning object. A fail-closed caller warns with the object.
         debug!(
             condition_type = %existing.condition_type,
             last_transition_time = %existing.last_transition_time,
             policy = ?policy,
-            "is_health_poll_throttled: unparseable lastTransitionTime"
+            "poll window: unparseable lastTransitionTime"
         );
         return policy == CorruptTimestampPolicy::FailClosed;
     };
@@ -196,5 +191,15 @@ mod tests {
             NOW,
             CorruptTimestampPolicy::FailOpen
         ));
+    }
+
+    proptest::proptest! {
+        // A corrupt timestamp must fail closed on the destructive path for any input (#519).
+        #[test]
+        fn destructive_throttle_fails_closed_on_any_unparseable_timestamp(raw in "\\PC*") {
+            proptest::prop_assume!(chrono::DateTime::parse_from_rfc3339(&raw).is_err());
+            let existing = condition("False", &raw);
+            proptest::prop_assert!(is_destructive_poll_throttled(Some(&existing), Some(3600), NOW));
+        }
     }
 }
