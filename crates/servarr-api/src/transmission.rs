@@ -101,8 +101,9 @@ pub struct TorrentInfo {
     /// to confirm a `TR_STAT_LOCAL_ERROR` torrent's data is actually gone (`0.0`) rather than
     /// some other local I/O problem — e.g. a permissions or disk-full error on an otherwise
     /// complete torrent (#537).
+    /// `None` when Transmission omits the field. Callers must not read that as `0.0` (#840).
     #[serde(default)]
-    pub percent_done: f64,
+    pub percent_done: Option<f64>,
     /// Directory holding the torrent's data. Empty when Transmission omits it. Torrents that
     /// share a directory can be checked together to tell a missing mount from lost data (#840).
     #[serde(default)]
@@ -733,7 +734,7 @@ mod tests {
             hash_string in "[0-9a-f]{0,40}",
             // Transmission reports a 0.0-1.0 fraction; ANY would generate NaN, which
             // breaks the equality roundtrip assertion below (NaN != NaN).
-            percent_done in 0.0f64..=1.0,
+            percent_done in proptest::option::of(0.0f64..=1.0),
             download_dir in ".{0,200}",
         ) {
             let original = TorrentInfo {

@@ -7,12 +7,14 @@ pub(in crate::controller) async fn report_stale_torrents(
     obj_ref: &k8s_openapi::api::core::v1::ObjectReference,
     stale: &[servarr_api::TorrentInfo],
     outcome: &RemediationOutcome,
+    held_back: usize,
 ) {
     // Nothing needed remediation by the time this pass finished (e.g. every stale torrent
     // recovered during the verify poll) — no Warning worth surfacing.
     if outcome.removed.is_empty()
         && outcome.confirmed_orphaned.is_empty()
         && outcome.still_pending.is_empty()
+        && held_back == 0
     {
         return;
     }
@@ -31,7 +33,7 @@ pub(in crate::controller) async fn report_stale_torrents(
         "download-client health: stale torrent names"
     );
     let ids: Vec<i64> = stale.iter().map(|t| t.id).collect();
-    let note = build_stale_torrent_note(&ids, stale.len(), outcome);
+    let note = build_stale_torrent_note(&ids, stale.len(), outcome, held_back);
     publish_event(
         recorder,
         obj_ref,
@@ -51,6 +53,7 @@ pub(in crate::controller) fn build_stale_torrent_note(
     ids: &[i64],
     stale_count: usize,
     outcome: &RemediationOutcome,
+    held_back: usize,
 ) -> String {
     const MAX_IDS_SHOWN: usize = 20;
     let truncated = ids.len().saturating_sub(MAX_IDS_SHOWN);
@@ -59,15 +62,22 @@ pub(in crate::controller) fn build_stale_torrent_note(
         .take(MAX_IDS_SHOWN)
         .map(|id| id.to_string())
         .collect();
-    let ids_part = if truncated > 0 {
+    let ids_part = if displayed.is_empty() {
+        "none".to_string()
+    } else if truncated > 0 {
         format!("{} ...and {truncated} more", displayed.join(", "))
     } else {
         displayed.join(", ")
     };
+    let held_part = if held_back > 0 {
+        format!("; {held_back} held back, download directory may be unmounted")
+    } else {
+        String::new()
+    };
     format!(
         "{stale_count} torrent(s) reporting missing data (ids: {ids_part}); \
          {} removed as orphaned, {} confirmed orphaned but not removed, \
-         {} pending verify",
+         {} pending verify{held_part}",
         outcome.removed.len(),
         outcome.confirmed_orphaned.len(),
         outcome.still_pending.len(),
@@ -76,17 +86,22 @@ pub(in crate::controller) fn build_stale_torrent_note(
 
 pub(in crate::controller) fn build_download_health_condition(
     stale_count: usize,
+    held_back: usize,
     outcome: &RemediationOutcome,
     now: &str,
 ) -> Condition {
-    if outcome.held_back > 0 {
+    if held_back > 0 {
         return Condition::fail(
             condition_types::DOWNLOAD_DATA_HEALTHY,
             "DownloadDirUnavailable",
             TenantSafeMessage::new(format!(
-                "{} torrent(s) held back: every torrent in their download directory reports \
-                 missing data, so the directory may be unmounted. Removal is skipped.",
-                outcome.held_back,
+                "{held_back} torrent(s) held back: every torrent in their download directory \
+                 reports missing data, so the directory may be unmounted. Removal is skipped for \
+                 them only ({} removed, {} confirmed orphaned but not removed, {} pending verify \
+                 for the other torrents).",
+                outcome.removed.len(),
+                outcome.confirmed_orphaned.len(),
+                outcome.still_pending.len(),
             )),
             now,
         );

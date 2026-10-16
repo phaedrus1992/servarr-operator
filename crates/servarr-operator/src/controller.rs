@@ -4447,7 +4447,7 @@ mod tests {
             error_string: error_string.to_string(),
             status: 0,
             hash_string: format!("hash-{id}"),
-            percent_done: 0.0,
+            percent_done: Some(0.0),
             download_dir: "/downloads".to_string(),
         }
     }
@@ -4486,7 +4486,7 @@ mod tests {
         // A finished torrent keeps `percentDone == 1.0` until Transmission re-verifies it. The
         // detection predicate must still match it, or it is dropped before verify runs (#840).
         let mut t = torrent(1, 3, "No data found!");
-        t.percent_done = 1.0;
+        t.percent_done = Some(1.0);
         assert!(is_missing_data_torrent(&t));
     }
 
@@ -4495,18 +4495,15 @@ mod tests {
         // TR_STAT_LOCAL_ERROR (3) also covers permissions/disk-full/read-only-remount. Only a
         // torrent at 0% after verify is removed. One that still holds data stays (#537, #840).
         let mut t = torrent(1, 3, "Permission denied");
-        t.percent_done = 0.97;
+        t.percent_done = Some(0.97);
         assert!(!is_confirmed_missing(&t));
-        t.percent_done = 0.0;
+        t.percent_done = Some(0.0);
         assert!(is_confirmed_missing(&t));
     }
 
-    fn partitioned_ids(torrents: Vec<servarr_api::TorrentInfo>) -> (Vec<i64>, Vec<i64>) {
+    fn partitioned_ids(torrents: Vec<servarr_api::TorrentInfo>) -> (Vec<i64>, usize) {
         let (stale, held) = partition_unavailable_dirs(torrents);
-        (
-            stale.iter().map(|t| t.id).collect(),
-            held.iter().map(|t| t.id).collect(),
-        )
+        (stale.iter().map(|t| t.id).collect(), held)
     }
 
     fn in_dir(id: i64, error: i64, dir: &str) -> servarr_api::TorrentInfo {
@@ -4516,39 +4513,81 @@ mod tests {
     }
 
     #[test]
+    fn torrent_health_fields_request_download_dir() {
+        // partition_unavailable_dirs reads download_dir. Without this field in the request
+        // every torrent reports "" and the unmounted-directory guard never runs (#840).
+        assert!(super::download_health::TORRENT_HEALTH_FIELDS.contains(&"downloadDir"));
+    }
+
+    #[test]
+    fn partition_groups_trailing_slash_with_plain_directory() {
+        let torrents = vec![in_dir(1, 3, "/mnt/a/"), in_dir(2, 3, "/mnt/a")];
+        assert_eq!(partitioned_ids(torrents), (vec![], 2));
+    }
+
+    #[test]
+    fn split_missing_hash_drops_torrents_without_hash() {
+        let mut hashless = torrent(1, 3, "");
+        hashless.hash_string.clear();
+        let kept = torrent(2, 3, "");
+        let (with_hash, missing) = super::download_health::split_missing_hash(vec![hashless, kept]);
+        assert_eq!(with_hash.iter().map(|t| t.id).collect::<Vec<_>>(), vec![2]);
+        assert_eq!(missing, 1);
+    }
+
+    proptest! {
+        #[test]
+        fn partition_never_loses_a_local_error_torrent(
+            rows in proptest::collection::vec(
+                (0usize..4, proptest::sample::select(vec![0i64, 3])),
+                0..30,
+            ),
+        ) {
+            let dirs = ["", "/a", "/a/", "/b"];
+            let torrents: Vec<_> = rows
+                .iter()
+                .enumerate()
+                .map(|(i, (d, e))| in_dir(i as i64, *e, dirs[*d]))
+                .collect();
+            let erroring = torrents.iter().filter(|t| t.error == 3).count();
+            let (stale, held) = partition_unavailable_dirs(torrents);
+            prop_assert_eq!(stale.len() + held, erroring);
+        }
+    }
+
+    #[test]
     fn partition_holds_back_torrents_when_whole_directory_errors() {
         // Two torrents in one directory, both erroring: the mount is the likely cause (#840).
         let torrents = vec![in_dir(1, 3, "/mnt/a"), in_dir(2, 3, "/mnt/a")];
-        assert_eq!(partitioned_ids(torrents), (vec![], vec![1, 2]));
+        assert_eq!(partitioned_ids(torrents), (vec![], 2));
     }
 
     #[test]
     fn partition_keeps_single_torrent_directory_removable() {
         // One torrent cannot show a directory-wide failure. It stays a removal candidate.
         let torrents = vec![in_dir(1, 3, "/mnt/a")];
-        assert_eq!(partitioned_ids(torrents), (vec![1], vec![]));
+        assert_eq!(partitioned_ids(torrents), (vec![1], 0));
     }
 
     #[test]
     fn partition_keeps_directory_removable_when_a_sibling_is_healthy() {
         let torrents = vec![in_dir(1, 3, "/mnt/a"), in_dir(2, 0, "/mnt/a")];
-        assert_eq!(partitioned_ids(torrents), (vec![1], vec![]));
+        assert_eq!(partitioned_ids(torrents), (vec![1], 0));
     }
 
     #[test]
     fn partition_ignores_torrents_without_download_dir() {
         // An omitted downloadDir reads as "". Unrelated torrents must not group under it.
         let torrents = vec![in_dir(1, 3, ""), in_dir(2, 3, "")];
-        assert_eq!(partitioned_ids(torrents), (vec![1, 2], vec![]));
+        assert_eq!(partitioned_ids(torrents), (vec![1, 2], 0));
     }
 
     #[test]
     fn build_download_health_condition_held_back_reports_unavailable_directory() {
         let outcome = RemediationOutcome {
-            held_back: 3,
             ..Default::default()
         };
-        let cond = build_download_health_condition(3, &outcome, "2026-08-05T00:00:00Z");
+        let cond = build_download_health_condition(3, 3, &outcome, "2026-08-05T00:00:00Z");
         assert_eq!(cond.status, "False");
         assert_eq!(cond.reason, "DownloadDirUnavailable");
     }
@@ -4559,9 +4598,8 @@ mod tests {
             removed: Vec::new(),
             confirmed_orphaned: Vec::new(),
             still_pending: Vec::new(),
-            held_back: 0,
         };
-        let cond = build_download_health_condition(2, &outcome, "2026-08-05T00:00:00Z");
+        let cond = build_download_health_condition(2, 0, &outcome, "2026-08-05T00:00:00Z");
         assert_eq!(cond.status, "True");
         assert_eq!(cond.reason, "DataRecovered");
     }
@@ -4572,9 +4610,8 @@ mod tests {
             removed: vec!["hash1".to_string()],
             confirmed_orphaned: Vec::new(),
             still_pending: Vec::new(),
-            held_back: 0,
         };
-        let cond = build_download_health_condition(1, &outcome, "2026-08-05T00:00:00Z");
+        let cond = build_download_health_condition(1, 0, &outcome, "2026-08-05T00:00:00Z");
         assert_eq!(cond.status, "False");
         assert_eq!(cond.reason, "MissingDataDetected");
         assert!(cond.message.contains("1 removed"));
@@ -4586,9 +4623,8 @@ mod tests {
             removed: Vec::new(),
             confirmed_orphaned: Vec::new(),
             still_pending: vec!["hash1".to_string(), "hash2".to_string()],
-            held_back: 0,
         };
-        let cond = build_download_health_condition(2, &outcome, "2026-08-05T00:00:00Z");
+        let cond = build_download_health_condition(2, 0, &outcome, "2026-08-05T00:00:00Z");
         assert_eq!(cond.status, "False");
         assert!(cond.message.contains("2 pending verify"));
     }
@@ -4601,9 +4637,8 @@ mod tests {
             removed: Vec::new(),
             confirmed_orphaned: vec!["hash1".to_string()],
             still_pending: Vec::new(),
-            held_back: 0,
         };
-        let cond = build_download_health_condition(1, &outcome, "2026-08-05T00:00:00Z");
+        let cond = build_download_health_condition(1, 0, &outcome, "2026-08-05T00:00:00Z");
         assert_eq!(cond.status, "False");
         assert!(cond.message.contains("1 confirmed orphaned"));
         assert!(cond.message.contains("0 removed"));
@@ -4619,7 +4654,7 @@ mod tests {
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "result": "success",
                 "arguments": {
-                    "torrents": [{"id": 1, "name": "x", "error": 3, "errorString": "no data found", "status": 0, "hashString": "hash-1"}]
+                    "torrents": [{"id": 1, "name": "x", "error": 3, "errorString": "no data found", "status": 0, "hashString": "hash-1", "percentDone": 0.0}]
                 }
             })))
             .mount(&mock_server)
@@ -4681,7 +4716,7 @@ mod tests {
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "result": "success",
                 "arguments": {
-                    "torrents": [{"id": 1, "name": "x", "error": 3, "errorString": "no data found", "status": 0, "hashString": "hash-1"}]
+                    "torrents": [{"id": 1, "name": "x", "error": 3, "errorString": "no data found", "status": 0, "hashString": "hash-1", "percentDone": 0.0}]
                 }
             })))
             .mount(&mock_server)
@@ -4749,7 +4784,7 @@ mod tests {
 
         let client = servarr_api::TransmissionClient::new(&mock_server.uri(), None).unwrap();
         let mut stale_torrent = torrent(1, 3, "Permission denied");
-        stale_torrent.percent_done = 0.97;
+        stale_torrent.percent_done = Some(0.97);
         let outcome = remediate_stale_torrents(&client, &[stale_torrent], true).await;
 
         assert!(outcome.removed.is_empty());
@@ -4776,7 +4811,7 @@ mod tests {
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "result": "success",
                 "arguments": {
-                    "torrents": [{"id": 1, "name": "x", "error": 3, "errorString": "no data found", "status": 0, "hashString": "hash-1"}]
+                    "torrents": [{"id": 1, "name": "x", "error": 3, "errorString": "no data found", "status": 0, "hashString": "hash-1", "percentDone": 0.0}]
                 }
             })))
             .mount(&mock_server)
@@ -4897,9 +4932,8 @@ mod tests {
             removed: vec!["hash-1".to_string()],
             confirmed_orphaned: Vec::new(),
             still_pending: Vec::new(),
-            held_back: 0,
         };
-        report_stale_torrents(&recorder, &obj_ref, &stale, &outcome).await;
+        report_stale_torrents(&recorder, &obj_ref, &stale, &outcome, 0).await;
 
         let bodies = event_post_bodies(&mock_server).await;
         assert_eq!(bodies.len(), 1, "expected exactly one Event POST");
@@ -4933,9 +4967,8 @@ mod tests {
             removed: Vec::new(),
             confirmed_orphaned: Vec::new(),
             still_pending: Vec::new(),
-            held_back: 0,
         };
-        report_stale_torrents(&recorder, &obj_ref, &stale, &outcome).await;
+        report_stale_torrents(&recorder, &obj_ref, &stale, &outcome, 0).await;
 
         let bodies = event_post_bodies(&mock_server).await;
         assert!(

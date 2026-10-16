@@ -22,7 +22,7 @@ pub(super) const CHECKING_STATUSES: [i64; 2] = [1, 2];
 /// a `TorrentInfo` with a missing hash defaults to `""` (#500), which would scope subsequent
 /// `torrent-verify`/`torrent-remove`/`torrent-get` calls to an empty-string id instead of failing
 /// loudly.
-pub(super) const TORRENT_HEALTH_FIELDS: [&str; 7] = [
+pub(super) const TORRENT_HEALTH_FIELDS: [&str; 8] = [
     "id",
     "name",
     "error",
@@ -30,6 +30,7 @@ pub(super) const TORRENT_HEALTH_FIELDS: [&str; 7] = [
     "status",
     "hashString",
     "percentDone",
+    "downloadDir",
 ];
 
 /// Transmission's `tr_stat` error code for "the torrent has a local I/O problem" (missing or
@@ -70,7 +71,7 @@ pub(super) fn is_missing_data_torrent(t: &servarr_api::TorrentInfo) -> bool {
 /// covers I/O problems that leave data on disk (permissions, disk-full, read-only remount).
 /// Requiring `percentDone == 0.0` after verify keeps those torrents out of removal.
 pub(super) fn is_confirmed_missing(t: &servarr_api::TorrentInfo) -> bool {
-    is_missing_data_torrent(t) && t.percent_done == 0.0
+    is_missing_data_torrent(t) && t.percent_done == Some(0.0)
 }
 
 /// Split torrents into those safe to remediate and the count held back (#840).
@@ -81,33 +82,62 @@ pub(super) fn is_confirmed_missing(t: &servarr_api::TorrentInfo) -> bool {
 /// apart from lost data.
 pub(super) fn partition_unavailable_dirs(
     torrents: Vec<servarr_api::TorrentInfo>,
-) -> (Vec<servarr_api::TorrentInfo>, Vec<servarr_api::TorrentInfo>) {
-    let mut per_dir: std::collections::HashMap<String, (usize, usize)> =
+) -> (Vec<servarr_api::TorrentInfo>, usize) {
+    let unavailable = unavailable_dirs(&torrents);
+    let (stale, held): (Vec<_>, Vec<_>) = torrents
+        .into_iter()
+        .filter(is_missing_data_torrent)
+        .partition(|t| !unavailable.contains(dir_key(t)));
+    (stale, held.len())
+}
+
+/// Directory grouping key. A trailing slash is dropped, so `/a` and `/a/` group together (#840).
+fn dir_key(t: &servarr_api::TorrentInfo) -> &str {
+    t.download_dir.trim_end_matches('/')
+}
+
+/// Directories where every torrent reports a local error, with enough torrents to tell a
+/// missing mount from lost data.
+fn unavailable_dirs(torrents: &[servarr_api::TorrentInfo]) -> std::collections::HashSet<String> {
+    let mut per_dir: std::collections::HashMap<&str, (usize, usize)> =
         std::collections::HashMap::new();
-    for t in &torrents {
+    for t in torrents {
         // An omitted downloadDir reads as "" and must not group unrelated torrents together.
-        if t.download_dir.is_empty() {
+        let key = dir_key(t);
+        if key.is_empty() {
             continue;
         }
-        let counts = per_dir.entry(t.download_dir.clone()).or_default();
+        let counts = per_dir.entry(key).or_default();
         counts.0 += 1;
         if is_missing_data_torrent(t) {
             counts.1 += 1;
         }
     }
-    let unavailable: std::collections::HashSet<String> = per_dir
+    per_dir
         .into_iter()
         .filter(|(_, (total, erroring))| *total >= MIN_TORRENTS_FOR_DIR_CHECK && total == erroring)
-        .map(|(dir, _)| dir)
-        .collect();
-    torrents
-        .into_iter()
-        .filter(is_missing_data_torrent)
-        .partition(|t| !unavailable.contains(&t.download_dir))
+        .map(|(dir, _)| dir.to_string())
+        .collect()
 }
 
-/// Minimum torrents in one download directory before an all-erroring directory counts as
-/// unmounted. Below this, a single torrent with lost data would never be removed (#840).
+/// Drop torrents without a `hashString`, returning the kept ones and the count dropped (#500).
+/// An empty hash would scope `torrent-verify`/`torrent-remove` to an empty id, so skip and warn.
+pub(super) fn split_missing_hash(
+    candidates: Vec<servarr_api::TorrentInfo>,
+) -> (Vec<servarr_api::TorrentInfo>, usize) {
+    let (with_hash, missing): (Vec<_>, Vec<_>) = candidates
+        .into_iter()
+        .partition(|t| !t.hash_string.is_empty());
+    for t in &missing {
+        warn!(
+            torrent_id = t.id,
+            "download-client health: torrent reporting missing data has no hashString, \
+             skipping until Transmission reports one"
+        );
+    }
+    (with_hash, missing.len())
+}
+
 const MIN_TORRENTS_FOR_DIR_CHECK: usize = 2;
 
 pub(super) fn is_checking(t: &servarr_api::TorrentInfo) -> bool {
@@ -123,8 +153,6 @@ pub(super) struct RemediationOutcome {
     pub(super) removed: Vec<String>,
     pub(super) confirmed_orphaned: Vec<String>,
     pub(super) still_pending: Vec<String>,
-    /// Torrents left alone because their whole download directory is erroring (#840).
-    pub(super) held_back: usize,
 }
 
 /// Detect Transmission torrents whose on-disk data has gone missing, trigger a verify so
@@ -191,11 +219,8 @@ pub(super) async fn check_download_client_health(
                  timestamp so the self-heal pass isn't wedged indefinitely"
             );
             return Some(Condition {
-                condition_type: existing.condition_type.clone(),
-                status: existing.status.clone(),
-                reason: existing.reason.clone(),
-                message: existing.message.clone(),
                 last_transition_time: now,
+                ..existing.clone()
             });
         }
         return existing_download.cloned();
@@ -251,24 +276,19 @@ pub(super) async fn check_download_client_health(
     };
 
     let (candidates, held_back) = partition_unavailable_dirs(torrents);
-    let stale: Vec<_> = candidates
-        .into_iter()
-        .filter(|t| {
-            // hash_string defaults to "" (#[serde(default)]) if Transmission's response ever
-            // omits hashString despite it being requested. Skip rather than address an empty
-            // string via torrent-verify/torrent-remove -- an empty scope would misclassify as
-            // "settled" (vacuously true over zero results) and leave the torrent silently stuck
-            // in "still pending" forever instead of surfacing the anomaly (#500).
-            let has_hash = !t.hash_string.is_empty();
-            if !has_hash {
-                warn!(app = %app.name_any(), torrent_id = t.id,
-                    "download-client health: torrent reporting missing data has no hashString, \
-                     skipping until Transmission reports one");
-            }
-            has_hash
-        })
-        .collect();
-    if stale.is_empty() && held_back.is_empty() {
+    let (stale, missing_hash) = split_missing_hash(candidates);
+    if stale.is_empty() && held_back == 0 {
+        if missing_hash > 0 {
+            // Without a hash the torrent cannot be verified. Reporting "NoStaleData" here
+            // would hide a torrent that still reports missing data (#840 review).
+            return Some(download_health_unknown(
+                "MissingHashString",
+                TenantSafeMessage::new(format!(
+                    "{missing_hash} torrent(s) reporting missing data have no hashString"
+                )),
+                &now,
+            ));
+        }
         return Some(Condition::ok(
             condition_types::DOWNLOAD_DATA_HEALTHY,
             "NoStaleData",
@@ -277,12 +297,11 @@ pub(super) async fn check_download_client_health(
         ));
     }
 
-    let mut outcome = remediate::remediate_stale_torrents(tx_client, &stale, auto_remove).await;
-    outcome.held_back = held_back.len();
-    report::report_stale_torrents(recorder, obj_ref, &stale, &outcome).await;
-
+    let outcome = remediate::remediate_stale_torrents(tx_client, &stale, auto_remove).await;
+    report::report_stale_torrents(recorder, obj_ref, &stale, &outcome, held_back).await;
     Some(report::build_download_health_condition(
         stale.len(),
+        held_back,
         &outcome,
         &now,
     ))

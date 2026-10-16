@@ -126,5 +126,11 @@ pub(in crate::controller) async fn poll_until_settled(
             }
         }
     }
+    // Poll window used up. Callers read the empty result as "still pending", so log it here to
+    // keep a slow verify visible (#840 review).
+    warn!(
+        hashes = hashes.len(),
+        "download-client health: verify did not settle in the poll window"
+    );
     Vec::new()
 }
