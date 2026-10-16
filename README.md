@@ -24,6 +24,9 @@ networking, backups, and cross-app integration.
 | Jackett | Indexer proxy | 9117 | 3 - Ancillary |
 | Bazarr | Subtitle management | 6767 | 3 - Ancillary |
 | Subgen | AI subtitle generation | 9000 | 3 - Ancillary |
+| Unpackerr | Archive extraction | 5656 | 3 - Ancillary |
+| Cleanuparr | Download queue cleanup | 11011 | 3 - Ancillary |
+| Houndarr | Missing and upgrade search | 8877 | 3 - Ancillary |
 
 ## Custom Resources
 
@@ -102,6 +105,9 @@ spec:
 - **Seerr sync** -- Seerr automatically discovers and registers Sonarr/Radarr servers with correct 4K flags
 - **Bazarr sync** -- Bazarr automatically discovers and registers Sonarr/Radarr instances for subtitle management
 - **Subgen sync** -- Subgen automatically wires up to a Jellyfin instance for Whisper AI subtitle generation
+- **Cleanuparr sync** -- Cleanuparr automatically registers the Sonarr and Radarr instances in its namespace
+- **Houndarr sync** -- Houndarr automatically registers discovered *arr instances, using the admin credentials secret
+- **Unpackerr config** -- Unpackerr writes its `unpackerr.conf` from the *arr instances listed in its app config
 - **App configuration** -- Transmission settings.json, SABnzbd host whitelist, Prowlarr custom indexers
 - **SSH bastion** -- jump host with per-user access modes (shell, sftp, scp, rsync, restricted-rsync)
 - **In-cluster NFS** -- MediaStack can deploy its own NFS server and auto-inject media mounts, or point at an external NAS
