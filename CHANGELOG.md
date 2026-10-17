@@ -15,6 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Hold back Transmission torrents when every torrent in their download directory reports missing data. The directory may be unmounted. The condition reason is `DownloadDirUnavailable` (#840).
 - Report a torrent without a `hashString` as `Unknown`, not as a clean pass (#840).
 - Write Transmission `settings.json` with mode 0660, so the LinuxServer init can read it (#834).
+- Throttle the Transmission self-heal pass by `intervalSeconds` for every condition status. A torrent stuck in a local data error no longer runs `torrent-verify` on every reconcile (#844).
+- Name the reason in the `CredentialReadError` condition when `adminCredentials` cannot be read. The message no longer blames the secret contents for an RBAC or timeout error (#846).
+- Report a failed Transmission call during the self-heal pass as `RemediationRpcError`, not as pending verify. Count torrents that settle with data present on their own, and keep a torrent without a `hashString` visible when other torrents recover (#845).
+- Log the cause when the Transmission settings script cannot chown or chmod `settings.json`. Fail the SSH bastion init when its `entry.sh` patch matches nothing (#849).
 
 ## [1.4.1] - 2026-09-01
 

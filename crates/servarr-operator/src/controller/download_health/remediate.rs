@@ -38,15 +38,13 @@ pub(in crate::controller) async fn remediate_stale_torrents(
 
     if let Err(e) = tx_client.torrent_verify(&hash_refs).await {
         warn!(error = %e.log_summary(), "download-client health: torrent-verify failed");
-        let mut still_pending = hashes;
-        still_pending.extend(already_checking);
-        return RemediationOutcome {
-            still_pending,
-            ..Default::default()
-        };
+        return rpc_failed_outcome("torrent-verify", hashes, already_checking);
     }
 
-    let settled = poll_until_settled(tx_client, &hash_refs).await;
+    let settled = match poll_until_settled(tx_client, &hash_refs).await {
+        Ok(settled) => settled,
+        Err(op) => return rpc_failed_outcome(op, hashes, already_checking),
+    };
     // Only a torrent still at 0% after verify is removed (#840). One that still errors with
     // data present is left for the next reconcile, like a torrent whose verify has not settled.
     let still_erroring: Vec<String> = settled
@@ -54,30 +52,56 @@ pub(in crate::controller) async fn remediate_stale_torrents(
         .filter(|t| is_confirmed_missing(t))
         .map(|t| t.hash_string.clone())
         .collect();
+    // Settled with error 3 but data present: a separate outcome, not "still checking" (#845).
+    let settled_with_data: Vec<String> = settled
+        .iter()
+        .filter(|t| is_missing_data_torrent(t) && !is_confirmed_missing(t))
+        .map(|t| t.hash_string.clone())
+        .collect();
     let mut still_checking: Vec<String> = hashes
         .into_iter()
         .filter(|h| !settled.iter().any(|t| &t.hash_string == h))
         .collect();
-    still_checking.extend(
-        settled
-            .iter()
-            .filter(|t| is_missing_data_torrent(t) && !is_confirmed_missing(t))
-            .map(|t| t.hash_string.clone()),
-    );
     still_checking.extend(already_checking);
 
-    // still_erroring.is_empty() falls through to the branches below rather than an early
-    // return: with auto_remove=false that's already `confirmed_orphaned: [] , still_pending:
-    // still_checking`, and with auto_remove=true, torrent_remove(&[]) is a documented no-op
-    // that produces the identical outcome -- both paths already agree, no need to special-case.
+    let base = RemediationOutcome {
+        still_pending: still_checking,
+        settled_with_data,
+        ..Default::default()
+    };
+    // An empty still_erroring is safe to pass on: torrent_remove(&[]) is a no-op.
     if !auto_remove {
         return RemediationOutcome {
             confirmed_orphaned: still_erroring,
-            still_pending: still_checking,
-            ..Default::default()
+            ..base
         };
     }
+    remove_confirmed(tx_client, still_erroring, base).await
+}
 
+/// Outcome for a pass that stopped on an RPC error. The torrents stay stale, so they are
+/// reported as pending. `op` names the failed RPC, so the condition does not blame the data (#845).
+fn rpc_failed_outcome(
+    op: &'static str,
+    hashes: Vec<String>,
+    already_checking: Vec<String>,
+) -> RemediationOutcome {
+    let mut still_pending = hashes;
+    still_pending.extend(already_checking);
+    RemediationOutcome {
+        still_pending,
+        rpc_failure: Some(op),
+        ..Default::default()
+    }
+}
+
+/// Remove the confirmed-missing torrents and merge the result into `base`. A failed removal
+/// leaves them confirmed-orphaned, not pending, so the condition shows the real state (#845).
+async fn remove_confirmed(
+    tx_client: &servarr_api::TransmissionClient,
+    still_erroring: Vec<String>,
+    base: RemediationOutcome,
+) -> RemediationOutcome {
     let still_erroring_refs: Vec<&str> = still_erroring.iter().map(String::as_str).collect();
     match tx_client
         .torrent_remove(&still_erroring_refs, servarr_api::DeleteLocalData::No)
@@ -85,44 +109,60 @@ pub(in crate::controller) async fn remediate_stale_torrents(
     {
         Ok(()) => RemediationOutcome {
             removed: still_erroring,
-            still_pending: still_checking,
-            ..Default::default()
+            ..base
         },
         Err(e) => {
             warn!(error = %e.log_summary(), "download-client health: torrent-remove failed");
-            let mut still_pending = still_erroring;
-            still_pending.extend(still_checking);
             RemediationOutcome {
-                still_pending,
-                ..Default::default()
+                confirmed_orphaned: still_erroring,
+                rpc_failure: Some("torrent-remove"),
+                ..base
             }
         }
     }
 }
 
 /// Poll `torrent-get` for `hashes` until none are still hash-checking, or
-/// [`VERIFY_POLL_ATTEMPTS`] is exhausted. Returns an empty `Vec` on timeout or RPC error —
-/// callers treat that as "still pending", never as grounds for removal.
+/// [`VERIFY_POLL_ATTEMPTS`] is exhausted. Returns `Ok(empty)` on timeout, which callers read as
+/// "still pending". Returns `Err` with the RPC name on an RPC error, so the caller reports the
+/// failure, not a pending verify (#845). Neither case is grounds for removal.
 pub(in crate::controller) async fn poll_until_settled(
     tx_client: &servarr_api::TransmissionClient,
     hashes: &[&str],
-) -> Vec<servarr_api::TorrentInfo> {
+) -> Result<Vec<servarr_api::TorrentInfo>, &'static str> {
+    poll_with_budget(
+        tx_client,
+        hashes,
+        VERIFY_POLL_ATTEMPTS,
+        VERIFY_POLL_INTERVAL,
+    )
+    .await
+}
+
+/// [`poll_until_settled`] with an explicit attempt budget and interval. The tests use a short
+/// budget: a paused-clock test would let the HTTP request timeout fire during idle auto-advance.
+pub(in crate::controller) async fn poll_with_budget(
+    tx_client: &servarr_api::TransmissionClient,
+    hashes: &[&str],
+    attempts: u8,
+    interval: Duration,
+) -> Result<Vec<servarr_api::TorrentInfo>, &'static str> {
     // Transmission applies torrent-verify's status transition asynchronously relative to the
     // RPC response returning, so polling immediately risks reading the pre-verify snapshot —
     // still showing the old error with status 0 (not checking) — and wrongly treating the
     // torrent as "settled and still broken" before Transmission ever re-checked it (#483).
     // Sleep first to give the transition time to land.
-    tokio::time::sleep(VERIFY_POLL_INTERVAL).await;
-    for _ in 0..VERIFY_POLL_ATTEMPTS {
+    tokio::time::sleep(interval).await;
+    for _ in 0..attempts {
         match tx_client
             .torrent_get(&TORRENT_HEALTH_FIELDS, Some(hashes))
             .await
         {
-            Ok(t) if t.iter().all(|x| !is_checking(x)) => return t,
-            Ok(_) => tokio::time::sleep(VERIFY_POLL_INTERVAL).await,
+            Ok(t) if t.iter().all(|x| !is_checking(x)) => return Ok(t),
+            Ok(_) => tokio::time::sleep(interval).await,
             Err(e) => {
                 warn!(error = %e.log_summary(), "download-client health: torrent-get (poll) failed");
-                return Vec::new();
+                return Err("torrent-get");
             }
         }
     }
@@ -132,5 +172,5 @@ pub(in crate::controller) async fn poll_until_settled(
         hashes = hashes.len(),
         "download-client health: verify did not settle in the poll window"
     );
-    Vec::new()
+    Ok(Vec::new())
 }

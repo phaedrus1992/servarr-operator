@@ -15,6 +15,9 @@ use std::collections::{BTreeMap, HashMap};
 
 use crate::common;
 
+mod entry_patch;
+use entry_patch::ENTRY_PATCH_SCRIPT;
+
 /// Compute a SHA-256 checksum of any config data that should trigger a pod restart.
 pub fn config_checksum(app: &ServarrApp) -> Option<String> {
     use sha2::{Digest, Sha256};
@@ -1579,16 +1582,7 @@ echo "Authorized keys copied and permissions set."
     // Patch entry.sh to no longer skip chown/chmod on authorized_keys
     // (they're now in a writable emptyDir with proper permissions from copy-authorized-keys)
     // and install restricted-rsync if in that mode
-    let mut patch_script = String::from(
-        r#"#!/bin/sh
-set -e
-# Patch entry.sh to skip chown/chmod on authorized_keys (emptyDir, already set by copy-authorized-keys)
-if [ -f /entry.sh ]; then
-  sed -i 's/chmod 600 "$f"/true/g' /entry.sh
-  sed -i 's/chown "$user:$user" "$f"/true/g' /entry.sh
-fi
-"#,
-    );
+    let mut patch_script = String::from(ENTRY_PATCH_SCRIPT);
 
     if ssh_config
         .users
