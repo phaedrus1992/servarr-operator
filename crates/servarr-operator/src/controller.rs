@@ -75,6 +75,12 @@ pub enum Error {
     AppDefaults(String),
     #[error("finalizer cleanup pending retry")]
     CleanupPending,
+    /// The Secret name is a fixed operator name that tenant content must not take over.
+    #[error(
+        "Secret {0} exists and this ServarrApp does not own it: rename or delete it so the \
+         operator can write its derived rpc-password Secret"
+    )]
+    SecretNotOwned(String),
 }
 
 impl Error {
@@ -496,7 +502,7 @@ pub async fn reconcile(app: Arc<ServarrApp>, ctx: Arc<Context>) -> Result<Action
     };
 
     // The Deployment mounts the derived rpc-password Secret, so it must exist first (#848).
-    rpc_password::ensure_rpc_password_secret(client, &app, &ns).await?;
+    rpc_password::ensure_rpc_password_secret(client, &app, &ns, &recorder, &obj_ref).await?;
 
     // Build and apply Deployment
     let deployment = servarr_resources::deployment::build(&app, &ctx.image_overrides)

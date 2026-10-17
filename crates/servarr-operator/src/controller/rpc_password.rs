@@ -4,6 +4,7 @@
 //! derived Secret as `password`, so the plaintext never reaches `settings.json`.
 
 use super::*;
+use k8s_openapi::api::core::v1::ObjectReference;
 use rand::distr::{Alphanumeric, SampleString as _};
 use servarr_resources::common::{RPC_PASSWORD_SECRET_SUFFIX, metadata};
 use sha1::{Digest, Sha1};
@@ -20,6 +21,7 @@ const DIGEST_HEX_LEN: usize = 40;
 /// Transmission's salted form: `{`, the hex SHA-1 of the password then the salt, and the salt.
 /// This matches `tr_ssha1` in upstream `libtransmission/crypto-utils.cc`.
 fn salted(password: &str, salt: &str) -> String {
+    // nosemgrep: rust.lang.security.insecure-hashes -- Transmission's stored format requires SHA-1.
     let mut hasher = Sha1::new();
     hasher.update(password.as_bytes());
     hasher.update(salt.as_bytes());
@@ -33,13 +35,9 @@ fn random_salt() -> String {
 
 /// True when `hash` is a salted form that was made from `password`.
 fn matches(hash: &str, password: &str) -> bool {
-    let Some(rest) = hash.strip_prefix('{') else {
-        return false;
-    };
-    let Some(salt) = rest.get(DIGEST_HEX_LEN..) else {
-        return false;
-    };
-    salted(password, salt) == hash
+    hash.strip_prefix('{')
+        .and_then(|rest| rest.get(DIGEST_HEX_LEN..))
+        .is_some_and(|salt| salted(password, salt) == hash)
 }
 
 /// The hash to publish. A hash that still matches the password stays, so the salt is stable and
@@ -51,36 +49,88 @@ fn desired_hash(existing: Option<&str>, password: &str) -> String {
     }
 }
 
+/// True when `secret` has an owner reference to `app`. The operator writes only Secrets it owns.
+fn is_owned_by(secret: &Secret, app: &ServarrApp) -> bool {
+    let Some(uid) = app.metadata.uid.as_ref() else {
+        return false;
+    };
+    secret
+        .metadata
+        .owner_references
+        .as_ref()
+        .is_some_and(|refs| refs.iter().any(|r| &r.uid == uid))
+}
+
+/// The admin password, or `None` after a Warning Event when the Secret is missing or malformed.
+/// A transient API error returns `Err`, so the reconcile retries.
+async fn read_admin_password(
+    client: &Client,
+    app: &ServarrApp,
+    ns: &str,
+    recorder: &Recorder,
+    obj_ref: &ObjectReference,
+) -> Result<Option<String>, Error> {
+    let Some(ref ac) = app.spec.admin_credentials else {
+        return Ok(None);
+    };
+    let err = match servarr_api::read_secret_key(client, ns, &ac.secret_name, "password").await {
+        Ok(password) => return Ok(Some(password)),
+        Err(err) => err,
+    };
+    warn!(app = %app.name_any(), error = %err.log_summary(),
+        "rpc-password: cannot read the admin password");
+    match err {
+        servarr_api::SecretError::Kube(e) if !servarr_api::k8s::is_kube_not_found(&e) => {
+            Err(Error::Kube(e))
+        }
+        other => {
+            publish_event(
+                recorder,
+                obj_ref,
+                TenantEvent {
+                    type_: EventType::Warning,
+                    reason: "AdminCredentialsUnreadable",
+                    note: TenantSafeMessage::new(format!(
+                        "The pod cannot start until the adminCredentials Secret has a readable \
+                         password: {}",
+                        other.public_summary()
+                    )),
+                    action: "EnsureRpcPassword",
+                },
+            )
+            .await;
+            Ok(None)
+        }
+    }
+}
+
 /// Create or update the derived Secret before the Deployment mounts it. A pod that mounts a
 /// missing Secret waits in `ContainerCreating`.
 ///
-/// An unreadable admin Secret only logs a warning and skips the write. The rest of the reconcile
-/// still runs, and the `CredentialReadError` condition reports the cause. A later reconcile
-/// writes the Secret once the admin Secret can be read. A failed write returns an error.
+/// A missing or malformed admin Secret publishes a Warning Event and skips the write. The rest of
+/// the reconcile still runs, and a later reconcile writes the Secret once the admin Secret is
+/// readable. A transient API error, a failed write, and an existing Secret that this app does
+/// not own all return an error.
 pub(super) async fn ensure_rpc_password_secret(
     client: &Client,
     app: &ServarrApp,
     ns: &str,
+    recorder: &Recorder,
+    obj_ref: &ObjectReference,
 ) -> Result<(), Error> {
-    if app.spec.app != AppType::Transmission {
+    if app.spec.app != AppType::Transmission || app.spec.admin_credentials.is_none() {
         return Ok(());
     }
-    let Some(ref ac) = app.spec.admin_credentials else {
+    let Some(password) = read_admin_password(client, app, ns, recorder, obj_ref).await? else {
         return Ok(());
-    };
-    let password = match servarr_api::read_secret_key(client, ns, &ac.secret_name, "password").await
-    {
-        Ok(password) => password,
-        Err(e) => {
-            warn!(app = %app.name_any(), error = %e.log_summary(),
-                    "rpc-password: cannot read the admin password, skipping the derived Secret");
-            return Ok(());
-        }
     };
 
     let secret_api = Api::<Secret>::namespaced(client.clone(), ns);
     let name = servarr_resources::common::child_name(app, RPC_PASSWORD_SECRET_SUFFIX);
     let existing = secret_api.get_opt(&name).await.map_err(Error::Kube)?;
+    if existing.as_ref().is_some_and(|s| !is_owned_by(s, app)) {
+        return Err(Error::SecretNotOwned(name));
+    }
     let existing_hash = existing
         .as_ref()
         .and_then(|s| s.data.as_ref())
@@ -89,6 +139,10 @@ pub(super) async fn ensure_rpc_password_secret(
     let hash = desired_hash(existing_hash, &password);
     if existing_hash == Some(hash.as_str()) {
         return Ok(());
+    }
+    if existing.is_some() {
+        debug!(app = %app.name_any(), secret = %name,
+            "rpc-password: the stored hash is stale or unreadable, replacing it");
     }
 
     let secret = Secret {
@@ -115,7 +169,14 @@ pub(super) async fn ensure_rpc_password_secret(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testutils::build_mock_client;
+    use k8s_openapi::ByteString;
+    use k8s_openapi::apimachinery::pkg::apis::meta::v1::OwnerReference;
     use proptest::prelude::*;
+    use serde_json::json;
+    use servarr_crds::{AdminCredentialsSpec, ServarrAppSpec};
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     /// Vectors from upstream `tests/libtransmission/crypto-test.cc`. A mismatch means the hash
     /// no longer matches what Transmission accepts.
@@ -168,24 +229,62 @@ mod tests {
         assert!(matches(&desired_hash(None, "test"), "test"));
     }
 
-    use crate::testutils::build_mock_client;
-    use k8s_openapi::ByteString;
-    use serde_json::json;
-    use servarr_crds::{AdminCredentialsSpec, ServarrAppSpec};
-    use wiremock::matchers::{method, path};
-    use wiremock::{Mock, MockServer, ResponseTemplate};
+    proptest! {
+        #[test]
+        fn a_salted_hash_matches_only_its_password(
+            password in ".{0,64}",
+            salt in "[0-9a-zA-Z./]{0,16}",
+        ) {
+            let hash = salted(&password, &salt);
+            let wrong = format!("{password}x");
+            prop_assert!(matches(&hash, &password));
+            prop_assert!(!matches(&hash, &wrong));
+        }
+
+        /// A stored value comes from a Secret that anyone with write access can change.
+        #[test]
+        fn matches_never_panics_and_only_accepts_its_own_form(
+            hash in ".{0,120}",
+            password in ".{0,32}",
+        ) {
+            if matches(&hash, &password) {
+                let salt = &hash[1 + DIGEST_HEX_LEN..];
+                prop_assert_eq!(salted(&password, salt), hash);
+            }
+        }
+
+        #[test]
+        fn desired_hash_is_stable_for_its_own_output(password in ".{0,64}") {
+            let first = desired_hash(None, &password);
+            prop_assert_eq!(desired_hash(Some(&first), &password), first);
+        }
+
+        #[test]
+        fn desired_hash_replaces_a_hash_of_another_password(
+            old in ".{0,32}",
+            new in ".{0,32}",
+        ) {
+            prop_assume!(old != new);
+            let stale = salted(&old, "AMbyRHJy");
+            let fresh = desired_hash(Some(&stale), &new);
+            prop_assert!(matches(&fresh, &new));
+            prop_assert_ne!(fresh, stale);
+        }
+    }
 
     const NS: &str = "test";
     const ADMIN_SECRET: &str = "tx-admin";
+    const APP_UID: &str = "uid-tx";
     /// Base64 of `secret`.
     const SECRET_B64: &str = "c2VjcmV0";
+    const EVENTS_PATH: &str = "/apis/events.k8s.io/v1/namespaces/test/events";
 
     fn transmission_app(admin: Option<&str>) -> ServarrApp {
         ServarrApp {
             metadata: kube::api::ObjectMeta {
                 name: Some("tx".into()),
                 namespace: Some(NS.into()),
-                uid: Some("uid-tx".into()),
+                uid: Some(APP_UID.into()),
                 ..Default::default()
             },
             spec: ServarrAppSpec {
@@ -207,29 +306,76 @@ mod tests {
         format!("/api/v1/namespaces/{NS}/secrets/{name}")
     }
 
-    async fn mount_admin_secret(server: &MockServer) {
+    fn status_body(code: u16, reason: &str) -> serde_json::Value {
+        json!({
+            "apiVersion": "v1", "kind": "Status", "status": "Failure",
+            "reason": reason, "code": code, "message": "details"
+        })
+    }
+
+    fn recorder_and_ref(client: &Client) -> (Recorder, ObjectReference) {
+        let recorder = Recorder::new(
+            client.clone(),
+            kube::runtime::events::Reporter {
+                controller: "servarr-operator".into(),
+                instance: None,
+            },
+        );
+        let obj_ref = ObjectReference {
+            kind: Some("ServarrApp".into()),
+            name: Some("tx".into()),
+            namespace: Some(NS.into()),
+            uid: Some(APP_UID.into()),
+            ..Default::default()
+        };
+        (recorder, obj_ref)
+    }
+
+    async fn run(client: &Client, app: &ServarrApp) -> Result<(), Error> {
+        let (recorder, obj_ref) = recorder_and_ref(client);
+        ensure_rpc_password_secret(client, app, NS, &recorder, &obj_ref).await
+    }
+
+    async fn mount_admin_secret(server: &MockServer, data: serde_json::Value) {
         Mock::given(method("GET"))
             .and(path(secret_url(ADMIN_SECRET)))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "apiVersion": "v1", "kind": "Secret",
                 "metadata": { "name": ADMIN_SECRET, "namespace": NS },
-                "data": { "username": "YWRtaW4=", "password": SECRET_B64 }
+                "data": data
             })))
             .mount(server)
             .await;
     }
 
-    async fn mount_derived_get(server: &MockServer, name: &str, existing_hash: Option<&str>) {
+    async fn mount_default_admin_secret(server: &MockServer) {
+        mount_admin_secret(
+            server,
+            json!({ "username": "YWRtaW4=", "password": SECRET_B64 }),
+        )
+        .await;
+    }
+
+    /// An existing derived Secret. `owner_uid` sets who owns it, and `None` leaves it unowned.
+    async fn mount_derived_get(
+        server: &MockServer,
+        name: &str,
+        existing_hash: Option<&str>,
+        owner_uid: Option<&str>,
+    ) {
         let response = match existing_hash {
-            None => ResponseTemplate::new(404).set_body_json(json!({
-                "apiVersion": "v1", "kind": "Status", "status": "Failure",
-                "reason": "NotFound", "code": 404, "message": "not found"
-            })),
+            None => ResponseTemplate::new(404).set_body_json(status_body(404, "NotFound")),
             Some(hash) => {
                 let secret = Secret {
                     metadata: kube::api::ObjectMeta {
                         name: Some(name.into()),
                         namespace: Some(NS.into()),
+                        owner_references: owner_uid.map(|uid| {
+                            vec![OwnerReference {
+                                uid: uid.into(),
+                                ..Default::default()
+                            }]
+                        }),
                         ..Default::default()
                     },
                     data: Some(std::collections::BTreeMap::from([(
@@ -260,6 +406,18 @@ mod tests {
             .await;
     }
 
+    async fn mount_events(server: &MockServer, expected_calls: u64) {
+        Mock::given(method("POST"))
+            .and(path(EVENTS_PATH))
+            .respond_with(ResponseTemplate::new(201).set_body_json(json!({
+                "apiVersion": "events.k8s.io/v1", "kind": "Event",
+                "metadata": { "name": "e", "namespace": NS }
+            })))
+            .expect(expected_calls)
+            .mount(server)
+            .await;
+    }
+
     /// The published `stringData.password` of the one PATCH the server received.
     async fn patched_hash(server: &MockServer) -> String {
         let requests = server.received_requests().await.unwrap_or_default();
@@ -280,11 +438,11 @@ mod tests {
         let client = build_mock_client(&server.uri()).await;
         let app = transmission_app(Some(ADMIN_SECRET));
         let name = derived_name(&app);
-        mount_admin_secret(&server).await;
-        mount_derived_get(&server, &name, None).await;
+        mount_default_admin_secret(&server).await;
+        mount_derived_get(&server, &name, None, None).await;
         mount_derived_patch(&server, &name, 1).await;
 
-        ensure_rpc_password_secret(&client, &app, NS).await.unwrap();
+        run(&client, &app).await.unwrap();
 
         let hash = patched_hash(&server).await;
         assert!(
@@ -301,11 +459,12 @@ mod tests {
         let client = build_mock_client(&server.uri()).await;
         let app = transmission_app(Some(ADMIN_SECRET));
         let name = derived_name(&app);
-        mount_admin_secret(&server).await;
-        mount_derived_get(&server, &name, Some(&salted("secret", "AMbyRHJy"))).await;
+        mount_default_admin_secret(&server).await;
+        let hash = salted("secret", "AMbyRHJy");
+        mount_derived_get(&server, &name, Some(&hash), Some(APP_UID)).await;
         mount_derived_patch(&server, &name, 0).await;
 
-        ensure_rpc_password_secret(&client, &app, NS).await.unwrap();
+        run(&client, &app).await.unwrap();
         server.verify().await;
     }
 
@@ -315,33 +474,100 @@ mod tests {
         let client = build_mock_client(&server.uri()).await;
         let app = transmission_app(Some(ADMIN_SECRET));
         let name = derived_name(&app);
-        mount_admin_secret(&server).await;
-        mount_derived_get(&server, &name, Some(&salted("old-password", "AMbyRHJy"))).await;
+        mount_default_admin_secret(&server).await;
+        let stale = salted("old-password", "AMbyRHJy");
+        mount_derived_get(&server, &name, Some(&stale), Some(APP_UID)).await;
         mount_derived_patch(&server, &name, 1).await;
 
-        ensure_rpc_password_secret(&client, &app, NS).await.unwrap();
+        run(&client, &app).await.unwrap();
 
         assert!(matches(&patched_hash(&server).await, "secret"));
         server.verify().await;
     }
 
     #[tokio::test]
-    async fn skips_the_write_when_the_admin_secret_is_missing() {
+    async fn refuses_to_write_a_secret_that_the_app_does_not_own() {
+        let server = MockServer::start().await;
+        let client = build_mock_client(&server.uri()).await;
+        let app = transmission_app(Some(ADMIN_SECRET));
+        let name = derived_name(&app);
+        mount_default_admin_secret(&server).await;
+        mount_derived_get(&server, &name, Some("a user value"), None).await;
+        mount_derived_patch(&server, &name, 0).await;
+
+        let err = run(&client, &app).await.unwrap_err();
+
+        assert!(
+            matches!(err, Error::SecretNotOwned(ref n) if n == &name),
+            "got {err:?}"
+        );
+        server.verify().await;
+    }
+
+    #[tokio::test]
+    async fn refuses_a_secret_owned_by_another_app() {
+        let server = MockServer::start().await;
+        let client = build_mock_client(&server.uri()).await;
+        let app = transmission_app(Some(ADMIN_SECRET));
+        let name = derived_name(&app);
+        mount_default_admin_secret(&server).await;
+        mount_derived_get(&server, &name, Some("x"), Some("uid-someone-else")).await;
+
+        let err = run(&client, &app).await.unwrap_err();
+
+        assert!(matches!(err, Error::SecretNotOwned(_)), "got {err:?}");
+    }
+
+    #[tokio::test]
+    async fn warns_and_skips_the_write_when_the_admin_secret_is_missing() {
         let server = MockServer::start().await;
         let client = build_mock_client(&server.uri()).await;
         let app = transmission_app(Some(ADMIN_SECRET));
         Mock::given(method("GET"))
             .and(path(secret_url(ADMIN_SECRET)))
-            .respond_with(ResponseTemplate::new(404).set_body_json(json!({
-                "apiVersion": "v1", "kind": "Status", "status": "Failure",
-                "reason": "NotFound", "code": 404, "message": "secrets \"tx-admin\" not found"
-            })))
+            .respond_with(ResponseTemplate::new(404).set_body_json(status_body(404, "NotFound")))
             .mount(&server)
             .await;
         mount_derived_patch(&server, &derived_name(&app), 0).await;
+        mount_events(&server, 1).await;
 
-        ensure_rpc_password_secret(&client, &app, NS).await.unwrap();
+        run(&client, &app).await.unwrap();
 
+        server.verify().await;
+    }
+
+    #[tokio::test]
+    async fn warns_and_skips_the_write_when_the_admin_secret_has_no_password_key() {
+        let server = MockServer::start().await;
+        let client = build_mock_client(&server.uri()).await;
+        let app = transmission_app(Some(ADMIN_SECRET));
+        mount_admin_secret(&server, json!({ "username": "YWRtaW4=" })).await;
+        mount_derived_patch(&server, &derived_name(&app), 0).await;
+        mount_events(&server, 1).await;
+
+        run(&client, &app).await.unwrap();
+
+        server.verify().await;
+    }
+
+    #[tokio::test]
+    async fn retries_instead_of_warning_when_the_admin_secret_read_fails_transiently() {
+        let server = MockServer::start().await;
+        let client = build_mock_client(&server.uri()).await;
+        let app = transmission_app(Some(ADMIN_SECRET));
+        Mock::given(method("GET"))
+            .and(path(secret_url(ADMIN_SECRET)))
+            .respond_with(
+                ResponseTemplate::new(500).set_body_json(status_body(500, "InternalError")),
+            )
+            .mount(&server)
+            .await;
+        mount_derived_patch(&server, &derived_name(&app), 0).await;
+        mount_events(&server, 0).await;
+
+        let err = run(&client, &app).await.unwrap_err();
+
+        assert!(matches!(err, Error::Kube(_)), "got {err:?}");
         server.verify().await;
     }
 
@@ -351,20 +577,15 @@ mod tests {
         let client = build_mock_client(&server.uri()).await;
         let app = transmission_app(Some(ADMIN_SECRET));
         let name = derived_name(&app);
-        mount_admin_secret(&server).await;
-        mount_derived_get(&server, &name, None).await;
+        mount_default_admin_secret(&server).await;
+        mount_derived_get(&server, &name, None, None).await;
         Mock::given(method("PATCH"))
             .and(path(secret_url(&name)))
-            .respond_with(ResponseTemplate::new(403).set_body_json(json!({
-                "apiVersion": "v1", "kind": "Status", "status": "Failure",
-                "reason": "Forbidden", "code": 403, "message": "forbidden"
-            })))
+            .respond_with(ResponseTemplate::new(403).set_body_json(status_body(403, "Forbidden")))
             .mount(&server)
             .await;
 
-        let err = ensure_rpc_password_secret(&client, &app, NS)
-            .await
-            .unwrap_err();
+        let err = run(&client, &app).await.unwrap_err();
 
         assert!(matches!(err, Error::Kube(_)), "got {err:?}");
     }
@@ -376,12 +597,8 @@ mod tests {
         let mut sonarr = transmission_app(Some(ADMIN_SECRET));
         sonarr.spec.app = AppType::Sonarr;
 
-        ensure_rpc_password_secret(&client, &transmission_app(None), NS)
-            .await
-            .unwrap();
-        ensure_rpc_password_secret(&client, &sonarr, NS)
-            .await
-            .unwrap();
+        run(&client, &transmission_app(None)).await.unwrap();
+        run(&client, &sonarr).await.unwrap();
 
         let requests = server.received_requests().await.unwrap_or_default();
         assert!(
@@ -389,18 +606,5 @@ mod tests {
             "no API call expected, got {}",
             requests.len()
         );
-    }
-
-    proptest! {
-        #[test]
-        fn a_salted_hash_matches_only_its_password(
-            password in ".{0,64}",
-            salt in "[0-9a-zA-Z./]{0,16}",
-        ) {
-            let hash = salted(&password, &salt);
-            let wrong = format!("{password}x");
-            prop_assert!(matches(&hash, &password));
-            prop_assert!(!matches(&hash, &wrong));
-        }
     }
 }
