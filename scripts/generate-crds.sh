@@ -18,12 +18,12 @@ trap 'rm -rf "$TMPFILE" "$TMPDIR_SPLIT"' EXIT
 # Generate all CRDs. Build errors reach stderr, and a failed build stops the script.
 cargo run -q -p servarr-operator -- crd >"$TMPFILE"
 
-# The output contains two CRDs concatenated without --- separators.
-# Split on each "apiVersion:" line that starts a new document.
+# The output contains the CRDs concatenated without --- separators.
+# Split on each "apiVersion:" line that starts a new document. Every document gets a file, so
+# a CRD that this script does not know reaches the case below and fails the run.
 awk '
 /^apiVersion:/ { n++ }
-n == 1 { print > (ENVIRON["TMPDIR_SPLIT"] "/crd-1.yaml") }
-n == 2 { print > (ENVIRON["TMPDIR_SPLIT"] "/crd-2.yaml") }
+n >= 1 { print > (ENVIRON["TMPDIR_SPLIT"] "/crd-" n ".yaml") }
 ' "$TMPFILE"
 
 SERVARRAPP_CRD="$CRD_CHART_DIR/servarrapp-crd.yaml"
