@@ -5938,6 +5938,81 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn check_download_client_health_keeps_missing_hash_when_other_torrents_recover() {
+        // A torrent with no hashString must still surface when another stale torrent
+        // recovers after verify, so the pass cannot report a True condition (#840 review).
+        let mock_server = MockServer::start().await;
+        let client = build_mock_client(&mock_server.uri()).await;
+        mount_secret_mock(
+            &mock_server,
+            "test",
+            "tx-admin-creds",
+            json!({"username": "YWRtaW4=", "password": "c2VjcmV0"}),
+        )
+        .await;
+        // First torrent-get: one stale torrent with a hash, one with none, one healthy sibling
+        // in the same directory so the directory is not held back.
+        Mock::given(method("POST"))
+            .and(path("/transmission/rpc"))
+            .and(body_partial_json(
+                serde_json::json!({"method": "torrent-get"}),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "result": "success",
+                "arguments": {"torrents": [
+                    {"id": 7, "name": "a", "error": 3, "errorString": "No data found!", "status": 0,
+                     "hashString": "h7", "percentDone": 0.0, "downloadDir": "/mnt/a"},
+                    {"id": 8, "name": "b", "error": 3, "errorString": "No data found!", "status": 0,
+                     "hashString": "", "percentDone": 0.0, "downloadDir": "/mnt/a"},
+                    {"id": 9, "name": "c", "error": 0, "errorString": "", "status": 6,
+                     "hashString": "h9", "percentDone": 1.0, "downloadDir": "/mnt/a"}
+                ]}
+            })))
+            .up_to_n_times(1)
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/transmission/rpc"))
+            .and(body_partial_json(
+                serde_json::json!({"method": "torrent-verify"}),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "result": "success", "arguments": {}
+            })))
+            .mount(&mock_server)
+            .await;
+        // Poll after verify: the stale torrent has recovered.
+        Mock::given(method("POST"))
+            .and(path("/transmission/rpc"))
+            .and(body_partial_json(
+                serde_json::json!({"method": "torrent-get"}),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "result": "success",
+                "arguments": {"torrents": [
+                    {"id": 7, "name": "a", "error": 0, "errorString": "", "status": 0,
+                     "hashString": "h7", "percentDone": 1.0, "downloadDir": "/mnt/a"}
+                ]}
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let mut app = transmission_app_with_health_check(true);
+        app.status = None;
+        let recorder = Recorder::new(client.clone(), "test".into());
+        let obj_ref = app.object_ref(&());
+        let access = resolve_transmission_access(&client, &app, "test", &mock_server.uri()).await;
+
+        let cond = check_download_client_health(&app, &recorder, &obj_ref, Some(&access)).await;
+        let cond = cond.expect("a fresh pass must produce a condition");
+        assert_ne!(
+            cond.status, "True",
+            "missing hash must not read as recovered"
+        );
+        assert_eq!(cond.reason, "MissingHashString");
+    }
+
+    #[tokio::test]
     async fn check_download_client_health_polls_when_interval_elapsed() {
         let mock_server = MockServer::start().await;
         let client = build_mock_client(&mock_server.uri()).await;
