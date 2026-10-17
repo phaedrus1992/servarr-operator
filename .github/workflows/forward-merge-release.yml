@@ -165,7 +165,17 @@ jobs:
 
             git checkout -q "origin/$TARGET"
 
-            if ! git merge --no-commit --no-ff "origin/$CURRENT" 2>/dev/null; then
+            if ! MERGE_OUT=$(git merge --no-commit --no-ff "origin/$CURRENT" 2>&1); then
+              echo "$MERGE_OUT"
+              # Only unmerged paths make a conflict. A failure without them is a bad ref,
+              # unrelated histories, or a dirty work tree, and it needs its own message.
+              if [[ -z "$(git ls-files --unmerged)" ]]; then
+                git merge --abort 2>/dev/null || true
+                echo "::error::Cascade halted: merging $CURRENT into $TARGET failed without a conflict: $MERGE_OUT"
+                echo "::endgroup::"
+                HALTED="merge failure at $TARGET"
+                break
+              fi
               if ! git merge --abort; then
                 echo "::error::git merge --abort failed after conflict detection — workspace may be in an inconsistent state"
               fi
