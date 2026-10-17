@@ -85,11 +85,23 @@ pub(in crate::controller) fn build_stale_torrent_note(
     format!(
         "{stale_count} torrent(s) reporting missing data (ids: {ids_part}); \
          {} removed as orphaned, {} confirmed orphaned but not removed, \
-         {} pending verify{held_part}{rpc_part}",
+         {} pending verify, {} settled with data present, {} settled with unknown \
+         progress{held_part}{rpc_part}",
         outcome.removed.len(),
         outcome.confirmed_orphaned.len(),
         outcome.still_pending.len(),
+        outcome.settled_with_data.len(),
+        outcome.settled_unknown.len(),
     )
+}
+
+/// Torrents that the pass placed in an outcome set. The rest recovered during the verify poll.
+fn accounted_for(outcome: &RemediationOutcome) -> usize {
+    outcome.removed.len()
+        + outcome.confirmed_orphaned.len()
+        + outcome.still_pending.len()
+        + outcome.settled_with_data.len()
+        + outcome.settled_unknown.len()
 }
 
 pub(in crate::controller) fn build_download_health_condition(
@@ -127,12 +139,7 @@ pub(in crate::controller) fn build_download_health_condition(
             now,
         );
     }
-    let recovered = stale_count
-        .saturating_sub(outcome.removed.len())
-        .saturating_sub(outcome.confirmed_orphaned.len())
-        .saturating_sub(outcome.still_pending.len())
-        .saturating_sub(outcome.settled_with_data.len())
-        .saturating_sub(outcome.settled_unknown.len());
+    let recovered = stale_count.saturating_sub(accounted_for(outcome));
     if recovered == stale_count {
         return Condition::ok(
             condition_types::DOWNLOAD_DATA_HEALTHY,
@@ -215,5 +222,55 @@ mod tests {
             note.contains("torrent-verify failed, so no verify ran"),
             "{note}"
         );
+    }
+
+    #[test]
+    fn event_note_counts_every_settled_outcome() {
+        // The note must not read as "nothing happened" when torrents only settled (#845, #856).
+        let outcome = RemediationOutcome {
+            settled_with_data: vec!["a".to_string()],
+            settled_unknown: vec!["b".to_string(), "c".to_string()],
+            ..Default::default()
+        };
+        let note = build_stale_torrent_note(&[1, 2, 3], 3, &outcome, 0);
+        assert!(
+            note.contains("1 settled with data present, 2 settled with unknown progress"),
+            "got {note}"
+        );
+    }
+
+    fn hashes(count: usize) -> Vec<String> {
+        (0..count).map(|i| format!("hash-{i}")).collect()
+    }
+
+    proptest::proptest! {
+        /// Every torrent is in one outcome set or recovered, so the recovered count in the
+        /// message is the stale count minus the sets, with no clamping.
+        #[test]
+        fn recovered_count_reconciles_with_the_outcome_sets(
+            removed in 0_usize..10,
+            orphaned in 0_usize..10,
+            pending in 0_usize..10,
+            with_data in 0_usize..10,
+            unknown in 0_usize..10,
+            recovered in 0_usize..10,
+        ) {
+            let accounted = removed + orphaned + pending + with_data + unknown;
+            proptest::prop_assume!(accounted > 0);
+            let outcome = RemediationOutcome {
+                removed: hashes(removed),
+                confirmed_orphaned: hashes(orphaned),
+                still_pending: hashes(pending),
+                settled_with_data: hashes(with_data),
+                settled_unknown: hashes(unknown),
+                ..Default::default()
+            };
+            let cond = build_download_health_condition(accounted + recovered, 0, &outcome, NOW);
+            proptest::prop_assert!(
+                cond.message.contains(&format!("({recovered} recovered,")),
+                "got {}",
+                cond.message
+            );
+        }
     }
 }

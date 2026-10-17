@@ -4391,6 +4391,40 @@ mod tests {
         assert_eq!(partitioned_ids(torrents), (vec![], 2));
     }
 
+    proptest::proptest! {
+        /// An idle stopped torrent (no error) says nothing about the mount, so adding any number
+        /// of them to any directory must not change which torrents are held back (#847).
+        #[test]
+        fn idle_stopped_torrents_never_change_the_partition(
+            specs in proptest::collection::vec(
+                (prop_oneof![Just(0_i64), Just(3)], prop_oneof![Just(0_i64), Just(4), Just(6)], 0_usize..3),
+                0..12,
+            ),
+            idle_dirs in proptest::collection::vec(0_usize..3, 0..6),
+        ) {
+            const DIRS: [&str; 3] = ["/mnt/a", "/mnt/b", "/mnt/c"];
+            let base: Vec<_> = specs
+                .iter()
+                .enumerate()
+                .map(|(i, (error, status, dir))| servarr_api::TorrentInfo {
+                    status: Some(*status),
+                    ..torrent_in_dir(torrent(i64::try_from(i).unwrap_or(0), *error, ""), DIRS[*dir])
+                })
+                .collect();
+            let idle: Vec<_> = idle_dirs
+                .iter()
+                .enumerate()
+                .map(|(i, dir)| servarr_api::TorrentInfo {
+                    status: Some(0),
+                    ..torrent_in_dir(torrent(1000 + i64::try_from(i).unwrap_or(0), 0, ""), DIRS[*dir])
+                })
+                .collect();
+            let mut with_idle = base.clone();
+            with_idle.extend(idle);
+            proptest::prop_assert_eq!(partitioned_ids(base), partitioned_ids(with_idle));
+        }
+    }
+
     #[test]
     fn partition_does_not_treat_a_sibling_without_status_or_error_as_idle() {
         // Omitted fields are unknown, not "stopped with no error". Such a sibling stays counted

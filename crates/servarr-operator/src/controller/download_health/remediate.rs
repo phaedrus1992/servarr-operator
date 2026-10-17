@@ -2,6 +2,33 @@
 
 use super::*;
 
+/// Hashes of settled torrents, split by what the settle shows. A torrent with error 3 lands in
+/// exactly one set. A torrent without that error lands in none (#840, #845, #856).
+#[derive(Debug, Default, PartialEq)]
+struct SettledBuckets {
+    /// Still at 0% after verify: the data is gone.
+    confirmed_missing: Vec<String>,
+    /// Error 3 with some data on disk, such as a permission or disk-full error.
+    with_data: Vec<String>,
+    /// Error 3 and no `percentDone`, so the data state is not known.
+    unknown: Vec<String>,
+}
+
+fn classify_settled(settled: &[servarr_api::TorrentInfo]) -> SettledBuckets {
+    let mut buckets = SettledBuckets::default();
+    for t in settled.iter().filter(|t| is_missing_data_torrent(t)) {
+        let hash = t.hash_string.clone();
+        if is_confirmed_missing(t) {
+            buckets.confirmed_missing.push(hash);
+        } else if t.percent_done.is_none() {
+            buckets.unknown.push(hash);
+        } else {
+            buckets.with_data.push(hash);
+        }
+    }
+    buckets
+}
+
 /// Trigger `torrent-verify` on every stale torrent, wait for the verify to settle, then remove
 /// any that are still reporting missing data -- Transmission's own re-check is the safety gate
 /// that distinguishes "transient" from "genuinely gone" (#483). Torrents are addressed by their
@@ -47,25 +74,11 @@ pub(in crate::controller) async fn remediate_stale_torrents(
     };
     // Only a torrent still at 0% after verify is removed (#840). One that still errors with
     // data present is left for the next reconcile, like a torrent whose verify has not settled.
-    let still_erroring: Vec<String> = settled
-        .iter()
-        .filter(|t| is_confirmed_missing(t))
-        .map(|t| t.hash_string.clone())
-        .collect();
-    // Settled with error 3 but data present: a separate outcome, not "still checking" (#845).
-    // A missing `percentDone` is not evidence of data, so it gets its own outcome (#856).
-    let settled_with_data: Vec<String> = settled
-        .iter()
-        .filter(|t| {
-            is_missing_data_torrent(t) && t.percent_done.is_some() && !is_confirmed_missing(t)
-        })
-        .map(|t| t.hash_string.clone())
-        .collect();
-    let settled_unknown: Vec<String> = settled
-        .iter()
-        .filter(|t| is_missing_data_torrent(t) && t.percent_done.is_none())
-        .map(|t| t.hash_string.clone())
-        .collect();
+    let SettledBuckets {
+        confirmed_missing: still_erroring,
+        with_data: settled_with_data,
+        unknown: settled_unknown,
+    } = classify_settled(&settled);
     let mut still_checking: Vec<String> = hashes
         .into_iter()
         .filter(|h| !settled.iter().any(|t| &t.hash_string == h))
@@ -182,4 +195,62 @@ pub(in crate::controller) async fn poll_with_budget(
         "download-client health: verify did not settle in the poll window"
     );
     Ok(Vec::new())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    fn torrent(id: usize, error: i64, percent_done: Option<f64>) -> servarr_api::TorrentInfo {
+        servarr_api::TorrentInfo {
+            id: i64::try_from(id).unwrap_or(i64::MAX),
+            name: String::new(),
+            error: Some(error),
+            error_string: String::new(),
+            status: Some(0),
+            hash_string: format!("hash-{id}"),
+            percent_done,
+            download_dir: "/downloads".to_string(),
+        }
+    }
+
+    proptest! {
+        /// Each error-3 torrent lands in exactly one set, and no other torrent lands in any.
+        #[test]
+        fn every_error_3_torrent_lands_in_exactly_one_bucket(
+            specs in proptest::collection::vec(
+                (prop_oneof![Just(0_i64), Just(2), Just(3)],
+                 proptest::option::of(prop_oneof![Just(0.0_f64), Just(0.5), Just(1.0)])),
+                0..24,
+            ),
+        ) {
+            let torrents: Vec<_> = specs
+                .iter()
+                .enumerate()
+                .map(|(i, (error, done))| torrent(i, *error, *done))
+                .collect();
+            let buckets = classify_settled(&torrents);
+            for (i, (error, _)) in specs.iter().enumerate() {
+                let hash = format!("hash-{i}");
+                let hits = [&buckets.confirmed_missing, &buckets.with_data, &buckets.unknown]
+                    .iter()
+                    .filter(|set| set.contains(&hash))
+                    .count();
+                prop_assert_eq!(hits, usize::from(*error == TR_STAT_LOCAL_ERROR), "{}", hash);
+            }
+        }
+    }
+
+    #[test]
+    fn unknown_progress_is_not_confirmed_missing_or_data_present() {
+        let buckets = classify_settled(&[torrent(1, 3, None)]);
+        assert_eq!(
+            buckets,
+            SettledBuckets {
+                unknown: vec!["hash-1".to_string()],
+                ..Default::default()
+            }
+        );
+    }
 }

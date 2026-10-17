@@ -110,10 +110,15 @@ fn is_idle_stopped(t: &servarr_api::TorrentInfo) -> bool {
 fn unavailable_dirs(torrents: &[servarr_api::TorrentInfo]) -> std::collections::HashSet<String> {
     let mut per_dir: std::collections::HashMap<&str, (usize, usize)> =
         std::collections::HashMap::new();
+    let mut ignored_idle = 0_usize;
     for t in torrents {
         // An omitted downloadDir reads as "" and must not group unrelated torrents together.
         let key = dir_key(t);
-        if key.is_empty() || is_idle_stopped(t) {
+        if key.is_empty() {
+            continue;
+        }
+        if is_idle_stopped(t) {
+            ignored_idle += 1;
             continue;
         }
         let counts = per_dir.entry(key).or_default();
@@ -121,6 +126,12 @@ fn unavailable_dirs(torrents: &[servarr_api::TorrentInfo]) -> std::collections::
         if is_missing_data_torrent(t) {
             counts.1 += 1;
         }
+    }
+    if ignored_idle > 0 {
+        debug!(
+            ignored_idle,
+            "download-client health: idle stopped torrents ignored in the unmounted-directory check"
+        );
     }
     per_dir
         .into_iter()
