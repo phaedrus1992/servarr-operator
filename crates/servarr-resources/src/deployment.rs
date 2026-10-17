@@ -1613,7 +1613,7 @@ echo "Authorized keys copied and permissions set."
     {
         patch_script.push_str(
             r#"# Install rsync (required for rsync/restricted-rsync modes)
-apk add --no-cache rsync >/dev/null || { echo "Cannot install rsync: apk add failed." >&2; exit 1; }
+apk add --no-cache rsync >/dev/null || { echo "Cannot install rsync: apk add failed. Check that the pod can reach the Alpine package mirror." >&2; exit 1; }
 "#,
         );
     }
@@ -1628,9 +1628,10 @@ apk add --no-cache rsync >/dev/null || { echo "Cannot install rsync: apk add fai
         .collect();
 
     if !shell_packages.is_empty() {
+        // The names come from shell_to_apk_package, a fixed list. No spec value reaches the shell.
         let pkgs = shell_packages.join(" ");
         patch_script.push_str(&format!(
-            "# Install shells requested by users\napk add --no-cache {pkgs} >/dev/null || {{ echo 'Cannot install shells {pkgs}: apk add failed.' >&2; exit 1; }}\n"
+            "# Install shells requested by users\napk add --no-cache {pkgs} >/dev/null || {{ echo 'Cannot install shells {pkgs}: apk add failed. Check that the pod can reach the Alpine package mirror.' >&2; exit 1; }}\n"
         ));
     }
 

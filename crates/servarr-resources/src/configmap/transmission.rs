@@ -39,11 +39,10 @@ set -e
 SETTINGS_FILE="/config/settings.json"
 OVERRIDE_FILE="/scripts/settings-override.json"
 
-
 # Install jq if not present
 if ! command -v jq >/dev/null 2>&1; then
   echo "Installing jq..."
-  apk add --no-cache jq >/dev/null || {{ echo "Cannot install jq: apk add failed." >&2; exit 1; }}
+  apk add --no-cache jq >/dev/null || {{ echo "Cannot install jq: apk add failed. Check that the pod can reach the Alpine package mirror." >&2; exit 1; }}
 fi
 
 # If settings.json doesn't exist, create a minimal one.
