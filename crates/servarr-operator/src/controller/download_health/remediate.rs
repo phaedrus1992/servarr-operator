@@ -53,9 +53,17 @@ pub(in crate::controller) async fn remediate_stale_torrents(
         .map(|t| t.hash_string.clone())
         .collect();
     // Settled with error 3 but data present: a separate outcome, not "still checking" (#845).
+    // A missing `percentDone` is not evidence of data, so it gets its own outcome (#856).
     let settled_with_data: Vec<String> = settled
         .iter()
-        .filter(|t| is_missing_data_torrent(t) && !is_confirmed_missing(t))
+        .filter(|t| {
+            is_missing_data_torrent(t) && t.percent_done.is_some() && !is_confirmed_missing(t)
+        })
+        .map(|t| t.hash_string.clone())
+        .collect();
+    let settled_unknown: Vec<String> = settled
+        .iter()
+        .filter(|t| is_missing_data_torrent(t) && t.percent_done.is_none())
         .map(|t| t.hash_string.clone())
         .collect();
     let mut still_checking: Vec<String> = hashes
@@ -67,6 +75,7 @@ pub(in crate::controller) async fn remediate_stale_torrents(
     let base = RemediationOutcome {
         still_pending: still_checking,
         settled_with_data,
+        settled_unknown,
         ..Default::default()
     };
     // An empty still_erroring is safe to pass on: torrent_remove(&[]) is a no-op.

@@ -39,6 +39,8 @@ pub(super) const TORRENT_HEALTH_FIELDS: [&str; 8] = [
 /// on those would let a hostile tracker trigger removal of a perfectly healthy torrent by
 /// returning "no data found" in a `failure reason`/`warning message` (#483).
 pub(super) const TR_STAT_LOCAL_ERROR: i64 = 3;
+/// Transmission status for a stopped torrent.
+pub(super) const TR_STAT_STOPPED: i64 = 0;
 
 /// Build an `Unknown` `DownloadDataHealthy` condition — used for every non-destructive
 /// failure path in [`check_download_client_health`] so a swallowed error still surfaces on
@@ -96,15 +98,22 @@ fn dir_key(t: &servarr_api::TorrentInfo) -> &str {
     t.download_dir.trim_end_matches('/')
 }
 
-/// Directories where every torrent reports a local error, with enough torrents to tell a
-/// missing mount from lost data.
+/// A stopped torrent with no error. It reports no error only because it does not check its data,
+/// so it is no evidence that the download directory is mounted (#847). A torrent with a local
+/// error is also stopped by Transmission, so the error check keeps it counted.
+fn is_idle_stopped(t: &servarr_api::TorrentInfo) -> bool {
+    t.status == TR_STAT_STOPPED && t.error == 0
+}
+
+/// Directories where every active torrent reports a local error, with enough torrents to tell a
+/// missing mount from lost data. Stopped torrents do not count either way (#847).
 fn unavailable_dirs(torrents: &[servarr_api::TorrentInfo]) -> std::collections::HashSet<String> {
     let mut per_dir: std::collections::HashMap<&str, (usize, usize)> =
         std::collections::HashMap::new();
     for t in torrents {
         // An omitted downloadDir reads as "" and must not group unrelated torrents together.
         let key = dir_key(t);
-        if key.is_empty() {
+        if key.is_empty() || is_idle_stopped(t) {
             continue;
         }
         let counts = per_dir.entry(key).or_default();
@@ -150,6 +159,8 @@ pub(super) fn is_checking(t: &servarr_api::TorrentInfo) -> bool {
 /// (retried on the next reconcile).
 ///
 /// `settled_with_data` holds torrents that settled with error 3 but still report data (#845).
+/// `settled_unknown` holds torrents that settled with error 3 and no `percentDone`, so their data
+/// state is not known (#856).
 /// `rpc_failure` names the first Transmission RPC that failed in the pass (#845).
 #[derive(Default)]
 pub(super) struct RemediationOutcome {
@@ -157,6 +168,7 @@ pub(super) struct RemediationOutcome {
     pub(super) confirmed_orphaned: Vec<String>,
     pub(super) still_pending: Vec<String>,
     pub(super) settled_with_data: Vec<String>,
+    pub(super) settled_unknown: Vec<String>,
     pub(super) rpc_failure: Option<&'static str>,
 }
 

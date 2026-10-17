@@ -15,6 +15,7 @@ pub(in crate::controller) async fn report_stale_torrents(
         && outcome.confirmed_orphaned.is_empty()
         && outcome.still_pending.is_empty()
         && outcome.settled_with_data.is_empty()
+        && outcome.settled_unknown.is_empty()
         && outcome.rpc_failure.is_none()
         && held_back == 0
     {
@@ -130,7 +131,8 @@ pub(in crate::controller) fn build_download_health_condition(
         .saturating_sub(outcome.removed.len())
         .saturating_sub(outcome.confirmed_orphaned.len())
         .saturating_sub(outcome.still_pending.len())
-        .saturating_sub(outcome.settled_with_data.len());
+        .saturating_sub(outcome.settled_with_data.len())
+        .saturating_sub(outcome.settled_unknown.len());
     if recovered == stale_count {
         return Condition::ok(
             condition_types::DOWNLOAD_DATA_HEALTHY,
@@ -145,11 +147,12 @@ pub(in crate::controller) fn build_download_health_condition(
         TenantSafeMessage::new(format!(
             "{stale_count} torrent(s) reporting missing data ({recovered} recovered, {} removed, \
              {} confirmed orphaned but not removed, {} pending verify, {} settled with data \
-             present)",
+             present, {} settled with unknown progress)",
             outcome.removed.len(),
             outcome.confirmed_orphaned.len(),
             outcome.still_pending.len(),
             outcome.settled_with_data.len(),
+            outcome.settled_unknown.len(),
         )),
         now,
     )

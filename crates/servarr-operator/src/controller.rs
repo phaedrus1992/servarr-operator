@@ -4365,6 +4365,43 @@ mod tests {
         assert!(is_confirmed_missing(&t));
     }
 
+    #[test]
+    fn partition_holds_back_when_idle_stopped_sibling_is_present() {
+        // A stopped torrent with no error does not check its data, so it cannot show the mount
+        // is present. The erroring torrents in the same directory stay held back (#847).
+        let idle = servarr_api::TorrentInfo {
+            status: 0,
+            ..torrent_in_dir(torrent(3, 0, ""), "/mnt/a")
+        };
+        let torrents = vec![
+            torrent_in_dir(torrent(1, 3, "no data found"), "/mnt/a"),
+            torrent_in_dir(torrent(2, 3, "no data found"), "/mnt/a"),
+            idle,
+        ];
+        assert_eq!(partitioned_ids(torrents), (vec![], 2));
+    }
+
+    #[test]
+    fn partition_keeps_stale_when_active_healthy_sibling_is_present() {
+        // An actively seeding torrent with no error proves the directory is mounted, so the
+        // erroring torrents are not held back (#840).
+        let seeding = servarr_api::TorrentInfo {
+            status: 6,
+            ..torrent_in_dir(torrent(3, 0, ""), "/mnt/a")
+        };
+        let torrents = vec![
+            torrent_in_dir(torrent(1, 3, "no data found"), "/mnt/a"),
+            torrent_in_dir(torrent(2, 3, "no data found"), "/mnt/a"),
+            seeding,
+        ];
+        assert_eq!(partitioned_ids(torrents), (vec![1, 2], 0));
+    }
+
+    fn torrent_in_dir(mut t: servarr_api::TorrentInfo, dir: &str) -> servarr_api::TorrentInfo {
+        t.download_dir = dir.to_string();
+        t
+    }
+
     fn partitioned_ids(torrents: Vec<servarr_api::TorrentInfo>) -> (Vec<i64>, usize) {
         let (stale, held) = partition_unavailable_dirs(torrents);
         (stale.iter().map(|t| t.id).collect(), held)
@@ -4675,6 +4712,54 @@ mod tests {
         assert!(outcome.removed.is_empty());
         assert!(outcome.still_pending.is_empty());
         assert_eq!(outcome.settled_with_data, vec!["hash-1".to_string()]);
+    }
+
+    /// A torrent that settles with error 3 and no `percentDone` has an unknown data state. It
+    /// must not be reported as data present, and it must not be removed (#856).
+    #[tokio::test]
+    async fn remediate_reports_missing_percent_done_as_unknown_not_data_present() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/transmission/rpc"))
+            .and(body_partial_json(
+                serde_json::json!({"method": "torrent-verify"}),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "result": "success", "arguments": {}
+            })))
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/transmission/rpc"))
+            .and(body_partial_json(serde_json::json!({"method": "torrent-get"})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "result": "success",
+                "arguments": {
+                    "torrents": [{"id": 1, "name": "x", "error": 3, "errorString": "no data found", "status": 0, "hashString": "hash-1"}]
+                }
+            })))
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/transmission/rpc"))
+            .and(body_partial_json(
+                serde_json::json!({"method": "torrent-remove"}),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "result": "success", "arguments": {}
+            })))
+            .expect(0)
+            .mount(&mock_server)
+            .await;
+
+        let client = servarr_api::TransmissionClient::new(&mock_server.uri(), None).unwrap();
+        let mut stale_torrent = torrent(1, 3, "no data found");
+        stale_torrent.percent_done = None;
+        let outcome = remediate_stale_torrents(&client, &[stale_torrent], true).await;
+
+        assert!(outcome.removed.is_empty());
+        assert!(outcome.settled_with_data.is_empty());
+        assert_eq!(outcome.settled_unknown, vec!["hash-1".to_string()]);
     }
 
     #[tokio::test]
