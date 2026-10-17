@@ -45,7 +45,13 @@ case "$1" in
 cluster-info) exit 0 ;;
 config)
   case "$2" in
-  current-context) echo "$FAKE_CONTEXT" ;;
+  current-context)
+    if [[ -n "${FAKE_CONTEXT_FAIL:-}" ]]; then
+      echo "error: current-context is not set" >&2
+      exit 1
+    fi
+    echo "$FAKE_CONTEXT"
+    ;;
   view) echo "${FAKE_PRIOR_NAMESPACE:-}" ;;
   esac
   ;;
@@ -115,6 +121,7 @@ run_script() {
   RESULT_EXIT=0
   FAKE_CALL_LOG="$call_log" FAKE_CONTEXT="$context" FAKE_PRIOR_NAMESPACE="$prior" \
     FAKE_KIND_CLUSTERS="${FAKE_KIND_CLUSTERS:-}" FAKE_K3D_CLUSTERS="${FAKE_K3D_CLUSTERS:-}" \
+    FAKE_CONTEXT_FAIL="${FAKE_CONTEXT_FAIL:-}" \
     PATH="$root/bin:$PATH" \
     bash "$root/scripts/smoke-test-local.sh" "$@" >"$WORK_DIR/out.log" 2>&1 || RESULT_EXIT=$?
   RESULT_CALLS="$(cat "$call_log")"
@@ -167,6 +174,17 @@ assert_no_match "an unrecognized cluster type never runs the docker build" \
   "^docker build" "$RESULT_CALLS"
 assert_no_match "an unrecognized cluster type never creates a namespace" \
   "^kubectl create namespace" "$RESULT_CALLS"
+
+# A kubectl that cannot read the context must stop the script with the cause, not fall through
+# to the generic "unrecognized cluster" refusal.
+FAKE_CONTEXT_FAIL="1"
+run_script "" ""
+FAKE_CONTEXT_FAIL=""
+assert_exit "an unreadable kubectl context exits non-zero" 1
+assert_match "an unreadable kubectl context names the cause" \
+  "cannot read the current kubectl context" "$RESULT_OUTPUT"
+assert_no_match "an unreadable kubectl context never runs the docker build" \
+  "^docker build" "$RESULT_CALLS"
 
 # The guard must key off the current context's name, not off whether a real kind/k3d
 # cluster happens to exist on the host — otherwise a dev machine with an unrelated local
