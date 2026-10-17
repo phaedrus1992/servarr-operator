@@ -21,7 +21,8 @@ const DIGEST_HEX_LEN: usize = 40;
 /// Transmission's salted form: `{`, the hex SHA-1 of the password then the salt, and the salt.
 /// This matches `tr_ssha1` in upstream `libtransmission/crypto-utils.cc`.
 fn salted(password: &str, salt: &str) -> String {
-    // nosemgrep: rust.lang.security.insecure-hashes -- Transmission's stored format requires SHA-1.
+    // Transmission's stored password format requires SHA-1.
+    // nosemgrep: rust.lang.security.insecure-hashes.insecure-hashes
     let mut hasher = Sha1::new();
     hasher.update(password.as_bytes());
     hasher.update(salt.as_bytes());
