@@ -79,6 +79,10 @@ pub fn owner_ref(app: &ServarrApp) -> OwnerReference {
     owner_reference(app)
 }
 
+/// Child-name suffix of the operator-derived Secret that holds a Transmission app's salted
+/// `rpc-password`. Key `password` in that Secret replaces the plaintext in the pod mount (#848).
+pub const RPC_PASSWORD_SECRET_SUFFIX: &str = "rpc-password";
+
 pub fn child_name(app: &ServarrApp, suffix: &str) -> String {
     let name = app_name(app);
     if suffix.is_empty() {

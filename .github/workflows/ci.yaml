@@ -3,10 +3,6 @@ name: CI
 on:
   push:
     branches: ['**']
-    paths-ignore:
-      - "docs/**"
-      - "**.md"
-      - "LICENSE"
   workflow_dispatch:
 
 concurrency:
@@ -89,6 +85,9 @@ jobs:
           helm template test charts/servarr-crds/ --set webhook.enabled=false > /dev/null
           helm template test charts/servarr-operator/ > /dev/null
           helm template test charts/servarr-operator/ --set watchAllNamespaces=true > /dev/null
+
+      - name: Test the CRD generation script
+        run: bash scripts/generate-crds_test.sh
 
   image-defaults-sync:
     runs-on: ubuntu-latest

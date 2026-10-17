@@ -5,3 +5,4 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc 4a06507bbb6405da9fbe80ed75e6145ac0871448d00988bbd0d2b5b2691bc0ba # shrinks to status = "True", offset_secs = 1, interval = 0
+cc b06269df53f8c1a71a2b80ca6291a038bc3d4ebfecc2339fcb338cbdcafb00fd # shrinks to specs = [(3, 0, 1), (3, 0, 1)], idle_dirs = [1]

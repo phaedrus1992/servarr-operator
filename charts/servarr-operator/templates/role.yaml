@@ -41,7 +41,7 @@ rules:
   - apiGroups: [""]
     resources: ["persistentvolumeclaims"]
     verbs: ["get", "list", "create", "patch"]
-  # Secrets: get/list/watch for API keys and admin-credentials; create/patch for SSH bastion.
+  # Secrets: get/list/watch for API keys and admin-credentials; create/patch for SSH bastion and the Transmission rpc-password Secret.
   # NOTE: Kubernetes RBAC cannot scope to specific Secret names, so this grants
   # read access to ALL Secrets in the watched namespace.
   - apiGroups: [""]

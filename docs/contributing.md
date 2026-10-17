@@ -36,40 +36,15 @@ bump if `cargo hawk` starts failing to build.
 `cargo test`, or any other command in your shell. The hook currently runs non-blocking (`-W`, not
 `-D`); see #568/#569 for the tracked follow-up on tightening the findings it reports today.
 
-## CI Commit Message Flags
+## CI Jobs
 
-The CI pipeline checks the commit message (on a push) or PR title (on a pull request) for
-bracket-delimited flags that opt into expensive jobs. This keeps branch CI fast by default while
-giving you an escape hatch when you need it.
+`.github/workflows/ci.yaml` runs on every push and every pull request.
+No commit-message or PR-title flag changes what runs.
+Every job runs each time: `fmt`, `actionlint`, `zizmor`, `pre-commit-config-lint`, `helm-lint`, `image-defaults-sync`, `clippy`, `hawk`, `deny`, `smoke-test`, `semgrep`, `shear`, and `test`.
 
-| Flag | Effect |
-|------|--------|
-| `[full-build]` | Build the arm64 Linux binary in addition to the default amd64 build |
-| `[snapshot]` | Publish a snapshot container image and Helm chart from the branch |
-
-**Examples:**
-
-```
-feat: add arm64 support [full-build]
-```
-
-```
-chore: update dependencies [snapshot]
-```
-
-### Default behaviour by branch
-
-| Job | `main` | feature branch |
-|-----|--------|---------------|
-| lint (fmt, clippy, actionlint, zizmor, helm) | always | always |
-| unit tests + coverage | always | always |
-| amd64 Linux build | always | always |
-| arm64 Linux build | always | `[full-build]` only |
-| CRD drift check | always | always |
-| smoke test | always | always |
-| snapshot publish | always | `[snapshot]` only |
-
-Flags can be combined freely. `workflow_dispatch` runs treat all flags as enabled.
+The release pipeline is separate.
+`.github/workflows/release.yaml` runs on `v*` tags.
+It calls `_ci.yaml`, which runs the tests and builds the multi-arch binaries (amd64 and arm64), and then calls `_publish.yaml`.
 
 ## Coverage Gates
 
