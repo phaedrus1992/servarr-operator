@@ -20,7 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Report a failed Transmission call during the self-heal pass as `RemediationRpcError`, not as pending verify. Count torrents that settle with data present on their own, and keep a torrent without a `hashString` visible when other torrents recover (#845).
 - Log the cause when the Transmission settings script cannot chown or chmod `settings.json`. Fail the SSH bastion init when its `entry.sh` patch matches nothing (#849).
 - Fail the init container with the cause when an `apk add` for a SABnzbd archive tool, a requested SSH shell, `rsync`, or `jq` fails. A failed install no longer hides behind a silent skip (#857).
-- Store the Transmission admin `rpc-password` in Transmission's salted form, not in plaintext, in `settings.json` (#848).
+- Store the Transmission admin `rpc-password` in Transmission's salted form, not in plaintext, in `settings.json`. The operator derives the hash into a `<app>-rpc-password` Secret, and the pod mounts it as the `password` file (#848).
 - Report a torrent whose `percentDone` is missing as unknown progress, not as data present, in the `DownloadDataHealthy` condition (#856).
 - Keep a stopped torrent with no error from blocking the unmounted-directory hold-back, so erroring torrents in a missing mount stay held (#847).
 

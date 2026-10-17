@@ -143,6 +143,18 @@ healthy, and re-applied on every reconcile.
 | Seerr | `PUT /api/v1/auth/local` |
 | Bazarr | Direct API call; password is MD5-hashed before submission (Bazarr API contract) |
 
+### Transmission password at rest
+
+The operator does not write the Transmission admin password to `settings.json` in plaintext.
+It reads `password` from your Secret and writes Transmission's salted form to a derived Secret named `<app>-rpc-password`.
+The salted form is `{`, the hex SHA-1 of the password followed by the salt, and the salt.
+The pod mounts `username` from your Secret and `password` from the derived Secret.
+Transmission accepts the salted form as it is.
+The operator keeps the salt while the password stays the same, so a reconcile does not change the derived Secret.
+When you rotate the password, the operator writes a new salted form.
+The pod picks up the new value when it restarts.
+The derived Secret is owned by the `ServarrApp`, so Kubernetes deletes it with the app.
+
 ### Unsupported apps
 
 | App | Reason |

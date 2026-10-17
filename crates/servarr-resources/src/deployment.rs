@@ -552,13 +552,35 @@ fn build_volumes(app: &ServarrApp, persistence: &PersistenceSpec) -> Vec<Volume>
             empty_dir: Some(Default::default()),
             ..Default::default()
         });
-        // Admin credentials secret volume for FILE__USER / FILE__PASS mechanism
+        // Admin credentials volume for the FILE__USER / FILE__PASS mechanism. The username
+        // comes from the user's Secret. The `password` file holds the operator-derived salted
+        // hash, so the plaintext password never reaches settings.json (#848).
         if let Some(ref ac) = app.spec.admin_credentials {
-            use k8s_openapi::api::core::v1::SecretVolumeSource;
+            use k8s_openapi::api::core::v1::{
+                KeyToPath, ProjectedVolumeSource, SecretProjection, VolumeProjection,
+            };
+            let project = |secret_name: String, key: &str| VolumeProjection {
+                secret: Some(SecretProjection {
+                    name: secret_name,
+                    items: Some(vec![KeyToPath {
+                        key: key.into(),
+                        path: key.into(),
+                        ..Default::default()
+                    }]),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            };
             volumes.push(Volume {
                 name: "admin-credentials".into(),
-                secret: Some(SecretVolumeSource {
-                    secret_name: Some(ac.secret_name.clone()),
+                projected: Some(ProjectedVolumeSource {
+                    sources: Some(vec![
+                        project(ac.secret_name.clone(), "username"),
+                        project(
+                            common::child_name(app, common::RPC_PASSWORD_SECRET_SUFFIX),
+                            "password",
+                        ),
+                    ]),
                     ..Default::default()
                 }),
                 ..Default::default()

@@ -34,6 +34,7 @@ use cleanup::{cleanup_prowlarr_registration, cleanup_seerr_registration};
 mod download_health;
 use download_health::check_download_client_health;
 mod health_throttle;
+mod rpc_password;
 mod transmission_access;
 use health_throttle::{
     CorruptTimestampPolicy, is_destructive_poll_throttled, is_health_poll_throttled,
@@ -493,6 +494,9 @@ pub async fn reconcile(app: Arc<ServarrApp>, ctx: Arc<Context>) -> Result<Action
     } else {
         None
     };
+
+    // The Deployment mounts the derived rpc-password Secret, so it must exist first (#848).
+    rpc_password::ensure_rpc_password_secret(client, &app, &ns).await?;
 
     // Build and apply Deployment
     let deployment = servarr_resources::deployment::build(&app, &ctx.image_overrides)

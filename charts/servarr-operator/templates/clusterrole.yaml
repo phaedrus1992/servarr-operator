@@ -47,7 +47,7 @@ rules:
   - apiGroups: [""]
     resources: ["persistentvolumeclaims"]
     verbs: ["get", "list", "create", "patch"]
-  # Secrets: get/list/watch for API keys and admin-credentials; create/patch for SSH bastion.
+  # Secrets: get/list/watch for API keys and admin-credentials; create/patch for SSH bastion and the Transmission rpc-password Secret.
   - apiGroups: [""]
     resources: ["secrets"]
     verbs: ["get", "list", "watch", "create", "patch"]
