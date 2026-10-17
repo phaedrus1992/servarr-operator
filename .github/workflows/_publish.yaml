@@ -143,7 +143,14 @@ jobs:
           CRD_CHART_VERSION="$(grep '^version: ' charts/servarr-crds/Chart.yaml | awk '{print $2}')"
           echo "CRD_CHART_VERSION=${CRD_CHART_VERSION}" >> "$GITHUB_ENV"
 
-          PREV_TAG="$(git describe --tags --abbrev=0 --match 'v*' HEAD^ 2>/dev/null || true)"
+          # An empty tag list is the first release. Any other `git describe` failure stops the
+          # step, so a git error cannot read as a first release and force a CRD chart publish.
+          reachable_tags="$(git tag --list 'v*' --merged 'HEAD^')"
+          if [ -z "${reachable_tags}" ]; then
+            PREV_TAG=""
+          else
+            PREV_TAG="$(git describe --tags --abbrev=0 --match 'v*' HEAD^)"
+          fi
 
           if [ -z "${PREV_TAG}" ]; then
             echo "No previous release tag found — this is the first release."
@@ -257,7 +264,14 @@ jobs:
           } >/tmp/release-body.md
 
           # 4. Auto-generated commit/PR notes, appended at the very end.
-          prev_tag="$(git describe --tags --abbrev=0 --match 'v*' "${RELEASE_TAG}^" 2>/dev/null || true)"
+          # An empty tag list is the first release. Any other `git describe` failure stops the
+          # step, so a git error cannot silently drop the generated release notes.
+          reachable_tags="$(git tag --list 'v*' --merged "${RELEASE_TAG}^")"
+          if [ -z "${reachable_tags}" ]; then
+            prev_tag=""
+          else
+            prev_tag="$(git describe --tags --abbrev=0 --match 'v*' "${RELEASE_TAG}^")"
+          fi
           if [ -n "${prev_tag}" ]; then
             gen="$(gh api "repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
               -f tag_name="${RELEASE_TAG}" \

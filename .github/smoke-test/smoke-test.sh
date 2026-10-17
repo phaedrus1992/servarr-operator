@@ -55,16 +55,20 @@ echo "Phase 2: HTTP health checks via port-forward"
 
 pass=0
 fail=0
-skip=0
 for app in "${APPS[@]}"; do
   port=${APP_PORTS[$app]}
   local_port=$((port + 10000))
 
-  # Only check apps that became ready
-  ready=$(kubectl get deployment "$app" -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo "0")
+  # Phase 1 waited for every deployment to be Available, so an app that is unreadable or not
+  # ready here is a failure, not a skip.
+  if ! ready=$(kubectl get deployment "$app" -o jsonpath='{.status.readyReplicas}'); then
+    echo "  ${app}: FAIL (cannot read the deployment status)"
+    fail=$((fail + 1))
+    continue
+  fi
   if [[ "${ready:-0}" -lt 1 ]]; then
-    echo "  ${app}: SKIP (not ready)"
-    skip=$((skip + 1))
+    echo "  ${app}: FAIL (not ready after Phase 1)"
+    fail=$((fail + 1))
     continue
   fi
 
@@ -94,7 +98,7 @@ for app in "${APPS[@]}"; do
 done
 
 echo ""
-echo "Results: ${pass} passed, ${fail} failed, ${skip} skipped"
+echo "Results: ${pass} passed, ${fail} failed"
 
 if [[ $fail -ne 0 ]]; then
   echo "ERROR: ${fail} health check(s) failed"
@@ -131,8 +135,11 @@ echo "Phase 3: adminCredentials transition — patching MediaStack to add creden
 # Deployment spec never changes and no rolling update is triggered.
 declare -A PRE_GEN
 for app in media-sonarr media-transmission; do
-  PRE_GEN[$app]=$(kubectl get deployment "$app" \
-    -o jsonpath='{.metadata.generation}' 2>/dev/null || echo "1")
+  if ! gen=$(kubectl get deployment "$app" -o jsonpath='{.metadata.generation}'); then
+    echo "ERROR: cannot read the generation of ${app} before the patch" >&2
+    exit 1
+  fi
+  PRE_GEN[$app]=$gen
 done
 
 kubectl patch mediastack media --type=merge \

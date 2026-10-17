@@ -291,7 +291,7 @@ pub fn build_tar_unpack(app: &ServarrApp) -> Option<ConfigMap> {
     let install_script = r#"#!/usr/bin/with-contenv bash
 # s6-overlay custom-cont-init.d script: install compression tools
 echo "Installing compression utilities for tar unpack..."
-apk add --no-cache tar xz bzip2 zstd >/dev/null 2>&1
+apk add --no-cache tar xz bzip2 zstd >/dev/null || { echo "Cannot install tar, xz, bzip2, zstd: apk add failed. Check that the pod can reach the Alpine package mirror." >&2; exit 1; }
 echo "Compression utilities installed."
 "#;
 
@@ -442,6 +442,7 @@ if [ ! -f "$SETTINGS_FILE" ]; then
 fi
 
 CRED_USER=$(cat /run/secrets/admin/username)
+# The password file holds the operator-derived salted hash, not the plaintext (#848).
 CRED_PASS=$(cat /run/secrets/admin/password)
 
 echo "[transmission-auth] Setting admin credentials..."

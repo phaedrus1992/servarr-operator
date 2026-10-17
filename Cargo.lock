@@ -2914,6 +2914,7 @@ dependencies = [
  "servarr-crds",
  "servarr-operator",
  "servarr-resources",
+ "sha1",
  "sha2",
  "temp-env",
  "thiserror 2.0.20",
@@ -2937,6 +2938,17 @@ dependencies = [
  "sha2",
  "tempfile",
  "tracing",
+]
+
+[[package]]
+name = "sha1"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aacc4cc499359472b4abe1bf11d0b12e688af9a805fa5e3016f9a386dc2d0214"
+dependencies = [
+ "cfg-if",
+ "cpufeatures",
+ "digest",
 ]
 
 [[package]]

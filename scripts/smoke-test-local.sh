@@ -73,7 +73,11 @@ echo "  Cluster OK: $(kubectl config current-context)"
 # ---------------------------------------------------------------------------
 detect_cluster_type() {
   local ctx
-  ctx=$(kubectl config current-context 2>/dev/null || echo "")
+  ctx=$(kubectl config current-context 2>&1) || {
+    echo "ERROR: cannot read the current kubectl context: ${ctx}" >&2
+    echo "  Select a local cluster with 'kubectl config use-context <name>'." >&2
+    exit 1
+  }
   # Match the context name only. A binary-presence fallback (kind/k3d installed
   # and has some cluster, regardless of which one is current) would let this
   # script run against a cluster its own context name never claimed to be local.

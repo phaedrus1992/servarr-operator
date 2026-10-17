@@ -34,6 +34,7 @@ use cleanup::{cleanup_prowlarr_registration, cleanup_seerr_registration};
 mod download_health;
 use download_health::check_download_client_health;
 mod health_throttle;
+mod rpc_password;
 mod transmission_access;
 use health_throttle::{
     CorruptTimestampPolicy, is_destructive_poll_throttled, is_health_poll_throttled,
@@ -74,6 +75,12 @@ pub enum Error {
     AppDefaults(String),
     #[error("finalizer cleanup pending retry")]
     CleanupPending,
+    /// The Secret name is a fixed operator name that tenant content must not take over.
+    #[error(
+        "Secret {0} exists and this ServarrApp does not own it: rename or delete it so the \
+         operator can write its derived rpc-password Secret"
+    )]
+    SecretNotOwned(String),
 }
 
 impl Error {
@@ -493,6 +500,9 @@ pub async fn reconcile(app: Arc<ServarrApp>, ctx: Arc<Context>) -> Result<Action
     } else {
         None
     };
+
+    // The Deployment mounts the derived rpc-password Secret, so it must exist first (#848).
+    rpc_password::ensure_rpc_password_secret(client, &app, &ns, &recorder, &obj_ref).await?;
 
     // Build and apply Deployment
     let deployment = servarr_resources::deployment::build(&app, &ctx.image_overrides)
@@ -4307,9 +4317,9 @@ mod tests {
         servarr_api::TorrentInfo {
             id,
             name: format!("torrent-{id}"),
-            error,
+            error: Some(error),
             error_string: error_string.to_string(),
-            status: 0,
+            status: Some(0),
             hash_string: format!("hash-{id}"),
             percent_done: Some(0.0),
             download_dir: "/downloads".to_string(),
@@ -4365,6 +4375,94 @@ mod tests {
         assert!(is_confirmed_missing(&t));
     }
 
+    #[test]
+    fn partition_holds_back_when_idle_stopped_sibling_is_present() {
+        // A stopped torrent with no error does not check its data, so it cannot show the mount
+        // is present. The erroring torrents in the same directory stay held back (#847).
+        let idle = servarr_api::TorrentInfo {
+            status: Some(0),
+            ..torrent_in_dir(torrent(3, 0, ""), "/mnt/a")
+        };
+        let torrents = vec![
+            torrent_in_dir(torrent(1, 3, "no data found"), "/mnt/a"),
+            torrent_in_dir(torrent(2, 3, "no data found"), "/mnt/a"),
+            idle,
+        ];
+        assert_eq!(partitioned_ids(torrents), (vec![], 2));
+    }
+
+    proptest::proptest! {
+        /// An idle stopped torrent (no error) says nothing about the mount, so adding any number
+        /// of them to any directory must not change which torrents are held back (#847).
+        #[test]
+        fn idle_stopped_torrents_never_change_the_partition(
+            specs in proptest::collection::vec(
+                (prop_oneof![Just(0_i64), Just(3)], prop_oneof![Just(0_i64), Just(4), Just(6)], 0_usize..3),
+                0..12,
+            ),
+            idle_dirs in proptest::collection::vec(0_usize..3, 0..6),
+        ) {
+            const DIRS: [&str; 3] = ["/mnt/a", "/mnt/b", "/mnt/c"];
+            let base: Vec<_> = specs
+                .iter()
+                .enumerate()
+                .map(|(i, (error, status, dir))| servarr_api::TorrentInfo {
+                    status: Some(*status),
+                    ..torrent_in_dir(torrent(i64::try_from(i).unwrap_or(0), *error, ""), DIRS[*dir])
+                })
+                .collect();
+            let idle: Vec<_> = idle_dirs
+                .iter()
+                .enumerate()
+                .map(|(i, dir)| servarr_api::TorrentInfo {
+                    status: Some(0),
+                    ..torrent_in_dir(torrent(1000 + i64::try_from(i).unwrap_or(0), 0, ""), DIRS[*dir])
+                })
+                .collect();
+            let mut with_idle = base.clone();
+            with_idle.extend(idle);
+            proptest::prop_assert_eq!(partitioned_ids(base), partitioned_ids(with_idle));
+        }
+    }
+
+    #[test]
+    fn partition_does_not_treat_a_sibling_without_status_or_error_as_idle() {
+        // Omitted fields are unknown, not "stopped with no error". Such a sibling stays counted
+        // as a possibly healthy torrent, so the erroring torrents are not held back (#847).
+        let unknown = servarr_api::TorrentInfo {
+            status: None,
+            error: None,
+            ..torrent_in_dir(torrent(3, 0, ""), "/mnt/a")
+        };
+        let torrents = vec![
+            torrent_in_dir(torrent(1, 3, "no data found"), "/mnt/a"),
+            torrent_in_dir(torrent(2, 3, "no data found"), "/mnt/a"),
+            unknown,
+        ];
+        assert_eq!(partitioned_ids(torrents), (vec![1, 2], 0));
+    }
+
+    #[test]
+    fn partition_keeps_stale_when_active_healthy_sibling_is_present() {
+        // An actively seeding torrent with no error proves the directory is mounted, so the
+        // erroring torrents are not held back (#840).
+        let seeding = servarr_api::TorrentInfo {
+            status: Some(6),
+            ..torrent_in_dir(torrent(3, 0, ""), "/mnt/a")
+        };
+        let torrents = vec![
+            torrent_in_dir(torrent(1, 3, "no data found"), "/mnt/a"),
+            torrent_in_dir(torrent(2, 3, "no data found"), "/mnt/a"),
+            seeding,
+        ];
+        assert_eq!(partitioned_ids(torrents), (vec![1, 2], 0));
+    }
+
+    fn torrent_in_dir(mut t: servarr_api::TorrentInfo, dir: &str) -> servarr_api::TorrentInfo {
+        t.download_dir = dir.to_string();
+        t
+    }
+
     fn partitioned_ids(torrents: Vec<servarr_api::TorrentInfo>) -> (Vec<i64>, usize) {
         let (stale, held) = partition_unavailable_dirs(torrents);
         (stale.iter().map(|t| t.id).collect(), held)
@@ -4413,7 +4511,7 @@ mod tests {
                 .enumerate()
                 .map(|(i, (d, e))| in_dir(i as i64, *e, dirs[*d]))
                 .collect();
-            let erroring = torrents.iter().filter(|t| t.error == 3).count();
+            let erroring = torrents.iter().filter(|t| t.error == Some(3)).count();
             let (stale, held) = partition_unavailable_dirs(torrents);
             prop_assert_eq!(stale.len() + held, erroring);
         }
@@ -4531,7 +4629,7 @@ mod tests {
         let client = servarr_api::TransmissionClient::new(&mock_server.uri(), None).unwrap();
         let settled = poll_until_settled(&client, &["hash-1"]).await.unwrap();
         assert_eq!(settled.len(), 1);
-        assert_eq!(settled[0].status, 0);
+        assert_eq!(settled[0].status, Some(0));
     }
 
     // An RPC error during the poll must surface as Err, not as an empty "still pending" list (#845).
@@ -4677,6 +4775,54 @@ mod tests {
         assert_eq!(outcome.settled_with_data, vec!["hash-1".to_string()]);
     }
 
+    /// A torrent that settles with error 3 and no `percentDone` has an unknown data state. It
+    /// must not be reported as data present, and it must not be removed (#856).
+    #[tokio::test]
+    async fn remediate_reports_missing_percent_done_as_unknown_not_data_present() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/transmission/rpc"))
+            .and(body_partial_json(
+                serde_json::json!({"method": "torrent-verify"}),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "result": "success", "arguments": {}
+            })))
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/transmission/rpc"))
+            .and(body_partial_json(serde_json::json!({"method": "torrent-get"})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "result": "success",
+                "arguments": {
+                    "torrents": [{"id": 1, "name": "x", "error": 3, "errorString": "no data found", "status": 0, "hashString": "hash-1"}]
+                }
+            })))
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/transmission/rpc"))
+            .and(body_partial_json(
+                serde_json::json!({"method": "torrent-remove"}),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "result": "success", "arguments": {}
+            })))
+            .expect(0)
+            .mount(&mock_server)
+            .await;
+
+        let client = servarr_api::TransmissionClient::new(&mock_server.uri(), None).unwrap();
+        let mut stale_torrent = torrent(1, 3, "no data found");
+        stale_torrent.percent_done = None;
+        let outcome = remediate_stale_torrents(&client, &[stale_torrent], true).await;
+
+        assert!(outcome.removed.is_empty());
+        assert!(outcome.settled_with_data.is_empty());
+        assert_eq!(outcome.settled_unknown, vec!["hash-1".to_string()]);
+    }
+
     #[tokio::test]
     async fn remediate_stale_torrents_does_not_remove_when_auto_remove_disabled() {
         let mock_server = MockServer::start().await;
@@ -4793,7 +4939,7 @@ mod tests {
 
         let client = servarr_api::TransmissionClient::new(&mock_server.uri(), None).unwrap();
         let mut t = torrent(1, 3, "no data found");
-        t.status = 2; // already verifying
+        t.status = Some(2); // already verifying
         let outcome = remediate_stale_torrents(&client, &[t], true).await;
 
         assert!(outcome.removed.is_empty());

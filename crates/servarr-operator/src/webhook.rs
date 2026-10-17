@@ -291,6 +291,10 @@ async fn validate_spec(
     // Rule 11: adminCredentials.secretName must be non-empty when set
     validate_admin_credentials(&parsed, &mut errors);
 
+    // Rule 11b: adminCredentials.secretName must not be the operator's derived rpc-password Secret
+    let app_name = object.pointer("/metadata/name").and_then(|v| v.as_str());
+    validate_admin_secret_not_derived(&parsed, app_name, &mut errors);
+
     // Rule 12: backup.schedule must be a valid cron expression
     validate_backup_schedule(&parsed, &mut errors);
 
@@ -369,6 +373,28 @@ fn validate_admin_credentials(spec: &ServarrAppSpec, errors: &mut Vec<String>) {
             "adminCredentials.secretName must be non-empty when adminCredentials is set"
                 .to_string(),
         );
+    }
+}
+
+/// A Transmission app gets a derived Secret named `<app>-rpc-password`. If the admin Secret has
+/// that name, the operator would hash its own hash on each reconcile and lose the password.
+fn validate_admin_secret_not_derived(
+    spec: &ServarrAppSpec,
+    app_name: Option<&str>,
+    errors: &mut Vec<String>,
+) {
+    let (Some(ac), Some(app_name)) = (spec.admin_credentials.as_ref(), app_name) else {
+        return;
+    };
+    let derived = format!(
+        "{app_name}-{}",
+        servarr_resources::common::RPC_PASSWORD_SECRET_SUFFIX
+    );
+    if spec.app == AppType::Transmission && ac.secret_name == derived {
+        errors.push(format!(
+            "adminCredentials.secretName must not be '{derived}': the operator uses that name \
+             for the Secret that it derives for Transmission"
+        ));
     }
 }
 
@@ -1575,6 +1601,42 @@ mod tests {
         validate_persistence_collisions(&spec, &mut errors);
         assert_eq!(errors.len(), 1);
         assert!(errors[0].contains("reserved by the operator"));
+    }
+
+    fn spec_with_admin_secret(app: AppType, secret_name: &str) -> ServarrAppSpec {
+        let mut spec = minimal_spec(app);
+        spec.admin_credentials = Some(AdminCredentialsSpec {
+            secret_name: secret_name.into(),
+        });
+        spec
+    }
+
+    /// The operator writes `<app>-rpc-password` for a Transmission app. An admin Secret with that
+    /// name would be overwritten with a hash of its own hash (#848).
+    #[test]
+    fn admin_secret_named_like_the_derived_secret_is_rejected_for_transmission() {
+        let spec = spec_with_admin_secret(AppType::Transmission, "tx-rpc-password");
+        let mut errors = Vec::new();
+        validate_admin_secret_not_derived(&spec, Some("tx"), &mut errors);
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("tx-rpc-password"), "got {errors:?}");
+    }
+
+    #[test]
+    fn other_admin_secret_names_apps_and_missing_names_are_accepted() {
+        let mut errors = Vec::new();
+        let ok = spec_with_admin_secret(AppType::Transmission, "tx-admin");
+        validate_admin_secret_not_derived(&ok, Some("tx"), &mut errors);
+        let other_app = spec_with_admin_secret(AppType::Sonarr, "tx-rpc-password");
+        validate_admin_secret_not_derived(&other_app, Some("tx"), &mut errors);
+        let reserved = spec_with_admin_secret(AppType::Transmission, "tx-rpc-password");
+        validate_admin_secret_not_derived(&reserved, None, &mut errors);
+        validate_admin_secret_not_derived(
+            &minimal_spec(AppType::Transmission),
+            Some("tx"),
+            &mut errors,
+        );
+        assert!(errors.is_empty(), "got {errors:?}");
     }
 
     /// A mountPath colliding with an operator-reserved mount must be rejected at admission

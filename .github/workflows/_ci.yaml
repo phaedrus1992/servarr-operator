@@ -1,5 +1,5 @@
 # Reusable workflow: run tests and build multi-arch static binaries.
-# Called by release.yaml and snapshot.yaml.
+# Called by release.yaml on a v* tag. ci.yaml does not call this file.
 name: _CI
 
 on:
