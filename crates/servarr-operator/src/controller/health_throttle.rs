@@ -194,6 +194,20 @@ mod tests {
     }
 
     proptest::proptest! {
+        // The destructive window holds exactly when 0 <= age < interval. A future timestamp
+        // (negative age) never throttles.
+        #[test]
+        fn destructive_throttle_matches_window_arithmetic(age in -3600i64..7200, interval in 0u32..4000) {
+            let now = chrono::DateTime::parse_from_rfc3339(NOW).expect("NOW is valid RFC 3339");
+            let last = now - chrono::Duration::seconds(age);
+            let existing = condition("False", &last.to_rfc3339());
+            let expected = age >= 0 && age < i64::from(interval);
+            proptest::prop_assert_eq!(
+                is_destructive_poll_throttled(Some(&existing), Some(interval), NOW),
+                expected
+            );
+        }
+
         // A corrupt timestamp must fail closed on the destructive path for any input (#519).
         #[test]
         fn destructive_throttle_fails_closed_on_any_unparseable_timestamp(raw in "\\PC*") {
