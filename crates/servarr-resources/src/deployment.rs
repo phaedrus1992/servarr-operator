@@ -1591,7 +1591,7 @@ echo "Authorized keys copied and permissions set."
     {
         patch_script.push_str(
             r#"# Install rsync (required for rsync/restricted-rsync modes)
-apk add --no-cache rsync >/dev/null 2>&1 || true
+apk add --no-cache rsync >/dev/null || { echo "Cannot install rsync: apk add failed." >&2; exit 1; }
 "#,
         );
     }
@@ -1608,7 +1608,7 @@ apk add --no-cache rsync >/dev/null 2>&1 || true
     if !shell_packages.is_empty() {
         let pkgs = shell_packages.join(" ");
         patch_script.push_str(&format!(
-            "# Install shells requested by users\napk add --no-cache {pkgs} >/dev/null 2>&1 || true\n"
+            "# Install shells requested by users\napk add --no-cache {pkgs} >/dev/null || {{ echo 'Cannot install shells {pkgs}: apk add failed.' >&2; exit 1; }}\n"
         ));
     }
 

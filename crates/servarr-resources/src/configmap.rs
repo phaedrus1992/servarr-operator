@@ -291,7 +291,7 @@ pub fn build_tar_unpack(app: &ServarrApp) -> Option<ConfigMap> {
     let install_script = r#"#!/usr/bin/with-contenv bash
 # s6-overlay custom-cont-init.d script: install compression tools
 echo "Installing compression utilities for tar unpack..."
-apk add --no-cache tar xz bzip2 zstd >/dev/null 2>&1
+apk add --no-cache tar xz bzip2 zstd >/dev/null || { echo "Cannot install tar, xz, bzip2, zstd: apk add failed." >&2; exit 1; }
 echo "Compression utilities installed."
 "#;
 
@@ -427,8 +427,10 @@ fn build_transmission(app: &ServarrApp) -> Option<ConfigMap> {
     // were not yet in the s6 container env due to the init-envfile race).
     //
     // This script re-applies auth settings from the mounted secret, winning the race.
-    let auth_script = r#"#!/bin/sh
-set -e
+    let ssha1_fn = transmission::SSHA1_SHELL_FN;
+    let auth_script = format!(
+        r#"#!/bin/sh
+{ssha1_fn}set -e
 SETTINGS_FILE="/config/settings.json"
 
 if [ ! -f /run/secrets/admin/username ] || [ ! -f /run/secrets/admin/password ]; then
@@ -448,13 +450,14 @@ echo "[transmission-auth] Setting admin credentials..."
 TMP=$(mktemp)
 jq \
   --arg user "$CRED_USER" \
-  --arg pass "$CRED_PASS" \
+  --arg pass "$(ssha1 "$CRED_PASS")" \
   '.["rpc-authentication-required"] = true | .["rpc-username"] = $user | .["rpc-password"] = $pass' \
   "$SETTINGS_FILE" > "$TMP"
 cp "$TMP" "$SETTINGS_FILE"
 rm -f "$TMP"
 echo "[transmission-auth] Admin credentials set successfully."
-"#;
+"#
+    );
 
     let mut data = BTreeMap::new();
     data.insert("settings-override.json".into(), settings_json);
