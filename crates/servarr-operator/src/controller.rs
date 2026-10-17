@@ -4317,9 +4317,9 @@ mod tests {
         servarr_api::TorrentInfo {
             id,
             name: format!("torrent-{id}"),
-            error,
+            error: Some(error),
             error_string: error_string.to_string(),
-            status: 0,
+            status: Some(0),
             hash_string: format!("hash-{id}"),
             percent_done: Some(0.0),
             download_dir: "/downloads".to_string(),
@@ -4380,7 +4380,7 @@ mod tests {
         // A stopped torrent with no error does not check its data, so it cannot show the mount
         // is present. The erroring torrents in the same directory stay held back (#847).
         let idle = servarr_api::TorrentInfo {
-            status: 0,
+            status: Some(0),
             ..torrent_in_dir(torrent(3, 0, ""), "/mnt/a")
         };
         let torrents = vec![
@@ -4392,11 +4392,28 @@ mod tests {
     }
 
     #[test]
+    fn partition_does_not_treat_a_sibling_without_status_or_error_as_idle() {
+        // Omitted fields are unknown, not "stopped with no error". Such a sibling stays counted
+        // as a possibly healthy torrent, so the erroring torrents are not held back (#847).
+        let unknown = servarr_api::TorrentInfo {
+            status: None,
+            error: None,
+            ..torrent_in_dir(torrent(3, 0, ""), "/mnt/a")
+        };
+        let torrents = vec![
+            torrent_in_dir(torrent(1, 3, "no data found"), "/mnt/a"),
+            torrent_in_dir(torrent(2, 3, "no data found"), "/mnt/a"),
+            unknown,
+        ];
+        assert_eq!(partitioned_ids(torrents), (vec![1, 2], 0));
+    }
+
+    #[test]
     fn partition_keeps_stale_when_active_healthy_sibling_is_present() {
         // An actively seeding torrent with no error proves the directory is mounted, so the
         // erroring torrents are not held back (#840).
         let seeding = servarr_api::TorrentInfo {
-            status: 6,
+            status: Some(6),
             ..torrent_in_dir(torrent(3, 0, ""), "/mnt/a")
         };
         let torrents = vec![
@@ -4460,7 +4477,7 @@ mod tests {
                 .enumerate()
                 .map(|(i, (d, e))| in_dir(i as i64, *e, dirs[*d]))
                 .collect();
-            let erroring = torrents.iter().filter(|t| t.error == 3).count();
+            let erroring = torrents.iter().filter(|t| t.error == Some(3)).count();
             let (stale, held) = partition_unavailable_dirs(torrents);
             prop_assert_eq!(stale.len() + held, erroring);
         }
@@ -4578,7 +4595,7 @@ mod tests {
         let client = servarr_api::TransmissionClient::new(&mock_server.uri(), None).unwrap();
         let settled = poll_until_settled(&client, &["hash-1"]).await.unwrap();
         assert_eq!(settled.len(), 1);
-        assert_eq!(settled[0].status, 0);
+        assert_eq!(settled[0].status, Some(0));
     }
 
     // An RPC error during the poll must surface as Err, not as an empty "still pending" list (#845).
@@ -4888,7 +4905,7 @@ mod tests {
 
         let client = servarr_api::TransmissionClient::new(&mock_server.uri(), None).unwrap();
         let mut t = torrent(1, 3, "no data found");
-        t.status = 2; // already verifying
+        t.status = Some(2); // already verifying
         let outcome = remediate_stale_torrents(&client, &[t], true).await;
 
         assert!(outcome.removed.is_empty());

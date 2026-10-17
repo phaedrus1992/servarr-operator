@@ -89,12 +89,14 @@ pub struct TorrentInfo {
     pub id: i64,
     #[serde(default)]
     pub name: String,
+    /// `None` when Transmission omits the field. Callers must not read that as `0` (no error).
     #[serde(default)]
-    pub error: i64,
+    pub error: Option<i64>,
     #[serde(default)]
     pub error_string: String,
+    /// `None` when Transmission omits the field. Callers must not read that as `0` (stopped).
     #[serde(default)]
-    pub status: i64,
+    pub status: Option<i64>,
     #[serde(default)]
     pub hash_string: String,
     /// Fraction of the torrent's data present on disk, `0.0`-`1.0`. Used alongside `error`
@@ -527,10 +529,10 @@ mod tests {
 
         assert_eq!(torrents.len(), 2);
         assert_eq!(torrents[0].id, 1);
-        assert_eq!(torrents[0].error, 3);
+        assert_eq!(torrents[0].error, Some(3));
         assert!(torrents[0].error_string.contains("No data found"));
         assert_eq!(torrents[1].id, 2);
-        assert_eq!(torrents[1].error, 0);
+        assert_eq!(torrents[1].error, Some(0));
     }
 
     #[tokio::test]
@@ -723,14 +725,22 @@ mod tests {
 
     // ---- TorrentInfo roundtrip (#501) ----
 
+    #[test]
+    fn torrent_info_keeps_omitted_error_and_status_as_none() {
+        // An omitted field is not `0`, which would read as "no error" and "stopped".
+        let torrent: TorrentInfo = serde_json::from_value(serde_json::json!({ "id": 1 })).unwrap();
+        assert_eq!(torrent.error, None);
+        assert_eq!(torrent.status, None);
+    }
+
     proptest::proptest! {
         #[test]
         fn torrent_info_roundtrips_through_json(
             id in proptest::num::i64::ANY,
             name in ".{0,200}",
-            error in proptest::num::i64::ANY,
+            error in proptest::option::of(proptest::num::i64::ANY),
             error_string in ".{0,200}",
-            status in proptest::num::i64::ANY,
+            status in proptest::option::of(proptest::num::i64::ANY),
             hash_string in "[0-9a-f]{0,40}",
             // Transmission reports a 0.0-1.0 fraction; ANY would generate NaN, which
             // breaks the equality roundtrip assertion below (NaN != NaN).

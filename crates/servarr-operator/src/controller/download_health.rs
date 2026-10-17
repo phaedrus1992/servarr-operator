@@ -66,7 +66,7 @@ pub(super) fn download_health_unknown(
 /// deleted keeps its completion bitfield, so `percentDone` stays `1.0` until a re-verify. A
 /// `percentDone` gate here would drop that torrent before verify ever ran.
 pub(super) fn is_missing_data_torrent(t: &servarr_api::TorrentInfo) -> bool {
-    t.error == TR_STAT_LOCAL_ERROR
+    t.error == Some(TR_STAT_LOCAL_ERROR)
 }
 
 /// Removal predicate, checked only after `torrent-verify` settled (#840). A local error also
@@ -102,7 +102,7 @@ fn dir_key(t: &servarr_api::TorrentInfo) -> &str {
 /// so it is no evidence that the download directory is mounted (#847). A torrent with a local
 /// error is also stopped by Transmission, so the error check keeps it counted.
 fn is_idle_stopped(t: &servarr_api::TorrentInfo) -> bool {
-    t.status == TR_STAT_STOPPED && t.error == 0
+    t.status == Some(TR_STAT_STOPPED) && t.error == Some(0)
 }
 
 /// Directories where every active torrent reports a local error, with enough torrents to tell a
@@ -150,7 +150,8 @@ pub(super) fn split_missing_hash(
 const MIN_TORRENTS_FOR_DIR_CHECK: usize = 2;
 
 pub(super) fn is_checking(t: &servarr_api::TorrentInfo) -> bool {
-    CHECKING_STATUSES.contains(&t.status)
+    t.status
+        .is_some_and(|status| CHECKING_STATUSES.contains(&status))
 }
 
 /// Outcome of attempting to remediate a batch of stale torrents, addressed by their stable
