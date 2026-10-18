@@ -64,6 +64,27 @@ dev-sprint's `resolve-base-branch.sh` resolves the base from a version milestone
 
 Never retarget a milestone-scoped PR to a different base without explicit user approval.
 
+## Docs Follow User-Facing Changes
+
+A change that an operator user can notice MUST update the matching docs in the same PR.
+Examples of such a change:
+
+- A new or changed CRD field.
+- A new `AppType` variant.
+- A changed default value.
+- A new status condition or metric.
+- A changed behavior that an operator user notices.
+
+The matching docs are:
+
+- README tables and the feature list.
+- `docs/configuration.md`.
+- `docs/examples/`.
+- `docs/troubleshooting.md`, when the change affects a symptom or a fix.
+- The CHANGELOG entry (see the Changelog rules above).
+
+A PR that adds an `AppType` variant without a README change MUST be called out in review.
+
 ## CI Toolchain Note
 
 CI runs Rust 1.97.1, which may enforce stricter Clippy lints than the local toolchain. Always run

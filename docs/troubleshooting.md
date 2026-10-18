@@ -620,3 +620,86 @@ kubectl logs deploy/servarr-operator | grep -i orphan
 - **"awaiting a manual permission fix (will not self-resolve on retry)"** -- a 401/403 on the PVC PATCH. This will not clear by waiting: check the operator's RBAC for `patch` on `persistentvolumeclaims`, whether its ServiceAccount token/credential is still valid, and whether a `ResourceQuota` or admission policy is rejecting the request.
 
 **Nothing left to clean up:** Once the detach succeeds and the orphaned `ServarrApp` CR is deleted, `OrphanCleanupHealthy` returns to `True` and any stuck-child names are cleared from the condition message.
+
+---
+
+## 10. Stuck Download Queues
+
+### Symptom
+
+A Transmission torrent stays in an error state and reports `"No data found!"`, even when it shows 100% done.
+A Servarr app (Sonarr, Radarr, or Lidarr) cannot import a finished download, because its files are missing.
+
+```bash
+kubectl get sa <name> -o jsonpath='{.status.conditions[?(@.type=="DownloadDataHealthy")]}' | jq .
+```
+
+### Diagnosis
+
+**Check the `DownloadDataHealthy` condition:**
+
+The condition `reason` names the state of the download data:
+
+- `MissingDataDetected` -- the torrent reports missing data. The message shows whether it is `confirmed orphaned`.
+- `DownloadDirUnavailable` -- every torrent in one download directory reports missing data. The directory may be unmounted. The operator skips removal for those torrents.
+- `RemediationRpcError` -- a Transmission call failed during the last pass.
+- `CredentialReadError` -- the operator cannot read `adminCredentials`. The message names the cause.
+
+**Check for `DownloadDataMissing` events:**
+
+```bash
+kubectl get events --field-selector reason=DownloadDataMissing
+```
+
+**Check for jobs that delete download data:**
+
+The operator does not delete download data.
+A cron job or a script outside the operator can delete files that a torrent still references.
+List the cron jobs that run in the cluster:
+
+```bash
+kubectl get cronjobs -A
+```
+
+**Check the health check settings:**
+
+```bash
+kubectl get sa <name> -o jsonpath='{.spec.apiHealthCheck}' | jq .
+```
+
+### Fix
+
+**Missing data, not yet verified:** Set `apiHealthCheck.enabled: true` on the Transmission app.
+Each reconcile, the operator triggers Transmission's `torrent-verify` on a torrent with missing data.
+The operator verifies a torrent at most once per `intervalSeconds`.
+
+**Data restored:** If you restore the files to the download directory, the next verify clears the error.
+The condition then reports the `DataRecovered` reason.
+
+**Confirmed orphaned torrent:** A torrent that stays missing its data after the verify is reported as `confirmed orphaned`.
+The operator leaves it alone by default.
+To remove the torrent entry, set `autoRemoveOrphanedTorrents` to `true`:
+
+```yaml
+spec:
+  app: Transmission
+  adminCredentials:
+    secretName: transmission-admin
+  apiHealthCheck:
+    enabled: true
+    autoRemoveOrphanedTorrents: true
+```
+
+The operator removes only Transmission's torrent entry.
+It never deletes on-disk data.
+It never removes a torrent in the same pass that detects it.
+
+**Servarr app health check requires `apiKeySecret`:** For Sonarr, Radarr, Lidarr, and Prowlarr, `apiHealthCheck.enabled` needs `apiKeySecret` on the CR:
+
+```yaml
+spec:
+  apiKeySecret: sonarr-api-key
+  apiHealthCheck:
+    enabled: true
+    intervalSeconds: 30
+```

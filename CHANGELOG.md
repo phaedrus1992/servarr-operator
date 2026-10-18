@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased] - ReleaseDate
 
+### Changed
+
+- Add a troubleshooting section for stuck download queues. It covers the `DownloadDataHealthy` reasons and the Transmission self-heal settings (#837).
+
 ### Fixed
 
 - Fix the Transmission self-heal skipping completed torrents whose data was deleted. Detection now matches any local-error torrent. Removal still requires a 0% torrent after verify (#840).
