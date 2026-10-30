@@ -9,7 +9,7 @@ kube.workspace = true
 k8s-openapi.workspace = true
 serde_json.workspace = true
 servarr-crds.workspace = true
-sha2 = "=0.11.0"
+sha2 = "=0.11.1"
 hex = "=0.4.3"
 tracing.workspace = true
 
