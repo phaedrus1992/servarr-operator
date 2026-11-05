@@ -23,7 +23,7 @@ serde_yaml = "=0.9.34"
 tokio = { version = "=1.53.1", features = ["full"] }
 tokio-util = { version = "=0.7.19", default-features = false, features = ["rt"] }
 futures = "=0.3.34"
-thiserror = "=2.0.20"
+thiserror = "=2.0.21"
 tracing = "=0.1.44"
 tracing-subscriber = { version = "=0.3.23", features = ["env-filter", "json"] }
 anyhow = "=1.0.104"
@@ -31,4 +31,4 @@ anyhow = "=1.0.104"
 servarr-crds = { path = "crates/servarr-crds" }
 servarr-resources = { path = "crates/servarr-resources" }
 wiremock = "=0.6.5"
-proptest = "=1.11.0"
+proptest = "=1.12.0"
