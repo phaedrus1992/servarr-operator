@@ -60,15 +60,15 @@ anyhow.workspace = true
 servarr-crds.workspace = true
 servarr-resources.workspace = true
 prometheus = { version = "=0.14.0", features = ["process"] }
-lazy_static = "=1.5.0"
+lazy_static = "=1.5.1"
 axum = "=0.8.9"
 axum-server = { version = "=0.8.0", features = ["tls-rustls"] }
-clap = { version = "=4.6.6", features = ["derive"] }
+clap = { version = "=4.6.7", features = ["derive"] }
 servarr-api = { path = "../servarr-api" }
 overseerr = "=0.1.1"
 chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
 cron = "=0.17.0"
-rand = "=0.10.2"
+rand = "=0.10.3"
 sha1 = "=0.11.0"
 sha2 = "=0.11.0"
 hex = "=0.4.3"
